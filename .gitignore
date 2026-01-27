@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Linting/formatting
+.ruff_cache/
+.mypy_cache/
+
+# Build artifacts
+*.o
+*.a
+*.dylib
+_skbuild/
+
+# External dependencies (obtain separately, keep README.md)
+include/*
+!include/README.md
+lib/*
+!lib/README.md
+models/*
+!models/README.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.txt
+!CMakeLists.txt
+!requirements.txt
+
+# Jupyter
+.ipynb_checkpoints/

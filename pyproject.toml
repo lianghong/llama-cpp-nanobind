@@ -1,0 +1,86 @@
+[build-system]
+requires = [
+  "scikit-build-core>=0.11",
+  "nanobind>=2.10",
+  "packaging"
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "llama-cpp-nanobind"
+version = "0.3.3"
+description = "High-performance nanobind bindings for llama.cpp with CUDA"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "llama-cpp-nanobind"}]
+license = {text = "MIT"}
+dependencies = []
+keywords = ["llama", "llama.cpp", "llm", "inference", "nanobind", "cuda", "ai", "machine-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=9.0", "pytest-asyncio>=1.0"]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
+    "black>=26.0",
+    "ruff>=0.14",
+    "mypy>=1.19",
+    "isort>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/pplmx/llama-cpp-nanobind"
+Repository = "https://github.com/pplmx/llama-cpp-nanobind"
+Issues = "https://github.com/pplmx/llama-cpp-nanobind/issues"
+
+[tool.scikit-build]
+cmake.version = ">=3.26"
+cmake.build-type = "Release"
+wheel.packages = ["src/llama_cpp"]
+sdist.include = ["include", "lib", "examples", "tests"]
+ninja.make-fallback = true
+install.components = ["python"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "C4", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["llama_cpp"]
+
+[tool.black]
+line-length = 88
+target-version = ["py314"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.isort]
+profile = "black"
+known_first_party = ["llama_cpp"]
+force_single_line = false
+combine_as_imports = true
