@@ -170,7 +170,6 @@ Update `conftest.py` if using different model paths.
 ### Build Optimizations (Release)
 - `-O3 -march=native -mtune=native -flto=auto -ffast-math -funroll-loops`
 - LTO enabled if supported
-- See `CMAKE_OPTIMIZATIONS.md` for details
 
 ### Runtime Optimizations
 - GIL released during C++ operations (v0.3.0)
@@ -182,8 +181,6 @@ Update `conftest.py` if using different model paths.
   - Tokens yielded as generated, not buffered
   - Low time-to-first-token for responsive UIs
   - Perfect for SSE/WebSocket streaming endpoints
-
-See `OPTIMIZATIONS.md` for full optimization history.
 
 ## Testing Strategy
 

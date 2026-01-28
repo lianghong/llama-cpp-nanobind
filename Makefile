@@ -1,6 +1,6 @@
 .PHONY: all build test wheel wheel-portable clean install dev
 
-PYTHON ?= python3.12
+PYTHON ?= python3.14
 VENV := .venv
 
 all: build

@@ -74,7 +74,7 @@ uv pip install -e .
 
 `scikit-build-core` drives the build; it automatically links against the prebuilt libraries in `./lib` and installs them into the wheel. RPATH is set so the extension finds `llama_cpp/lib` at runtime.
 
-**Note**: Release builds use aggressive optimizations (`-O3`, `-march=native`, `-flto=auto`, `-ffast-math`) for maximum performance. See `CMAKE_OPTIMIZATIONS.md` for details.
+**Note**: Release builds use aggressive optimizations (`-O3`, `-march=native`, `-flto=auto`, `-ffast-math`) for maximum performance.
 
 **Recent Optimizations**: v0.3.0 includes significant performance and correctness improvements:
 - GIL released during heavy C++ operations for better async/threading performance
@@ -84,7 +84,6 @@ uv pip install -e .
 - Per-token batch allocations eliminated via reusable buffer
 - LoRA adapters persist correctly across `reset()` calls
 - `UnifiedLLM.kv_cache_clear()` now works correctly
-See `OPTIMIZATIONS.md` for details.
 
 **v0.3.1 Optimizations:**
 - True incremental streaming via `generate_stream()` - yields tokens as generated in background thread
@@ -105,6 +104,10 @@ See `OPTIMIZATIONS.md` for details.
 - Added runtime warning when `verbose=False` is used (affects all instances globally)
 - Improved thread safety documentation with prominent warnings
 - Enhanced error handling and state synchronization
+
+**v0.3.4 Cleanup:**
+- Removed redundant internal documentation (AGENTS.md, CMAKE_OPTIMIZATIONS.md, OPTIMIZATIONS.md)
+- Synchronized version across all project files
 
 ### Optional build flags
 
