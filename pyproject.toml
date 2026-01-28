@@ -8,7 +8,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "llama-cpp-nanobind"
-version = "0.3.3"
+version = "0.3.4"
 description = "High-performance nanobind bindings for llama.cpp with CUDA"
 readme = "README.md"
 requires-python = ">=3.14"
