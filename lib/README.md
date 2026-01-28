@@ -17,7 +17,7 @@ Backend libraries:
 ## Build Requirements
 
 Libraries should be built with:
-- CUDA 12.x support enabled
+- CUDA 13.x support enabled
 - Compute capability 6.0+ (Pascal and newer GPUs)
 - C++17 compatible compiler (GCC 11+ recommended)
 

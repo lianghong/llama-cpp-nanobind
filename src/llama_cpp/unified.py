@@ -32,6 +32,20 @@ from llama_cpp import Llama, LlamaConfig, SamplingParams
 # Instance tracking for cleanup at exit
 # ---------------------------------------------------------------------------
 _unified_instances: set[weakref.ref[Any]] = set()
+_cleanup_registered = False
+_cleanup_lock = threading.Lock()
+
+
+def _register_unified_cleanup() -> None:
+    """Register cleanup handler only after an instance is created."""
+    global _cleanup_registered
+    if _cleanup_registered:
+        return
+    with _cleanup_lock:
+        if _cleanup_registered:
+            return
+        atexit.register(_cleanup_unified)
+        _cleanup_registered = True
 
 
 def _cleanup_unified() -> None:
@@ -43,9 +57,6 @@ def _cleanup_unified() -> None:
                 instance.close()
     _unified_instances.clear()
     gc.collect()
-
-
-atexit.register(_cleanup_unified)
 
 
 class ModelFamily(Enum):
@@ -65,7 +76,7 @@ class ModelFamily(Enum):
     GPT_OSS = auto()
 
 
-@dataclass
+@dataclass(slots=True)
 class ModelConfig:
     """Model-specific configuration.
 
@@ -760,7 +771,8 @@ class UnifiedLLM:
             self.llm.close()
             raise
 
-        # Register for cleanup at exit
+        # Register for cleanup at exit (lazy registration on first instance)
+        _register_unified_cleanup()
         self._ref = weakref.ref(self, lambda r: _unified_instances.discard(r))
         _unified_instances.add(self._ref)
 
@@ -855,6 +867,17 @@ class UnifiedLLM:
         """Context manager entry."""
         return self
 
+    def __repr__(self) -> str:
+        if self.llm is None:
+            return "<UnifiedLLM (closed)>"
+        import os
+
+        model_name = os.path.basename(self.llm.config.model_path)
+        return (
+            f"<UnifiedLLM model={model_name!r} "
+            f"family={self.family.name} n_ctx={self.model_config.max_ctx}>"
+        )
+
     def __exit__(
         self,
         _exc_type: type[BaseException] | None,
@@ -865,8 +888,13 @@ class UnifiedLLM:
         self.close()
 
     def __del__(self) -> None:
-        if not sys.is_finalizing() and hasattr(self, "llm") and self.llm is not None:
-            self.close()
+        # Avoid cleanup during interpreter shutdown - atexit handler handles this
+        if sys.is_finalizing():
+            return
+        # Only attempt cleanup if fully initialized
+        if hasattr(self, "llm") and self.llm is not None:
+            with contextlib.suppress(Exception):
+                self.close()
 
     def n_tokens(self, text: str) -> int:
         """Count tokens for text."""

@@ -12,9 +12,11 @@ def test_embedding_validation_disabled():
     """Embeddings raise ValidationError when embeddings=False."""
     disable_logging()
     config = LlamaConfig(model_path=MODEL_PATH, embeddings=False)
-    with Llama(model_path=MODEL_PATH, config=config) as llm:
-        with pytest.raises(ValidationError, match="Embeddings not enabled"):
-            llm.embed("test")
+    with (
+        Llama(model_path=MODEL_PATH, config=config) as llm,
+        pytest.raises(ValidationError, match="Embeddings not enabled"),
+    ):
+        llm.embed("test")
 
 
 @requires_model

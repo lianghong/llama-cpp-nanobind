@@ -2,7 +2,6 @@
 
 import time
 
-import pytest
 
 from llama_cpp import Llama, SamplingParams
 
@@ -19,7 +18,7 @@ def test_generate_stream_incremental(model_path):
     chunk_count = 0
     start_time = time.time()
 
-    for chunk in llm.generate_stream("Count to 5", max_tokens=32):
+    for _chunk in llm.generate_stream("Count to 5", max_tokens=32):
         if first_yield_time is None:
             first_yield_time = time.time()
         last_yield_time = time.time()

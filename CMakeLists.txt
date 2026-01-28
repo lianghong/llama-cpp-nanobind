@@ -8,7 +8,7 @@ if(NOT DEFINED CMAKE_CXX_COMPILER)
   set(CMAKE_CXX_COMPILER /usr/local/bin/g++-15)
 endif()
 
-project(llama_cpp_nanobind VERSION 0.3.0 LANGUAGES C CXX)
+project(llama_cpp_nanobind VERSION 0.3.3 LANGUAGES C CXX)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_C_STANDARD 11)
@@ -45,8 +45,8 @@ if(NOT CMAKE_BUILD_TYPE IN_LIST VALID_BUILD_TYPES)
   message(FATAL_ERROR "Invalid CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}. Must be one of: ${VALID_BUILD_TYPES}")
 endif()
 
-# Find Python 3.12+ (matches requires-python in pyproject.toml)
-find_package(Python 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
+# Find Python 3.14+ (matches requires-python in pyproject.toml)
+find_package(Python 3.14 COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(nanobind CONFIG REQUIRED)
 
 # Paths for headers and pre-built libraries

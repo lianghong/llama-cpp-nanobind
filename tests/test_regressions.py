@@ -3,7 +3,6 @@
 import os
 import tempfile
 
-import pytest
 
 from llama_cpp import Llama, LlamaGrammar, disable_logging
 

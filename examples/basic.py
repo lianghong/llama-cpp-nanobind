@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Minimal inference example with context manager."""
+
 import time
 
 from llama_cpp import Llama, ModelLoadError, SamplingParams
@@ -25,7 +26,9 @@ def main() -> None:
 
             print("\n=== Session continuation (reuse KV cache) ===")
             llm.generate("Hello", max_tokens=10, reset_kv_cache=True)
-            text = llm.generate("Continue the greeting:", max_tokens=20, reset_kv_cache=False)
+            text = llm.generate(
+                "Continue the greeting:", max_tokens=20, reset_kv_cache=False
+            )
             print(text)
 
     except ModelLoadError as e:

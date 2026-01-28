@@ -30,7 +30,7 @@ def main():
     print(f"Loading model: {args.model}")
 
     # Use context manager for proper cleanup
-    with UnifiedLLM(args.model, verbose=False) as model:
+    with UnifiedLLM(args.model, verbose=True) as model:
         print(f"Model family: {model.family.name}")
 
         start = time.perf_counter()

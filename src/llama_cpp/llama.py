@@ -10,9 +10,9 @@ import hashlib
 import json
 import os
 import queue
-import sys
 import threading
 import time
+import uuid
 import weakref
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Generator, Sequence
@@ -20,9 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import _about  # noqa: F401
-from . import (
-    _llama,
-)
+from . import _llama  # type: ignore[attr-defined]  # C++ extension module
 
 # ---------------------------------------------------------------------------
 # Instance tracking for cleanup at exit
@@ -38,7 +36,9 @@ _grammar_cache: OrderedDict[tuple[str, int], Any] = OrderedDict()
 _GRAMMAR_CACHE_MAX = 32
 
 # Configuration constants
-_ALL_GPU_LAYERS_SENTINEL = 1_000_000  # Special value meaning "offload all layers to GPU"
+_ALL_GPU_LAYERS_SENTINEL = (
+    1_000_000  # Special value meaning "offload all layers to GPU"
+)
 _MAX_PROMPT_LENGTH = 10_000_000  # Maximum prompt length in characters (10MB limit)
 _MAX_STOP_SEQUENCES = 20  # Maximum number of stop sequences allowed
 _MAX_STOP_SEQUENCE_LENGTH = 500  # Maximum length of each stop sequence in characters
@@ -59,10 +59,14 @@ def _register_cleanup() -> None:
 def mark_llama_initialized() -> None:
     """Mark that llama.cpp has been initialized via a model load."""
     global _llama_initialized
+    should_register = False
     with _cleanup_lock:
         if _llama_initialized:
             return
         _llama_initialized = True
+        should_register = True
+    # Call outside lock to avoid deadlock (register_cleanup also uses _cleanup_lock)
+    if should_register:
         _register_cleanup()
 
 
@@ -135,7 +139,7 @@ class ValidationError(LlamaError):
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class SamplingParams:
     """Sampling configuration mirroring llama-cpp-python defaults."""
 
@@ -180,7 +184,7 @@ class SamplingParams:
         return native
 
 
-@dataclass
+@dataclass(slots=True)
 class LlamaConfig:
     model_path: str
     n_ctx: int = 4096
@@ -240,7 +244,14 @@ class Llama:
           instance. This prevents crashes but provides no parallelism benefit.
         - For true parallel inference, use LlamaPool with multiple independent instances.
         - verbose=False affects logging globally across all instances (llama.cpp limitation).
+          The setting from the most recently created instance applies to all instances.
+          In multi-threaded initialization, use external synchronization to ensure
+          consistent logging configuration, or set verbose consistently across all instances.
     """
+
+    # Class-level lock for global state changes (logging)
+    _log_lock = threading.Lock()
+    _global_verbose: bool | None = None  # Track if verbose has been set globally
 
     def __init__(
         self,
@@ -260,20 +271,24 @@ class Llama:
             []
         )  # (path, scale) for reapplication
 
-        # Apply verbose setting
+        # Apply verbose setting with class-level synchronization
         # WARNING: This affects logging globally, not per-instance.
         # In multi-instance apps, the last instance's verbose setting wins.
         if not cfg.verbose:
-            import warnings
+            with Llama._log_lock:
+                # Only warn and disable if not already disabled globally
+                if Llama._global_verbose is not False:
+                    import warnings
 
-            warnings.warn(
-                "verbose=False affects logging globally for all Llama instances. "
-                "This is a limitation of the underlying llama.cpp library. "
-                "In multi-instance applications, the last instance's setting applies to all.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            disable_logging()
+                    warnings.warn(
+                        "verbose=False affects logging globally for all Llama instances. "
+                        "This is a limitation of the underlying llama.cpp library. "
+                        "In multi-instance applications, the last instance's setting applies to all.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    disable_logging()
+                    Llama._global_verbose = False
 
         # Apply seed to default sampling if specified
         if cfg.seed >= 0 and self.sampling.seed is None:
@@ -285,7 +300,9 @@ class Llama:
         # llama.cpp treats negative n_gpu_layers as "all layers" in the CLI wrapper,
         # but the low-level API expects a non-negative count. Translate -1 to a large
         # sentinel so users can keep using -1 to mean "full offload".
-        gpu_layers = cfg.n_gpu_layers if cfg.n_gpu_layers >= 0 else _ALL_GPU_LAYERS_SENTINEL
+        gpu_layers = (
+            cfg.n_gpu_layers if cfg.n_gpu_layers >= 0 else _ALL_GPU_LAYERS_SENTINEL
+        )
         model_params.n_gpu_layers = gpu_layers
         model_params.main_gpu = cfg.main_gpu
         model_params.split_mode = cfg.split_mode
@@ -333,11 +350,19 @@ class Llama:
     def __exit__(self, _exc_type: Any, _exc_val: Any, _exc_tb: Any) -> None:
         self.close()
 
-    def __del__(self) -> None:
-        # Avoid calling close() during interpreter shutdown to prevent segfault
-        # when C++ destructors run after Python internals are torn down
-        if not sys.is_finalizing() and getattr(self, "_closed", True) is False:
-            self.close()
+    def __repr__(self) -> str:
+        if self._closed:
+            return "<Llama (closed)>"
+        model_name = os.path.basename(self.config.model_path)
+        return (
+            f"<Llama model={model_name!r} "
+            f"n_ctx={self.config.n_ctx} n_gpu_layers={self.config.n_gpu_layers}>"
+        )
+
+    # Note: __del__ intentionally omitted - C++ RAII handles cleanup via nanobind,
+    # and the atexit handler _cleanup_all() handles explicit shutdown. Using __del__
+    # can cause segfaults during interpreter shutdown when accessing partially
+    # destroyed Python objects. Use context manager or explicit close() instead.
 
     def _check_closed(self) -> None:
         """Raise error if instance has been closed."""
@@ -512,6 +537,11 @@ class Llama:
 
         Returns:
             OpenAI-compatible embedding response dict.
+
+        Note:
+            Each input is processed independently with a cleared KV cache.
+            For high-throughput batch embedding, consider using LlamaPool
+            to parallelize across multiple model instances.
         """
         if not self.config.embeddings:
             raise ValidationError(
@@ -680,11 +710,16 @@ class Llama:
         stop: Sequence[str | int] | None = None,
         seed: int | None = None,
         reset_kv_cache: bool = True,
-    ) -> Generator[str, None, None]:
+    ) -> Generator[str]:
         """True streaming generation - yields text as tokens are decoded.
 
         Unlike generate(..., stream=True) which buffers all tokens first,
         this yields each token immediately as it's generated in a background thread.
+
+        Warning:
+            This method spawns a background thread that accesses internal state.
+            Do NOT call close() or other methods on this instance from another
+            thread while streaming is in progress. The Llama class is not thread-safe.
 
         Args:
             prompt: Input prompt string.
@@ -731,6 +766,7 @@ class Llama:
         def worker() -> None:
             """Background thread that generates tokens and puts them in queue."""
             try:
+
                 def on_token(token: int) -> bool:
                     token_queue.put(token)
                     return True
@@ -755,13 +791,15 @@ class Llama:
         # Yield tokens as they arrive from the background thread
         try:
             while True:
-                item = token_queue.get()
-                if item is None:
+                queue_item = token_queue.get()
+                if queue_item is None:
                     break  # Generation complete
-                if isinstance(item, Exception):
-                    raise item  # Propagate exception from worker thread
-                # item is a token
-                text = self.detokenize([item], remove_special=True, unparse_special=True)
+                if isinstance(queue_item, Exception):
+                    raise queue_item  # Propagate exception from worker thread
+                # queue_item is a token (int) at this point
+                text = self.detokenize(
+                    [queue_item], remove_special=True, unparse_special=True
+                )
                 yield text
         finally:
             # Ensure thread completes even if generator is closed early
@@ -779,7 +817,7 @@ class Llama:
         stream: bool = False,
         seed: int | None = None,
         reset_kv_cache: bool = True,
-    ) -> str | Generator[str, None, None] | dict[str, Any]:
+    ) -> str | Generator[str] | dict[str, Any]:
         """Generate text for ``prompt``.
 
         Args:
@@ -807,13 +845,19 @@ class Llama:
         if not isinstance(max_tokens, int) or max_tokens < 1:
             raise ValidationError("max_tokens must be a positive integer")
         if len(prompt) > _MAX_PROMPT_LENGTH:
-            raise ValidationError(f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)")
+            raise ValidationError(
+                f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
+            )
         if stop:
             if len(stop) > _MAX_STOP_SEQUENCES:
-                raise ValidationError(f"too many stop sequences (max {_MAX_STOP_SEQUENCES})")
+                raise ValidationError(
+                    f"too many stop sequences (max {_MAX_STOP_SEQUENCES})"
+                )
             for item in stop:
                 if isinstance(item, str) and len(item) > _MAX_STOP_SEQUENCE_LENGTH:
-                    raise ValidationError(f"stop sequence too long (max {_MAX_STOP_SEQUENCE_LENGTH} chars)")
+                    raise ValidationError(
+                        f"stop sequence too long (max {_MAX_STOP_SEQUENCE_LENGTH} chars)"
+                    )
 
         sampler_params = sampling or self.sampling
         if seed is not None:
@@ -893,7 +937,7 @@ class Llama:
                 "token_probs": token_probs,
             }
 
-        def stream_chunks() -> Generator[str, None, None]:
+        def stream_chunks() -> Generator[str]:
             for tok in output_tokens:
                 yield self.detokenize([tok], remove_special=True, unparse_special=True)
 
@@ -915,7 +959,7 @@ class Llama:
         echo: bool = False,
         stream: bool = False,
         **kwargs: Any,
-    ) -> dict[str, Any] | Generator[dict[str, Any], None, None]:
+    ) -> dict[str, Any] | Generator[dict[str, Any]]:
         """Generate completion with OpenAI-compatible response format.
 
         Note: Streaming yields chunks after full generation (not true streaming).
@@ -925,7 +969,7 @@ class Llama:
 
         if stream:
 
-            def stream_chunks() -> Generator[dict[str, Any], None, None]:
+            def stream_chunks() -> Generator[dict[str, Any]]:
                 created = int(time.time())
                 for chunk in self.generate(
                     prompt,
@@ -955,11 +999,14 @@ class Llama:
         )
         created = int(time.time())
         # Get completion token count from KV cache position instead of re-tokenizing
-        completion_tokens = (
-            max(0, self.kv_cache_seq_pos_max() - prompt_tok_count + 1)
-            if isinstance(text, str)
-            else 0
-        )
+        if isinstance(text, str):
+            kv_pos = self.kv_cache_seq_pos_max()
+            if kv_pos >= 0 and kv_pos >= prompt_tok_count:
+                completion_tokens = kv_pos - prompt_tok_count + 1
+            else:
+                completion_tokens = 0
+        else:
+            completion_tokens = 0
         return {
             "id": f"cmpl-{created}",
             "object": "text_completion",
@@ -977,10 +1024,11 @@ class Llama:
 
     def create_completion(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
         """Create completion (delegates to __call__ for consistency)."""
+        stream = kwargs.get("stream", False)
         result = self(prompt, **kwargs)
-        # Handle streaming case
-        if hasattr(result, "__iter__") and not isinstance(result, dict):
-            chunks = list(result)
+        # Handle streaming case explicitly based on stream parameter
+        if stream:
+            chunks: list[dict[str, Any]] = list(result)  # type: ignore[arg-type]
             text = "".join(c["choices"][0]["text"] for c in chunks)
             return {
                 "id": chunks[0]["id"] if chunks else f"cmpl-{int(time.time())}",
@@ -1004,7 +1052,7 @@ class Llama:
         tool_choice: str | dict[str, Any] | None = None,
         reset_kv_cache: bool = True,
         **sampling_overrides: Any,
-    ) -> dict[str, Any] | Generator[dict[str, Any], None, None]:
+    ) -> dict[str, Any] | Generator[dict[str, Any]]:
         """Chat completions endpoint compatible with llama-cpp-python.
 
         Args:
@@ -1084,7 +1132,7 @@ class Llama:
 
         if stream:
 
-            def stream_chunks() -> Generator[dict[str, Any], None, None]:
+            def stream_chunks() -> Generator[dict[str, Any]]:
                 for tok in generated:
                     text_piece = self.detokenize(
                         [tok], remove_special=True, unparse_special=True
@@ -1270,7 +1318,7 @@ class Llama:
         logprobs: int | None = None,
         stream: bool = False,
         seed: int | None = None,
-    ) -> str | AsyncGenerator[str, None] | dict[str, Any]:
+    ) -> str | AsyncGenerator[str] | dict[str, Any]:
         """Async version of generate(). Runs in thread pool.
 
         Note: Concurrent calls serialize due to thread safety lock.
@@ -1278,7 +1326,7 @@ class Llama:
         """
         if stream:
 
-            async def async_stream() -> AsyncGenerator[str, None]:
+            async def async_stream() -> AsyncGenerator[str]:
                 gen = await asyncio.to_thread(
                     self._generate_locked,
                     prompt,
@@ -1319,7 +1367,7 @@ class Llama:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         **sampling_overrides: Any,
-    ) -> dict[str, Any] | AsyncGenerator[dict[str, Any], None]:
+    ) -> dict[str, Any] | AsyncGenerator[dict[str, Any]]:
         """Async version of create_chat_completion(). Runs in thread pool.
 
         Note: Concurrent calls serialize due to thread safety lock.
@@ -1327,7 +1375,7 @@ class Llama:
         """
         if stream:
 
-            async def async_stream() -> AsyncGenerator[dict[str, Any], None]:
+            async def async_stream() -> AsyncGenerator[dict[str, Any]]:
                 gen = await asyncio.to_thread(
                     self._chat_locked,
                     messages,
@@ -1447,7 +1495,7 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                 # Single function call - validate required fields
                 tool_calls.append(
                     {
-                        "id": f"call_{hash(text) & 0xFFFFFFFF:08x}",
+                        "id": f"call_{uuid.uuid4().hex[:16]}",
                         "type": "function",
                         "function": {
                             "name": data.get("name"),
@@ -1461,7 +1509,7 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                     if isinstance(call, dict) and call.get("name"):
                         tool_calls.append(
                             {
-                                "id": f"call_{i}_{hash(text) & 0xFFFFFFFF:08x}",
+                                "id": f"call_{uuid.uuid4().hex[:16]}",
                                 "type": "function",
                                 "function": {
                                     "name": call.get("name"),
@@ -1470,11 +1518,13 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                             }
                         )
                     else:
-                        logging.debug(f"Skipping invalid tool call at index {i}: {call}")
+                        logging.debug(
+                            f"Skipping invalid tool call at index {i}: {call}"
+                        )
     except json.JSONDecodeError as e:
         logging.debug(f"Failed to parse tool calls from response: {e}")
-    except Exception as e:
-        logging.warning(f"Unexpected error parsing tool calls: {e}")
+    except (KeyError, TypeError, ValueError) as e:
+        logging.debug(f"Invalid tool call structure: {e}")
 
     return tool_calls
 

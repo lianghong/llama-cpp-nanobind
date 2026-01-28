@@ -244,6 +244,6 @@ No regressions introduced.
 ## Documentation
 
 See also:
-- `CODE_REVIEW_FIXES.md` - Detailed analysis of code review issues
-- `STREAMING_IMPROVEMENTS.md` - True incremental streaming implementation (v0.3.2)
-- `WARMUP_FEATURE.md` - Model warmup for LlamaPool (v0.3.2)
+- `CMAKE_OPTIMIZATIONS.md` - Detailed CMake build optimization analysis
+- `README.md` - Project overview, features, and usage examples
+- `CLAUDE.md` - Developer guidance for working with the codebase

@@ -7,7 +7,7 @@ High-performance nanobind bindings for `llama.cpp`, packaged as a wheel-ready Py
 - **Operating System**: Linux (x86_64)
 - **Python**: 3.14+
 - **GPU**: NVIDIA CUDA-capable GPU (compute capability 6.0+)
-- **CUDA**: 12.x
+- **CUDA**: 13.x
 
 ## Project layout
 

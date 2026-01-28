@@ -6,7 +6,7 @@ import time
 
 from llama_cpp.unified import UnifiedLLM
 
-DEFAULT_MODEL = "models/Qwen3-30B-A3B-Instruct-2507-Q4_K_S.gguf"
+DEFAULT_MODEL = "models/Qwen3-8B-Q6_K.gguf"
 SEPARATOR = "=" * 60
 
 
@@ -39,7 +39,7 @@ def main():
     print(f"Loading model: {args.model}")
 
     # Use context manager for proper cleanup
-    with UnifiedLLM(args.model, verbose=False) as model:
+    with UnifiedLLM(args.model, verbose=True) as model:
         mode = "thinking" if args.think else "non-thinking"
         print(f"\nGenerating with {mode} mode")
         start = time.perf_counter()

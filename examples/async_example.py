@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Async API example with thread-safe concurrent requests."""
+
 import asyncio
 import time
 
@@ -10,7 +11,7 @@ async def main() -> None:
     config = LlamaConfig(
         model_path="models/Qwen3-8B-Q6_K.gguf",
         n_ctx=4096,
-        verbose=False,
+        verbose=True,
     )
 
     # Use context manager for automatic cleanup

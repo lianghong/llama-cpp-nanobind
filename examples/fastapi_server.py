@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """FastAPI server with thread-safe async generation endpoints."""
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -19,7 +20,7 @@ async def lifespan(app: FastAPI):
     config = LlamaConfig(
         model_path="models/Qwen3-8B-Q6_K.gguf",
         n_ctx=4096,
-        verbose=False,
+        verbose=True,
     )
     llm = Llama("models/Qwen3-8B-Q6_K.gguf", config=config)
     yield

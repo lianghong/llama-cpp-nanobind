@@ -74,7 +74,7 @@ def gpt_oss_config(model_path: str):
         n_gpu_layers=-1,
         offload_kqv=True,
         flash_attn=1,
-        verbose=False,
+        verbose=True,
     )
     return config
 
@@ -148,22 +148,7 @@ def main(model_path: str, reasoning_level: str, user_prompt: str) -> GenerationR
         RuntimeError: If model fails to load.
         ValueError: If response format is unexpected.
     """
-
-    # # GPU-optimized config
-    # config = LlamaConfig(
-    #     model_path=model_path,
-    #     n_ctx=DEFAULT_CTX,
-    #     n_batch=DEFAULT_BATCH,
-    #     n_ubatch=DEFAULT_UBATCH,
-    #     n_threads=DEFAULT_THREADS,
-    #     n_gpu_layers=-1,
-    #     offload_kqv=True,
-    #     flash_attn=1,
-    #     verbose=False,
-    # )
     config = gpt_oss_config(model_path)
-
-    # default_sampling = SamplingParams(temperature=temperature, top_p=top_p, top_k=top_k)
     sampling = model_sampling()
 
     formatted = formatted_template(
@@ -171,40 +156,40 @@ def main(model_path: str, reasoning_level: str, user_prompt: str) -> GenerationR
     )
 
     try:
-        llm = Llama(model_path, config=config, sampling=sampling)
+        # Use context manager for proper cleanup
+        with Llama(model_path, config=config, sampling=sampling) as llm:
+            start = time.perf_counter()
+
+            # Generate with stop strings to prevent starting new user turn
+            response = llm.generate(
+                formatted,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                stop=["<|start|>user", "<|end|><|end|>"],
+            )
+            elapsed = time.perf_counter() - start
+
+            # Use built-in API
+            prompt_tokens = llm.n_tokens(formatted)
+            response_tokens = llm.n_tokens(response)
+
+            print(f"\n*** Prompt length : {len(formatted)}, {prompt_tokens}")
+            print(f"\n*** Raw output length ({len(response)}, {response_tokens})")
+
+            result = extract_channels(response)
+            if not result:
+                raise ValueError(
+                    f"Unexpected response format. Got: {response[:200]}..."
+                )
+
+            return {
+                "analysis": result[0],
+                "final": result[1],
+                "elapsed_time": elapsed,
+                "prompt_tokens": prompt_tokens,
+                "response_tokens": response_tokens,
+            }
     except Exception as e:
         raise RuntimeError(f"Failed to load model: {e}") from e
-
-    start = time.perf_counter()
-
-    # Generate with stop strings to prevent starting new user turn
-    response = llm.generate(
-        formatted,
-        max_tokens=DEFAULT_MAX_TOKENS,
-        stop=["<|start|>user", "<|end|><|end|>"],
-    )
-    elapsed = time.perf_counter() - start
-
-    # Use built-in API
-    prompt_tokens = llm.n_tokens(formatted)
-    response_tokens = llm.n_tokens(response)
-
-    print(f"\n*** Prompt length : {len(formatted)}, {prompt_tokens}")
-    print(f"\n*** Raw output length ({len(response)}, {response_tokens})")
-
-    result = extract_channels(response)
-    if not result:
-        raise ValueError(f"Unexpected response format. Got: {response[:200]}...")
-
-    analyze_result, final_result = result
-
-    return {
-        "analysis": result[0],
-        "final": result[1],
-        "elapsed_time": elapsed,
-        "prompt_tokens": prompt_tokens,
-        "response_tokens": response_tokens,
-    }
 
 
 if __name__ == "__main__":

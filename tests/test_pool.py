@@ -61,9 +61,7 @@ async def test_pool_chat_completion_batch(model_path):
             [{"role": "user", "content": "Hi"}],
             [{"role": "user", "content": "Hello"}],
         ]
-        responses = await pool.create_chat_completion_batch(
-            conversations, max_tokens=8
-        )
+        responses = await pool.create_chat_completion_batch(conversations, max_tokens=8)
 
         assert len(responses) == len(conversations)
         assert all("choices" in r for r in responses)
@@ -122,9 +120,7 @@ async def test_pool_with_sampling_params(model_path):
 
     sampling = SamplingParams(temperature=0.7, top_k=40)
     async with LlamaPool(model_path, pool_size=2) as pool:
-        result = await pool.generate(
-            "Test prompt", max_tokens=8, sampling=sampling
-        )
+        result = await pool.generate("Test prompt", max_tokens=8, sampling=sampling)
         assert isinstance(result, str)
         assert len(result) > 0
 
@@ -133,9 +129,7 @@ async def test_pool_with_sampling_params(model_path):
 async def test_pool_with_stop_sequences(model_path):
     """Test pool with stop sequences."""
     async with LlamaPool(model_path, pool_size=2) as pool:
-        result = await pool.generate(
-            "Count: 1, 2, 3", max_tokens=16, stop=[","]
-        )
+        result = await pool.generate("Count: 1, 2, 3", max_tokens=16, stop=[","])
         assert isinstance(result, str)
         # Result should stop at comma (though this depends on model behavior)
 

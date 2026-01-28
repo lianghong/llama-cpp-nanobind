@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 
 from .llama import Llama, LlamaConfig, SamplingParams
 
@@ -147,10 +147,13 @@ class LlamaPool:
                 )
                 # Clear KV cache after warmup to start fresh
                 instance.ctx.kv_cache_clear()
+            except (RuntimeError, ValueError) as e:
+                # Expected errors from model inference - warmup is optional optimization
+                logging.warning(f"Warmup failed for instance {i+1} (non-fatal): {e}")
             except Exception as e:
-                # Log but don't fail initialization - warmup is optional optimization
+                # Unexpected errors during warmup
                 logging.warning(
-                    f"Warmup failed for instance {i+1} (non-fatal): {e}"
+                    f"Unexpected error during warmup for instance {i+1} (non-fatal): {e}"
                 )
 
     async def _get_instance(self) -> Llama:
@@ -193,13 +196,16 @@ class LlamaPool:
         """
         async with self._semaphore:
             instance = await self._get_instance()
-            return await instance.generate_async(
+            # Explicitly disable streaming - pool returns complete strings
+            result = await instance.generate_async(
                 prompt,
                 max_tokens=max_tokens,
                 sampling=sampling,
                 stop=stop,
+                stream=False,
                 **kwargs,
             )
+            return cast(str, result)  # generate_async returns str when stream=False
 
     async def generate_batch(
         self,
@@ -271,9 +277,15 @@ class LlamaPool:
         """
         async with self._semaphore:
             instance = await self._get_instance()
-            return await instance.create_chat_completion_async(
-                messages, max_tokens=max_tokens, temperature=temperature, **kwargs
+            # Explicitly disable streaming - pool returns complete dicts
+            result = await instance.create_chat_completion_async(
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=False,
+                **kwargs,
             )
+            return cast(dict[str, Any], result)  # returns dict when stream=False
 
     async def create_chat_completion_batch(
         self,
@@ -331,7 +343,7 @@ class LlamaPool:
         """Async context manager entry."""
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(self, *_args: Any) -> None:
         """Async context manager exit."""
         self.close()
 

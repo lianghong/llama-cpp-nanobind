@@ -33,7 +33,10 @@ def demo_buffered_streaming():
     for chunk in llm.generate(prompt, max_tokens=48, stream=True):
         if first_chunk_time is None:
             first_chunk_time = time.time()
-            print(f"\n[First chunk after {first_chunk_time - start_time:.3f}s]", flush=True)
+            print(
+                f"\n[First chunk after {first_chunk_time - start_time:.3f}s]",
+                flush=True,
+            )
             print("Output: ", end="", flush=True)
         print(chunk, end="", flush=True)
         time.sleep(0.01)  # Simulate processing time
@@ -41,10 +44,12 @@ def demo_buffered_streaming():
     end_time = time.time()
     llm.close()
 
-    print(f"\n\nTiming:")
+    print("\n\nTiming:")
     print(f"  Time to first chunk: {first_chunk_time - start_time:.3f}s")
     print(f"  Total time: {end_time - start_time:.3f}s")
-    print(f"  → First chunk arrived at {(first_chunk_time - start_time) / (end_time - start_time) * 100:.0f}% of total time")
+    print(
+        f"  → First chunk arrived at {(first_chunk_time - start_time) / (end_time - start_time) * 100:.0f}% of total time"
+    )
     print()
 
 
@@ -70,7 +75,10 @@ def demo_true_streaming():
         current_time = time.time()
         if first_chunk_time is None:
             first_chunk_time = current_time
-            print(f"\n[First chunk after {first_chunk_time - start_time:.3f}s]", flush=True)
+            print(
+                f"\n[First chunk after {first_chunk_time - start_time:.3f}s]",
+                flush=True,
+            )
             print("Output: ", end="", flush=True)
         chunk_times.append(current_time - start_time)
         print(chunk, end="", flush=True)
@@ -79,10 +87,12 @@ def demo_true_streaming():
     end_time = time.time()
     llm.close()
 
-    print(f"\n\nTiming:")
+    print("\n\nTiming:")
     print(f"  Time to first chunk: {first_chunk_time - start_time:.3f}s")
     print(f"  Total time: {end_time - start_time:.3f}s")
-    print(f"  → First chunk arrived at {(first_chunk_time - start_time) / (end_time - start_time) * 100:.0f}% of total time")
+    print(
+        f"  → First chunk arrived at {(first_chunk_time - start_time) / (end_time - start_time) * 100:.0f}% of total time"
+    )
     print(f"  → Received {len(chunk_times)} chunks incrementally")
     print()
 
@@ -98,7 +108,7 @@ def demo_streaming_with_stop():
 
     prompt = "List three colors: red"
     print(f"Prompt: {prompt}")
-    print(f"Stop sequence: [',']")
+    print("Stop sequence: [',']")
     print("Output: ", end="", flush=True)
 
     for chunk in llm.generate_stream(prompt, max_tokens=32, stop=[","]):

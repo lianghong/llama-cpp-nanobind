@@ -5,7 +5,7 @@ This script tests LLM translation capabilities using UnifiedLLM with
 automatic model family detection and optimized settings.
 
 Usage:
-    python examples/ctx_test.py --model models/Qwen3-30B-A3B-Instruct-2507-Q4_K_S.gguf --ctx 8192
+    python examples/ctx_test.py --model models/Qwen3-8B-Q6_K.gguf --ctx 8192
     python examples/ctx_test.py --model models/Qwen3-8B-Q6_K.gguf --thinking
     python examples/ctx_test.py --model models/gpt-oss-20b-Q4_K_M.gguf --reasoning_level high
 """
@@ -153,7 +153,7 @@ def main() -> int:
             n_batch=n_batch,
             n_ubatch=n_ubatch,
             n_gpu_layers=args.n_gpu_layers,
-            verbose=False,
+            verbose=True,
         ) as llm:
             # Configure model-specific settings
             if isinstance(llm.backend, GPTOSSBackend):

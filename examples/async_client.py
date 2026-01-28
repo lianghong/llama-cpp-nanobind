@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Example client for testing async generation."""
+
 import asyncio
 
 import httpx

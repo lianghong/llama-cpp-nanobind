@@ -55,7 +55,9 @@ def test_queue_based_streaming_pattern():
     # First item should arrive after ~1 token delay (0.01s)
     # Total time should be ~5 token delays (0.05s)
     # Ratio should be roughly 1/5 = 20%
-    assert time_to_first < total_time * 0.5, "First item should arrive early (incremental)"
+    assert (
+        time_to_first < total_time * 0.5
+    ), "First item should arrive early (incremental)"
 
 
 def test_exception_propagation():

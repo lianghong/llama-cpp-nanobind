@@ -10,7 +10,7 @@ def main():
     print(f"Loading {model_path}...")
 
     # Use context manager for proper cleanup
-    with UnifiedLLM(model_path, n_ctx=4096, verbose=False) as llm:
+    with UnifiedLLM(model_path, n_ctx=4096, verbose=True) as llm:
         print(f"Model family: {llm.family.name}")
         print(f"Supports thinking: {llm.supports_thinking}")
         print(f"Max context: {llm.model_config.max_ctx}")

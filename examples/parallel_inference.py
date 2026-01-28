@@ -108,12 +108,14 @@ async def demonstrate_concurrent_requests():
         print("(First 2 run immediately, next 2 wait for available workers)\n")
 
         start_time = time.time()
-        results = await asyncio.gather(*[pool.generate(q, max_tokens=16) for q in queries])
+        results = await asyncio.gather(
+            *[pool.generate(q, max_tokens=16) for q in queries]
+        )
         elapsed = time.time() - start_time
 
         print(f"✓ All {len(queries)} requests completed in {elapsed:.2f}s\n")
 
-        for i, (query, result) in enumerate(zip(queries, results), 1):
+        for i, (query, result) in enumerate(zip(queries, results, strict=True), 1):
             print(f"[{i}] {query}")
             print(f"    → {result[:50]}...\n")
 
@@ -211,7 +213,9 @@ async def main():
     print(f"Serial time:     {serial_time:.2f}s")
     print(f"Parallel time:   {parallel_time:.2f}s")
     print(f"Speedup:         {speedup:.2f}x faster")
-    print(f"Time saved:      {serial_time - parallel_time:.2f}s ({(1 - parallel_time/serial_time) * 100:.1f}%)\n")
+    print(
+        f"Time saved:      {serial_time - parallel_time:.2f}s ({(1 - parallel_time/serial_time) * 100:.1f}%)\n"
+    )
 
     # Verify results match
     if serial_results == parallel_results:
