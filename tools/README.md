@@ -20,7 +20,7 @@ Fetches web page content and converts it to Markdown format. Mimics a real brows
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.14+
 - requests
 - markdownify
 - beautifulsoup4
@@ -192,7 +192,7 @@ A command-line tool for translating Markdown files using local LLM models while 
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.14+
 - llama-cpp-nanobind
 - GGUF model files
 

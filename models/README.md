@@ -21,6 +21,7 @@ export LLAMA_TEST_MODEL=/path/to/your/model.gguf
 Any GGUF model compatible with llama.cpp will work. Popular options:
 - Qwen3 series (Qwen3-8B, Qwen3-14B, Qwen3-30B-A3B)
 - Gemma series (gemma-2b, gemma-7b)
+- TranslateGemma (translategemma-27b-it — Google's 55-language translation model)
 - Mistral/Ministral series
 - Phi series
 - LLaMA series

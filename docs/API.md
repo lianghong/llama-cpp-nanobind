@@ -362,7 +362,7 @@ finally:
 - Native resources (Context, Model) are freed in the correct order to prevent segfaults
 - For `UnifiedLLM`, the backend reference is cleared before closing the underlying `Llama` instance
 - C++ destructors set pointers to `nullptr` after free to prevent double-free
-- `Llama` omits `__del__` intentionally (RAII + atexit handles cleanup); `UnifiedLLM` has `__del__` with `sys.is_finalizing()` guard
+- Neither `Llama` nor `UnifiedLLM` uses `__del__` (avoids GIL issues during shutdown); cleanup via atexit handler + RAII
 
 **Memory Safety Verification:**
 
@@ -379,3 +379,5 @@ MALLOC_CHECK_=3 python examples/verify_double_free.py
 - For true parallelism, use multiple `Llama` or `UnifiedLLM` instances.
 - The `verbose=False` setting affects logging globally, not per-instance.
 - The GIL is released during heavy C++ operations (decode, generate, tokenize) to allow other Python threads to run.
+- **`generate_stream()`** releases the GIL during C++ decode/sample, re-acquiring only for the Python callback. Early termination is handled via `threading.Event`.
+- **`close()` is thread-safe** at the C++ level — `Model::close()` and `Context::close()` hold a mutex to prevent races between GC/`__del__` and explicit calls.

@@ -88,7 +88,6 @@ uv pip install -e .
 **v0.3.1 Optimizations:**
 - True incremental streaming via `generate_stream()` - yields tokens as generated in background thread
 - Session-style continuation with `reset_kv_cache=False` to reduce recompute
-- Grammar sampler caching for repeated JSON schemas
 - Backend shutdown guard prevents race conditions
 - `n_seq_max` now configurable in `LlamaConfig`
 
@@ -108,10 +107,18 @@ uv pip install -e .
 - Removed redundant internal documentation (AGENTS.md, CMAKE_OPTIMIZATIONS.md, OPTIMIZATIONS.md)
 - Synchronized version across all project files
 
-**v0.3.5 TranslateGemma & Bug Fixes:**
+**v0.3.5 Bug Fixes, Python 3.14, TranslateGemma:**
+- Fixed grammar sampler cache bug — stateful samplers were reused across generations producing incorrect results; cache removed, fresh samplers created each time
+- Fixed `generate_stream()` thread cancellation — background thread now stops promptly via `threading.Event` when consumer closes generator early
+- Fixed GIL management in streaming — GIL released during C++ decode/sample operations, re-acquired only for Python callback
+- Fixed `Model::close()` and `Context::close()` thread safety — both now hold mutex to prevent races with GC/`__del__`
+- Fixed falsy-value bug in `UnifiedLLM` thinking parameter defaults (`0.0` was treated as `None`)
+- Removed `UnifiedLLM.__del__` — cleanup handled by atexit handler, consistent with `Llama` design
+- Upgraded to Python 3.14 — removed `from __future__ import annotations` (PEP 649), `uuid7()`, PEP 758 bracketless except
 - Added TranslateGemma model support (Google's 55-language translation model based on Gemma 3)
-- Fixed `SamplingParams` bug when using sampling overrides (`asdict()` instead of `__dict__`)
-- Removed verbose warning message (behavior still documented)
+- Added `examples/verify_double_free.py` — 20-scenario memory safety verification script
+- Added `tools/` — `url2md.py` (web-to-markdown) and `md_translator.py` (LLM-powered markdown translation)
+- Code quality: all ruff, ruff format, isort, and mypy issues resolved across codebase
 
 ### Optional build flags
 

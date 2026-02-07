@@ -42,10 +42,13 @@ uv run pytest tests/test_inference.py::test_basic_generation -v
 
 ```bash
 # Format code
-black src/ tests/
+ruff format src/ tests/ examples/ tools/
+
+# Sort imports
+isort src/ tests/ examples/ tools/
 
 # Lint
-ruff check src/ tests/
+ruff check src/ tests/ examples/ tools/
 
 # Type checking
 mypy src/llama_cpp/
@@ -118,10 +121,11 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 #### Streaming Generation
 - **`generate_stream()`**: True incremental streaming using background thread + queue
   - Tokens yielded immediately as generated (low latency)
-  - Background worker thread runs C++ generation
+  - Background worker thread runs C++ generation with GIL released
   - Main thread yields tokens from queue as they arrive
   - Exceptions propagated from worker thread to caller
-  - Early termination supported (daemon thread)
+  - Early termination via `threading.Event` cancellation flag (checked in callback)
+  - 5s join timeout allows current decode step to complete
 - **`generate(..., stream=True)`**: Buffered streaming
   - All tokens generated first, then yielded (higher latency)
   - Simpler implementation, no threading overhead
@@ -129,11 +133,11 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 
 #### Memory Safety (Double-Free Prevention)
 - **C++ classes**: All destructors check `if (ptr_)` before free, then set `ptr_ = nullptr`
+- **Thread-safe close**: `Model::close()` and `Context::close()` hold `g_init_mutex` to prevent races between GC/`__del__` and explicit `close()`
 - **Backend ref-counting**: `g_model_count` atomic prevents backend double-free
 - **Nanobind `keep_alive`**: Context, SamplerChain, LoraAdapter keep Model alive via `nb::keep_alive<1, 2>()`
 - **LoRA adapters**: Freed automatically by llama.cpp with the model (destructor is `= default`)
-- **`Llama`**: No `__del__` (avoids GIL issues during shutdown); uses atexit + RAII
-- **`UnifiedLLM`**: Has `__del__` with `sys.is_finalizing()` guard; sets `self.llm = None` on close
+- **No `__del__`**: Neither `Llama` nor `UnifiedLLM` uses `__del__` (avoids GIL issues during shutdown); cleanup via atexit + RAII
 - **`close()` idempotency**: `Llama._closed` flag and `UnifiedLLM`'s `self.llm is None` check
 - **Destruction order**: Context freed before Model (C++ dependency)
 - **Instance tracking**: `weakref.ref` sets prevent circular references; atexit handler calls `close()` on all live instances
@@ -158,10 +162,11 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 
 ### When Modifying C++ Bindings (`src/bindings/llama_cpp.cpp`)
 
-1. **Always release GIL** for long operations: `nb::call_guard<nb::gil_scoped_release>()`
+1. **Always release GIL** for long operations: `nb::call_guard<nb::gil_scoped_release>()` or manual `nb::gil_scoped_release`
 2. **Update `cur_pos_`** when modifying KV cache or loading state
 3. **Reuse buffers** (like `single_batch_`) instead of per-call allocation
 4. **Respect sampler chain** after grammar constraints
+5. **Hold `g_init_mutex`** when freeing resources in `close()` methods (prevents races with GC)
 
 ### When Modifying Python Wrappers (`src/llama_cpp/llama.py`, `unified.py`)
 
@@ -169,6 +174,8 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 2. **Embeddings**: Validate `config.embeddings=True` before embedding operations
 3. **Token counting**: Use `add_special=True` when calculating max_tokens for chat
 4. **Stop sequences**: Use `generate_tokens_multi_stop()` when stop sequences present and details not needed
+5. **Grammar samplers are stateful**: Never cache or reuse them — `llama_sampler_accept` mutates internal state, so each generation must create a fresh sampler
+6. **Falsy-value defaults**: Use `if x is not None else fallback` (not `x or fallback`) when `0` or `0.0` is a valid value
 
 ### Model File Requirement
 
@@ -183,15 +190,16 @@ Update `conftest.py` if using different model paths.
 - LTO enabled if supported
 
 ### Runtime Optimizations
-- GIL released during C++ operations (v0.3.0)
+- GIL released during C++ operations (v0.3.0), including streaming generation (v0.3.5)
 - Per-token batch allocation eliminated (v0.3.0)
 - Fast stop sequence path (v0.3.0)
-- Grammar sampler caching for repeated schemas (v0.3.1)
 - Session-style continuation with `reset_kv_cache=False` (v0.3.1)
 - True incremental streaming via background thread (v0.3.2)
   - Tokens yielded as generated, not buffered
   - Low time-to-first-token for responsive UIs
   - Perfect for SSE/WebSocket streaming endpoints
+  - GIL released during C++ decode/sample, re-acquired only for Python callback (v0.3.5)
+- Grammar samplers always created fresh (stateful — caching causes incorrect results)
 
 ## Testing Strategy
 
@@ -233,6 +241,8 @@ MALLOC_CHECK_=3 python examples/verify_double_free.py
 5. **Stale KV position**: State load/save automatically maintains `cur_pos_`
 6. **Thread safety**: Do NOT call methods concurrently on same instance - use multiple instances or LlamaPool
 7. **Global logging**: `verbose=False` affects ALL instances (llama.cpp limitation)
+8. **Grammar sampler reuse**: Never cache grammar samplers — they are stateful and must be created fresh each generation
+9. **Falsy-value traps**: Use `is not None` checks (not `or`) when `0`/`0.0` are valid parameter values
 
 ## Integration with llama.cpp
 
