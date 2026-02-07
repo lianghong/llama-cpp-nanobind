@@ -8,6 +8,7 @@ This example shows the difference between:
 
 import sys
 import time
+
 from llama_cpp import Llama
 
 MODEL_PATH = "models/Qwen3-8B-Q6_K.gguf"

@@ -2,10 +2,9 @@
 
 import time
 
+from conftest import requires_model
 
 from llama_cpp import Llama, SamplingParams
-
-from conftest import requires_model
 
 
 @requires_model

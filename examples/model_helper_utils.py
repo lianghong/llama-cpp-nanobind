@@ -9,8 +9,6 @@ Features:
 - Small CLI demo that inspects models in ./models.
 """
 
-from __future__ import annotations
-
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass

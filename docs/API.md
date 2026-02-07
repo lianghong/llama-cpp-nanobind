@@ -256,7 +256,7 @@ response = llm.generate("Hello")
 
 Enum of supported model families:
 
-- `AYA`, `GEMMA`, `GLM4`, `GRANITE`, `MINICPM`, `PHI`, `MISTRAL`, `QWEN3`, `GPT_OSS`
+- `AYA`, `GEMMA`, `GLM4`, `GRANITE`, `MINICPM`, `PHI`, `MISTRAL`, `QWEN3`, `GPT_OSS`, `TRANSLATEGEMMA`
 
 ### ModelConfig
 
@@ -357,10 +357,20 @@ finally:
 ```
 
 **Notes:**
-- `close()` is safe to call multiple times
-- After `close()`, the instance cannot be used for inference
+- `close()` is safe to call multiple times (idempotent)
+- After `close()`, the instance cannot be used for inference (`LlamaError` is raised)
 - Native resources (Context, Model) are freed in the correct order to prevent segfaults
 - For `UnifiedLLM`, the backend reference is cleared before closing the underlying `Llama` instance
+- C++ destructors set pointers to `nullptr` after free to prevent double-free
+- `Llama` omits `__del__` intentionally (RAII + atexit handles cleanup); `UnifiedLLM` has `__del__` with `sys.is_finalizing()` guard
+
+**Memory Safety Verification:**
+
+Run `examples/verify_double_free.py` to exercise all cleanup paths (20 scenarios covering both `Llama` and `UnifiedLLM`). For allocator-level corruption detection, run under glibc's heap checker:
+
+```bash
+MALLOC_CHECK_=3 python examples/verify_double_free.py
+```
 
 ## Thread Safety
 

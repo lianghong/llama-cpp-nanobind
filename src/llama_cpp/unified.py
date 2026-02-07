@@ -11,13 +11,10 @@ Example:
     >>> print(response)
 """
 
-from __future__ import annotations
-
 import atexit
 import contextlib
 import gc
 import re
-import sys
 import threading
 import weakref
 from abc import ABC, abstractmethod
@@ -74,6 +71,7 @@ class ModelFamily(Enum):
     MISTRAL = auto()
     QWEN3 = auto()
     GPT_OSS = auto()
+    TRANSLATEGEMMA = auto()
 
 
 @dataclass(slots=True)
@@ -197,6 +195,15 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         top_k=40,
         max_ctx=128000,
         supports_thinking=True,
+    ),
+    "translategemma": ModelConfig(
+        ModelFamily.TRANSLATEGEMMA,
+        chat_format="gemma",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=64,
+        min_p=0.0,
+        max_ctx=128000,
     ),
 }
 
@@ -428,10 +435,26 @@ class ChatTemplateBackend(Backend):
         formatted, _, n_tokens = self.llm._prepare_chat(messages)
         max_tokens = self._calc_max_tokens_from_count(n_tokens, max_tokens)
 
-        temp = self.config.think_temperature or self.config.temperature
-        top_p = self.config.think_top_p or self.config.top_p
-        top_k = self.config.think_top_k or self.config.top_k
-        min_p = self.config.think_min_p or self.config.min_p
+        temp = (
+            self.config.think_temperature
+            if self.config.think_temperature is not None
+            else self.config.temperature
+        )
+        top_p = (
+            self.config.think_top_p
+            if self.config.think_top_p is not None
+            else self.config.top_p
+        )
+        top_k = (
+            self.config.think_top_k
+            if self.config.think_top_k is not None
+            else self.config.top_k
+        )
+        min_p = (
+            self.config.think_min_p
+            if self.config.think_min_p is not None
+            else self.config.min_p
+        )
 
         kwargs: dict[str, Any] = {
             "temperature": temp,
@@ -691,6 +714,7 @@ class UnifiedLLM:
         ModelFamily.PHI: PhiBackend,
         ModelFamily.MISTRAL: ChatTemplateBackend,
         ModelFamily.GPT_OSS: GPTOSSBackend,
+        ModelFamily.TRANSLATEGEMMA: ChatTemplateBackend,
     }
 
     def __init__(
@@ -886,15 +910,6 @@ class UnifiedLLM:
     ) -> None:
         """Context manager exit."""
         self.close()
-
-    def __del__(self) -> None:
-        # Avoid cleanup during interpreter shutdown - atexit handler handles this
-        if sys.is_finalizing():
-            return
-        # Only attempt cleanup if fully initialized
-        if hasattr(self, "llm") and self.llm is not None:
-            with contextlib.suppress(Exception):
-                self.close()
 
     def n_tokens(self, text: str) -> int:
         """Count tokens for text."""

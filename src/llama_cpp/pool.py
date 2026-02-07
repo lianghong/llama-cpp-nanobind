@@ -20,8 +20,6 @@ Example:
     >>> asyncio.run(main())
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from typing import Any, cast
@@ -103,7 +101,7 @@ class LlamaPool:
         logging.info(f"Initializing LlamaPool with {pool_size} instances...")
         self.instances: list[Llama] = []
         for i in range(pool_size):
-            logging.debug(f"Loading instance {i+1}/{pool_size}...")
+            logging.debug(f"Loading instance {i + 1}/{pool_size}...")
             instance = Llama(model_path, config=self.config)
             self.instances.append(instance)
         logging.info(f"LlamaPool initialized with {pool_size} instances")
@@ -138,7 +136,7 @@ class LlamaPool:
 
         for i, instance in enumerate(self.instances):
             try:
-                logging.debug(f"Warming up instance {i+1}/{self.pool_size}...")
+                logging.debug(f"Warming up instance {i + 1}/{self.pool_size}...")
                 # Run minimal inference to trigger GPU initialization
                 instance.generate(
                     warmup_prompt,
@@ -149,11 +147,11 @@ class LlamaPool:
                 instance.ctx.kv_cache_clear()
             except (RuntimeError, ValueError) as e:
                 # Expected errors from model inference - warmup is optional optimization
-                logging.warning(f"Warmup failed for instance {i+1} (non-fatal): {e}")
+                logging.warning(f"Warmup failed for instance {i + 1} (non-fatal): {e}")
             except Exception as e:
                 # Unexpected errors during warmup
                 logging.warning(
-                    f"Unexpected error during warmup for instance {i+1} (non-fatal): {e}"
+                    f"Unexpected error during warmup for instance {i + 1} (non-fatal): {e}"
                 )
 
     async def _get_instance(self) -> Llama:
@@ -334,7 +332,7 @@ class LlamaPool:
         """
         logging.info(f"Closing LlamaPool with {len(self.instances)} instances...")
         for i, instance in enumerate(self.instances):
-            logging.debug(f"Closing instance {i+1}/{len(self.instances)}...")
+            logging.debug(f"Closing instance {i + 1}/{len(self.instances)}...")
             instance.close()
         self.instances.clear()
         logging.info("LlamaPool closed")

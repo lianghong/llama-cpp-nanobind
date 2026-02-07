@@ -1,7 +1,6 @@
 """Tests for async API."""
 
 import pytest
-
 from conftest import requires_model
 
 

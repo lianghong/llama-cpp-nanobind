@@ -4,8 +4,6 @@
 # Date              : 2025-12-31
 # Last Modified Date: 2025-12-31
 # Last Modified By  : Lianghong Fei <feilianghong@gmail.com>
-from __future__ import annotations
-
 import gc
 
 from llama_cpp import Llama, LlamaConfig, SamplingParams, shutdown

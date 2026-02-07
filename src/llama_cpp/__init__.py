@@ -5,8 +5,6 @@ The extension uses RUNPATH ($ORIGIN/lib) to locate bundled shared libraries,
 so no manual preloading is required.
 """
 
-from __future__ import annotations
-
 from ._about import __version__
 
 # ruff: noqa: E402

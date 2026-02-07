@@ -1,22 +1,19 @@
 """Pythonic interface around the nanobind llama.cpp bindings."""
 
-from __future__ import annotations
-
 import asyncio
 import atexit
 import contextlib
 import gc
-import hashlib
 import json
+import logging
 import os
 import queue
 import threading
 import time
 import uuid
 import weakref
-from collections import OrderedDict
 from collections.abc import AsyncGenerator, Generator, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from . import _about  # noqa: F401
@@ -30,10 +27,6 @@ _shutdown_called = False
 _cleanup_registered = False
 _llama_initialized = False
 _cleanup_lock = threading.Lock()
-
-# Grammar sampler cache: (schema_hash, model_id) -> GrammarSampler (LRU)
-_grammar_cache: OrderedDict[tuple[str, int], Any] = OrderedDict()
-_GRAMMAR_CACHE_MAX = 32
 
 # Configuration constants
 _ALL_GPU_LAYERS_SENTINEL = (
@@ -267,33 +260,23 @@ class Llama:
         self._closed = False
         self._lock = threading.Lock()  # Thread safety for async methods
         self._lora_adapters: list[Any] = []  # Keep adapters alive
-        self._lora_configs: list[tuple[str, float]] = (
-            []
-        )  # (path, scale) for reapplication
+        self._lora_configs: list[
+            tuple[str, float]
+        ] = []  # (path, scale) for reapplication
 
         # Apply verbose setting with class-level synchronization
         # WARNING: This affects logging globally, not per-instance.
         # In multi-instance apps, the last instance's verbose setting wins.
         if not cfg.verbose:
             with Llama._log_lock:
-                # Only warn and disable if not already disabled globally
                 if Llama._global_verbose is not False:
-                    import warnings
-
-                    warnings.warn(
-                        "verbose=False affects logging globally for all Llama instances. "
-                        "This is a limitation of the underlying llama.cpp library. "
-                        "In multi-instance applications, the last instance's setting applies to all.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
                     disable_logging()
                     Llama._global_verbose = False
 
         # Apply seed to default sampling if specified
         if cfg.seed >= 0 and self.sampling.seed is None:
             self.sampling = SamplingParams(
-                **{**self.sampling.__dict__, "seed": cfg.seed}
+                **{**asdict(self.sampling), "seed": cfg.seed}
             )
 
         model_params = _llama.ModelParams()
@@ -585,7 +568,7 @@ class Llama:
         if overrides:
             params_obj = SamplingParams(
                 **{
-                    **params_obj.__dict__,
+                    **asdict(params_obj),
                     **{k: v for k, v in overrides.items() if v is not None},
                 }
             )
@@ -740,7 +723,7 @@ class Llama:
 
         sampler_params = sampling or self.sampling
         if seed is not None:
-            sampler_params = SamplingParams(**{**sampler_params.__dict__, "seed": seed})
+            sampler_params = SamplingParams(**{**asdict(sampler_params), "seed": seed})
         sampler = self._build_sampler(sampler_params)
 
         if reset_kv_cache:
@@ -762,12 +745,15 @@ class Llama:
 
         # Use queue for true streaming from background thread
         token_queue: queue.Queue[int | None | Exception] = queue.Queue()
+        cancel_event = threading.Event()
 
         def worker() -> None:
             """Background thread that generates tokens and puts them in queue."""
             try:
 
                 def on_token(token: int) -> bool:
+                    if cancel_event.is_set():
+                        return False  # Stop generation
                     token_queue.put(token)
                     return True
 
@@ -802,8 +788,9 @@ class Llama:
                 )
                 yield text
         finally:
-            # Ensure thread completes even if generator is closed early
-            thread.join(timeout=1.0)
+            # Signal background thread to stop, then wait for it
+            cancel_event.set()
+            thread.join(timeout=5.0)
 
     def generate(
         self,
@@ -861,7 +848,7 @@ class Llama:
 
         sampler_params = sampling or self.sampling
         if seed is not None:
-            sampler_params = SamplingParams(**{**sampler_params.__dict__, "seed": seed})
+            sampler_params = SamplingParams(**{**asdict(sampler_params), "seed": seed})
         sampler = self._build_sampler(sampler_params)
         # Optionally clear KV cache (default True for fresh generation)
         if reset_kv_cache:
@@ -1113,9 +1100,7 @@ class Llama:
                 grammar_str = (
                     _json_schema_to_grammar(schema) if schema else JSON_GRAMMAR
                 )
-                use_grammar = _get_cached_grammar_sampler(
-                    self.model, grammar_str, "root"
-                )
+                use_grammar = _create_grammar_sampler(self.model, grammar_str, "root")
 
         # Use unified generation path
         generated = self._generate_from_tokens(
@@ -1482,8 +1467,6 @@ def _format_tools_prompt(tools: list[dict[str, Any]]) -> str:
 
 def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
     """Parse function calls from model output."""
-    import logging
-
     text = text.strip()
     tool_calls = []
 
@@ -1495,7 +1478,7 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                 # Single function call - validate required fields
                 tool_calls.append(
                     {
-                        "id": f"call_{uuid.uuid4().hex[:16]}",
+                        "id": f"call_{uuid.uuid7().hex[:16]}",
                         "type": "function",
                         "function": {
                             "name": data.get("name"),
@@ -1509,7 +1492,7 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                     if isinstance(call, dict) and call.get("name"):
                         tool_calls.append(
                             {
-                                "id": f"call_{uuid.uuid4().hex[:16]}",
+                                "id": f"call_{uuid.uuid7().hex[:16]}",
                                 "type": "function",
                                 "function": {
                                     "name": call.get("name"),
@@ -1602,10 +1585,11 @@ ws ::= ([ \\t\\n] ws)?
     return JSON_GRAMMAR
 
 
-def _get_cached_grammar_sampler(
-    model: Any, grammar_str: str, root: str = "root"
-) -> Any:
-    """Get or create a cached grammar sampler (LRU cache).
+def _create_grammar_sampler(model: Any, grammar_str: str, root: str = "root") -> Any:
+    """Create a fresh grammar sampler.
+
+    Grammar samplers are stateful (llama_sampler_accept mutates internal state),
+    so a fresh instance must be created for each generation.
 
     Args:
         model: The llama model instance.
@@ -1613,25 +1597,9 @@ def _get_cached_grammar_sampler(
         root: Root rule name.
 
     Returns:
-        GrammarSampler instance (cached if possible).
+        New GrammarSampler instance.
     """
-    # Hash grammar string for cache key
-    grammar_hash = hashlib.md5(grammar_str.encode()).hexdigest()[:16]
-    model_id = id(model)
-    cache_key = (grammar_hash, model_id)
-
-    if cache_key in _grammar_cache:
-        # LRU: move to end on access
-        _grammar_cache.move_to_end(cache_key)
-        return _grammar_cache[cache_key]
-
-    # Evict least recently used if cache full (LRU)
-    if len(_grammar_cache) >= _GRAMMAR_CACHE_MAX:
-        _grammar_cache.popitem(last=False)  # Remove oldest (LRU)
-
-    sampler = _llama.GrammarSampler(model, grammar_str, root)
-    _grammar_cache[cache_key] = sampler
-    return sampler
+    return _llama.GrammarSampler(model, grammar_str, root)
 
 
 class LlamaGrammar:
@@ -1657,6 +1625,9 @@ class LlamaGrammar:
         return cls(grammar_str, "root")
 
     def _ensure_sampler(self, model: Any) -> None:
-        """Create native sampler if not already created."""
-        if self._sampler is None:
-            self._sampler = _llama.GrammarSampler(model, self._grammar_str, self._root)
+        """Create a fresh native sampler for this generation.
+
+        Grammar samplers are stateful, so a new instance is created each time
+        to avoid cross-generation state leakage.
+        """
+        self._sampler = _llama.GrammarSampler(model, self._grammar_str, self._root)

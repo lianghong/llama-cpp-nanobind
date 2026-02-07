@@ -101,13 +101,17 @@ uv pip install -e .
 
 **v0.3.3 Stability & Documentation:**
 - Fixed race condition in global state initialization (thread safety)
-- Added runtime warning when `verbose=False` is used (affects all instances globally)
 - Improved thread safety documentation with prominent warnings
 - Enhanced error handling and state synchronization
 
 **v0.3.4 Cleanup:**
 - Removed redundant internal documentation (AGENTS.md, CMAKE_OPTIMIZATIONS.md, OPTIMIZATIONS.md)
 - Synchronized version across all project files
+
+**v0.3.5 TranslateGemma & Bug Fixes:**
+- Added TranslateGemma model support (Google's 55-language translation model based on Gemma 3)
+- Fixed `SamplingParams` bug when using sampling overrides (`asdict()` instead of `__dict__`)
+- Removed verbose warning message (behavior still documented)
 
 ### Optional build flags
 
@@ -163,7 +167,7 @@ llm.generate("Continue", max_tokens=10, reset_kv_cache=False)  # Faster
 
 ### UnifiedLLM (Multi-Model Support)
 
-For working with multiple model families (Qwen3, Gemma, Mistral, GPT-OSS, Phi, etc.):
+For working with multiple model families (Qwen3, Gemma, TranslateGemma, Mistral, GPT-OSS, Phi, etc.):
 
 ```python
 from llama_cpp.unified import UnifiedLLM
@@ -230,7 +234,7 @@ asyncio.run(main())
 - The `Llama` class is **NOT thread-safe** - do not call methods concurrently from multiple threads on the same instance
 - Async methods use a lock to prevent crashes, but concurrent calls serialize (no parallelism benefit)
 - For true parallel inference, use `LlamaPool` with multiple independent instances
-- `verbose=False` in `LlamaConfig` affects logging **globally** for all instances (llama.cpp limitation)
+- `verbose=False` in `LlamaConfig` affects logging **globally** for all instances (llama.cpp limitation; see class docstring for details)
 
 ### Parallel Inference with LlamaPool
 
@@ -379,6 +383,20 @@ response = llm.create_chat_completion(messages=[...], grammar=grammar)
 uv pip install -e .[test]
 uv run pytest -q
 ```
+
+### Memory Safety Verification
+
+The project includes a double-free verification script that exercises all resource cleanup paths under glibc's heap checker:
+
+```bash
+# Basic run (crash detection via signal handlers)
+python examples/verify_double_free.py
+
+# With glibc heap checking (detects silent corruption)
+MALLOC_CHECK_=3 python examples/verify_double_free.py
+```
+
+The script tests 20 scenarios across both `Llama` and `UnifiedLLM`: double `close()`, context manager + close, state save/load + close, GC pressure, use-after-close, multi-instance close ordering, rapid create-close loops, `del` without close, `__del__` + close interactions, and mixed instance types.
 
 ## Notes
 

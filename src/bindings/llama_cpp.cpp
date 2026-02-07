@@ -59,6 +59,7 @@ public:
   ~Model() { close(); }
 
   void close() {
+    std::lock_guard<std::mutex> lock(g_init_mutex);
     if (model_) {
       llama_model_free(model_);
       model_ = nullptr;
@@ -141,10 +142,7 @@ public:
     }
     std::string buf(static_cast<size_t>(needed) + 1, '\0');
     llama_model_desc(model_, buf.data(), static_cast<int32_t>(buf.size()));
-    // Remove null terminator if present
-    if (!buf.empty() && buf.back() == '\0') {
-      buf.pop_back();
-    }
+    buf.resize(static_cast<size_t>(needed));
     return buf;
   }
 
@@ -378,6 +376,7 @@ public:
   ~Context() { close(); }
 
   void close() {
+    std::lock_guard<std::mutex> lock(g_init_mutex);
     if (single_batch_.token) {
       llama_batch_free(single_batch_);
       single_batch_ = {};
@@ -1246,12 +1245,18 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
 }
 
 // Streaming generation with callback - yields tokens as they're generated
-// Returns total number of tokens generated
+// Returns total number of tokens generated.
+// GIL is released for heavy C++ work (decode, sampling) and only re-acquired
+// around the Python callback, allowing the main thread to process the queue.
 int32_t generate_tokens_streaming(
     Context &ctx, SamplerChain &sampler, const std::vector<llama_token> &prompt,
     int32_t max_new_tokens, bool add_bos, llama_token eos_token,
     const std::vector<std::vector<llama_token>> &stop_sequences,
     const std::function<bool(llama_token)> &callback) {
+
+  // Release GIL for the duration of C++ computation.
+  // Re-acquire only when calling the Python callback.
+  nb::gil_scoped_release release;
 
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));

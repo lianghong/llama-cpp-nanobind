@@ -10,7 +10,8 @@ Run this to see the speedup from parallel inference.
 
 import asyncio
 import time
-from llama_cpp import Llama, LlamaPool, LlamaConfig
+
+from llama_cpp import Llama, LlamaConfig, LlamaPool
 
 # Model path - adjust to your model location
 MODEL_PATH = "models/Qwen3-8B-Q6_K.gguf"
@@ -214,7 +215,7 @@ async def main():
     print(f"Parallel time:   {parallel_time:.2f}s")
     print(f"Speedup:         {speedup:.2f}x faster")
     print(
-        f"Time saved:      {serial_time - parallel_time:.2f}s ({(1 - parallel_time/serial_time) * 100:.1f}%)\n"
+        f"Time saved:      {serial_time - parallel_time:.2f}s ({(1 - parallel_time / serial_time) * 100:.1f}%)\n"
     )
 
     # Verify results match

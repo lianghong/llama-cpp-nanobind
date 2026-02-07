@@ -5,4 +5,4 @@
 # Last Modified Date: 2025-12-12
 # Last Modified By  : Lianghong Fei <feilianghong@gmail.com>
 __all__ = ["__version__"]
-__version__ = "0.3.4"
+__version__ = "0.3.5"

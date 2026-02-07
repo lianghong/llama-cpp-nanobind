@@ -10,8 +10,6 @@ Usage:
     python examples/ctx_test.py --model models/gpt-oss-20b-Q4_K_M.gguf --reasoning_level high
 """
 
-from __future__ import annotations
-
 import argparse
 import time
 from datetime import datetime

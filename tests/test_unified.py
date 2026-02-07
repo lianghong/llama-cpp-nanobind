@@ -3,6 +3,7 @@
 import os
 
 import pytest
+from conftest import MODEL_PATH, requires_model
 
 from llama_cpp.unified import (
     MODEL_CONFIGS,
@@ -10,8 +11,6 @@ from llama_cpp.unified import (
     UnifiedLLM,
     detect_model_family,
 )
-
-from conftest import MODEL_PATH, requires_model
 
 
 # Model family detection tests (no model loading required)

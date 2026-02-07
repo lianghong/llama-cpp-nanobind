@@ -1,10 +1,9 @@
 """Tests for optimization features."""
 
 import pytest
+from conftest import MODEL_PATH, requires_model
 
 from llama_cpp import Llama, LlamaConfig, ValidationError, disable_logging
-
-from conftest import MODEL_PATH, requires_model
 
 
 @requires_model

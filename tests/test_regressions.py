@@ -3,10 +3,9 @@
 import os
 import tempfile
 
+from conftest import MODEL_PATH, requires_model
 
 from llama_cpp import Llama, LlamaGrammar, disable_logging
-
-from conftest import MODEL_PATH, requires_model
 
 
 @requires_model

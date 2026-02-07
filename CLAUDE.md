@@ -127,6 +127,17 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
   - Simpler implementation, no threading overhead
   - Suitable when latency not critical
 
+#### Memory Safety (Double-Free Prevention)
+- **C++ classes**: All destructors check `if (ptr_)` before free, then set `ptr_ = nullptr`
+- **Backend ref-counting**: `g_model_count` atomic prevents backend double-free
+- **Nanobind `keep_alive`**: Context, SamplerChain, LoraAdapter keep Model alive via `nb::keep_alive<1, 2>()`
+- **LoRA adapters**: Freed automatically by llama.cpp with the model (destructor is `= default`)
+- **`Llama`**: No `__del__` (avoids GIL issues during shutdown); uses atexit + RAII
+- **`UnifiedLLM`**: Has `__del__` with `sys.is_finalizing()` guard; sets `self.llm = None` on close
+- **`close()` idempotency**: `Llama._closed` flag and `UnifiedLLM`'s `self.llm is None` check
+- **Destruction order**: Context freed before Model (C++ dependency)
+- **Instance tracking**: `weakref.ref` sets prevent circular references; atexit handler calls `close()` on all live instances
+
 #### Parallel Inference (LlamaPool)
 - **Purpose**: True concurrent processing with multiple model instances
 - **Architecture**:
@@ -196,6 +207,23 @@ Test files organized by concern:
 
 Key test fixture: `conftest.py` provides `model_path` and `test_model` fixtures.
 
+### Memory Safety Verification
+
+`examples/verify_double_free.py` exercises 20 resource cleanup scenarios for both `Llama` and `UnifiedLLM`:
+- Double `close()`, context manager + close, `close()` then `del`
+- State save/load round-trips then close
+- GC pressure interleaved with close
+- Use-after-close (must raise, not crash)
+- Multi-instance close in different orders
+- Rapid create-close loops
+- `del` without close (RAII / `__del__` paths)
+- Mixed `UnifiedLLM` + `Llama` instance close
+
+Run with glibc heap checking for allocator-level corruption detection:
+```bash
+MALLOC_CHECK_=3 python examples/verify_double_free.py
+```
+
 ## Common Pitfalls
 
 1. **Empty embeddings**: Ensure `LlamaConfig(embeddings=True)` when using `embed()` or `create_embedding()`
@@ -204,7 +232,7 @@ Key test fixture: `conftest.py` provides `model_path` and `test_model` fixtures.
 4. **Context overflow**: `UnifiedLLM` validates `max_tokens > 0` and raises on overflow
 5. **Stale KV position**: State load/save automatically maintains `cur_pos_`
 6. **Thread safety**: Do NOT call methods concurrently on same instance - use multiple instances or LlamaPool
-7. **Global logging**: `verbose=False` affects ALL instances (llama.cpp limitation), triggers runtime warning
+7. **Global logging**: `verbose=False` affects ALL instances (llama.cpp limitation)
 
 ## Integration with llama.cpp
 
@@ -221,10 +249,11 @@ This project uses **prebuilt** llama.cpp libraries in `lib/`. When updating llam
 UnifiedLLM auto-detects model families by filename patterns:
 - Qwen3 (with thinking/non-thinking mode detection)
 - Gemma
+- TranslateGemma (Google's 55-language translation model, 128K context)
 - Mistral
 - GPT-OSS
 - Phi
 - GLM4
 - MiniCPM
 
-See `src/llama_cpp/unified.py` for family detection logic.
+See `src/llama_cpp/unified.py` for family detection logic and `examples/translategemma_example.py` for translation usage.
