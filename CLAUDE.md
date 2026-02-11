@@ -102,6 +102,7 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 - **KV Cache Position**: `cur_pos_` tracks context position, updated by:
   - `load_state()`, `set_state_data()`: Sync from KV cache after load
   - `kv_cache_seq_rm()`, `kv_cache_seq_keep()`, `kv_cache_seq_add()`: Update when modifying sequence 0
+- **State Save/Load**: Uses `nb::bytes` buffer protocol for zero-copy transfer between Python and C++ (no per-element conversion); GIL managed manually — released during heavy llama.cpp calls, held for Python object construction
 - **LoRA Adapters**: Tracked in `_lora_configs` list, reapplied via `_reapply_lora_adapters()` after `reset()`
 
 #### Sampling Pipeline
@@ -126,6 +127,7 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
   - Exceptions propagated from worker thread to caller
   - Early termination via `threading.Event` cancellation flag (checked in callback)
   - 5s join timeout allows current decode step to complete
+  - **Multi-token stop sequence buffering**: tokens are buffered up to `max_stop_len` before yielding to prevent partial stop sequence tokens from reaching the consumer
 - **`generate(..., stream=True)`**: Buffered streaming
   - All tokens generated first, then yielded (higher latency)
   - Simpler implementation, no threading overhead
@@ -146,9 +148,9 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 - **Purpose**: True concurrent processing with multiple model instances
 - **Architecture**:
   - Creates `pool_size` independent `Llama` instances
-  - Round-robin load balancing across instances
-  - Asyncio semaphore limits concurrent access to pool_size
-  - Each instance processes one request at a time
+  - `asyncio.Queue`-based checkout/return ensures exclusive instance access (Llama is not thread-safe)
+  - Each instance is checked out by at most one request at a time
+  - Instances returned to pool after use via try/finally
 - **GPU Memory**: `VRAM ≈ model_size × pool_size`
 - **Model Warmup** (optional, `warmup=True`):
   - Runs dummy inference (3 tokens) on each instance during init
@@ -165,8 +167,11 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 1. **Always release GIL** for long operations: `nb::call_guard<nb::gil_scoped_release>()` or manual `nb::gil_scoped_release`
 2. **Update `cur_pos_`** when modifying KV cache or loading state
 3. **Reuse buffers** (like `single_batch_`) instead of per-call allocation
-4. **Respect sampler chain** after grammar constraints
-5. **Hold `g_init_mutex`** when freeing resources in `close()` methods (prevents races with GC)
+4. **Use RAII for temporary resources**: `Context::decode` uses `BatchGuard` struct for `llama_batch` cleanup instead of try/catch
+5. **Respect sampler chain** after grammar constraints
+6. **Hold `g_init_mutex`** when freeing resources in `close()` methods (prevents races with GC)
+7. **Validate token range before indexing logits**: sampler can return `LLAMA_TOKEN_NULL` (-1); always check `token >= 0 && token < n_vocab` before `logits[token]`
+8. **Use `nb::bytes` for binary data**: state save/load uses `nb::bytes` directly (not `std::vector<uint8_t>`) to avoid per-element Python↔C++ conversion; manage GIL manually when mixing Python object construction with heavy C++ calls
 
 ### When Modifying Python Wrappers (`src/llama_cpp/llama.py`, `unified.py`)
 
@@ -199,12 +204,16 @@ Update `conftest.py` if using different model paths.
   - Low time-to-first-token for responsive UIs
   - Perfect for SSE/WebSocket streaming endpoints
   - GIL released during C++ decode/sample, re-acquired only for Python callback (v0.3.5)
+  - Multi-token stop sequence buffering prevents partial stop tokens in output
 - Grammar samplers always created fresh (stateful — caching causes incorrect results)
+- O(n_vocab) candidate vector allocated once per generation call, not per token (avoids repeated 32K–128K element allocations)
+- State save/load uses `nb::bytes` buffer protocol — single memcpy instead of per-element Python↔C++ conversion
+- RAII `BatchGuard` in `Context::decode` replaces manual try/catch for `llama_batch` cleanup
 
 ## Testing Strategy
 
 Test files organized by concern:
-- `test_inference.py`: Core generation, chat, embeddings, state management
+- `test_inference.py`: Core generation, chat, embeddings, state management, logprobs
 - `test_async.py`: Async API correctness
 - `test_optimizations.py`: Embedding context reuse, KV cache, multi-token stops
 - `test_regressions.py`: State load position tracking, grammar sampling, LoRA persistence
@@ -243,6 +252,7 @@ MALLOC_CHECK_=3 python examples/verify_double_free.py
 7. **Global logging**: `verbose=False` affects ALL instances (llama.cpp limitation)
 8. **Grammar sampler reuse**: Never cache grammar samplers — they are stateful and must be created fresh each generation
 9. **Falsy-value traps**: Use `is not None` checks (not `or`) when `0`/`0.0` are valid parameter values
+10. **Logprobs token bounds**: In the logprobs/details path (`generate_tokens_with_details`), always validate token range before indexing `logits[]` — sampler can return `LLAMA_TOKEN_NULL` (-1)
 
 ## Integration with llama.cpp
 

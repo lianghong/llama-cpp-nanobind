@@ -120,6 +120,15 @@ uv pip install -e .
 - Added `tools/` — `url2md.py` (web-to-markdown) and `md_translator.py` (LLM-powered markdown translation)
 - Code quality: all ruff, ruff format, isort, and mypy issues resolved across codebase
 
+**Post-v0.3.5 Fixes & Optimizations:**
+- Fixed out-of-bounds read in logprobs path — `generate_tokens_with_details()` now validates token range before indexing logits (prevents UB when sampler returns `LLAMA_TOKEN_NULL`)
+- Fixed streaming stop sequence leakage — `generate_tokens_streaming()` now buffers tokens up to the longest stop sequence length before yielding, preventing partial stop tokens from reaching the consumer
+- Fixed `LlamaPool` concurrent instance safety — replaced round-robin + semaphore with `asyncio.Queue` checkout/return to guarantee exclusive instance access (Llama is not thread-safe)
+- State save/load uses `nb::bytes` buffer protocol — eliminates per-element Python↔C++ conversion for `get_state_data()`/`set_state_data()`, reducing memory overhead from ~28x to ~1x for large KV cache states
+- RAII `BatchGuard` in `Context::decode` replaces manual try/catch for `llama_batch` cleanup
+- O(n_vocab) candidate vector allocated once per generation call instead of per token in grammar/logprobs paths
+- Added logprobs test coverage (structure validation, short prompts, stop sequence interaction)
+
 ### Optional build flags
 
 ```bash
