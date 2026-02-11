@@ -430,27 +430,28 @@ public:
     check_ctx();
     if (tokens.empty())
       return;
-    llama_batch batch = llama_batch_init((int32_t)tokens.size(), 0, 1);
-    try {
-      batch.n_tokens = (int32_t)tokens.size();
-      for (int32_t i = 0; i < batch.n_tokens; ++i) {
-        batch.token[i] = tokens[static_cast<size_t>(i)];
-        batch.pos[i] = cur_pos_ + i;
-        batch.n_seq_id[i] = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i] = (return_logits && i == batch.n_tokens - 1) ? 1 : 0;
-      }
-      int32_t rc = llama_decode(ctx_, batch);
-      if (rc < 0) {
-        throw std::runtime_error("llama_decode failed with code " +
-                                 std::to_string(rc));
-      }
-      cur_pos_ += (int32_t)tokens.size();
-    } catch (...) {
-      llama_batch_free(batch);
-      throw;
+    llama_batch batch =
+        llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
+    // RAII guard ensures batch is freed regardless of how scope exits
+    struct BatchGuard {
+      llama_batch &b;
+      ~BatchGuard() { llama_batch_free(b); }
+    } guard{batch};
+
+    batch.n_tokens = static_cast<int32_t>(tokens.size());
+    for (int32_t i = 0; i < batch.n_tokens; ++i) {
+      batch.token[i] = tokens[static_cast<size_t>(i)];
+      batch.pos[i] = cur_pos_ + i;
+      batch.n_seq_id[i] = 1;
+      batch.seq_id[i][0] = 0;
+      batch.logits[i] = (return_logits && i == batch.n_tokens - 1) ? 1 : 0;
     }
-    llama_batch_free(batch);
+    int32_t rc = llama_decode(ctx_, batch);
+    if (rc < 0) {
+      throw std::runtime_error("llama_decode failed with code " +
+                               std::to_string(rc));
+    }
+    cur_pos_ += static_cast<int32_t>(tokens.size());
   }
 
   void decode_one(llama_token token, bool request_logits = true) {
@@ -535,18 +536,33 @@ public:
     return n_token_count;
   }
 
-  std::vector<uint8_t> get_state_data() {
+  // Returns state as Python bytes via zero-copy path (no intermediate list).
+  // GIL is managed manually: released during heavy C++ work, held for Python
+  // object creation.
+  nb::bytes get_state_data() {
     check_ctx();
-    size_t size = llama_state_get_size(ctx_);
-    std::vector<uint8_t> data(size);
-    size_t written = llama_state_get_data(ctx_, data.data(), size);
-    data.resize(written);
-    return data;
+    size_t size;
+    size_t written;
+    std::vector<uint8_t> buf;
+    {
+      nb::gil_scoped_release release;
+      size = llama_state_get_size(ctx_);
+      buf.resize(size);
+      written = llama_state_get_data(ctx_, buf.data(), size);
+    }
+    // GIL held here — safe to construct Python bytes object
+    return nb::bytes(buf.data(), written);
   }
 
-  size_t set_state_data(const std::vector<uint8_t> &data) {
+  // Accepts Python bytes directly (pointer access, no per-element conversion).
+  // GIL is managed manually: pointer extracted while held, released for heavy
+  // C++ work.
+  size_t set_state_data(nb::bytes data) {
     check_ctx();
-    size_t result = llama_state_set_data(ctx_, data.data(), data.size());
+    const auto *ptr = reinterpret_cast<const uint8_t *>(data.data());
+    size_t len = data.size();
+    nb::gil_scoped_release release;
+    size_t result = llama_state_set_data(ctx_, ptr, len);
     // Update cur_pos_ from KV cache to maintain correct position bookkeeping
     cur_pos_ = kv_cache_seq_pos_max(0) + 1;
     if (cur_pos_ < 0)
@@ -914,15 +930,17 @@ std::vector<TokenProb> generate_tokens_with_details(
   std::vector<llama_token> generated;
   generated.reserve(static_cast<size_t>(max_new_tokens));
 
+  const int32_t n_vocab = ctx.model().n_vocab();
+  // Allocate once outside the loop to avoid per-token heap allocation
+  std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
+
   for (int i = 0; i < max_new_tokens; ++i) {
     const float *logits = llama_get_logits(ctx.raw());
     if (!logits) {
       throw std::runtime_error("logits unavailable before sampling");
     }
-    const int32_t n_vocab = ctx.model().n_vocab();
 
     // Build candidates and apply sampler to get adjusted probabilities
-    std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
     for (int32_t j = 0; j < n_vocab; ++j) {
       candidates[static_cast<size_t>(j)] = {j, logits[j], 0.0f};
     }
@@ -1040,6 +1058,8 @@ std::vector<llama_token> generate_tokens_with_grammar(
   }
 
   const int32_t n_vocab = ctx.model().n_vocab();
+  // Allocate once outside the loop to avoid per-token heap allocation
+  std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
 
   for (int i = 0; i < max_new_tokens; ++i) {
     float *logits = llama_get_logits(ctx.raw());
@@ -1048,7 +1068,6 @@ std::vector<llama_token> generate_tokens_with_grammar(
     }
 
     // Build token data array for grammar sampling
-    std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
     for (int32_t j = 0; j < n_vocab; ++j) {
       candidates[static_cast<size_t>(j)] = {j, logits[j], 0.0f};
     }
@@ -1179,6 +1198,8 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
   }
 
   const int32_t n_vocab = ctx.model().n_vocab();
+  // Allocate once outside the loop to avoid per-token heap allocation
+  std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
 
   for (int i = 0; i < max_new_tokens; ++i) {
     float *logits = llama_get_logits(ctx.raw());
@@ -1186,7 +1207,6 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
       throw std::runtime_error("logits unavailable");
     }
 
-    std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
     for (int32_t j = 0; j < n_vocab; ++j) {
       candidates[static_cast<size_t>(j)] = {j, logits[j], 0.0f};
     }
@@ -1248,6 +1268,10 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
 // Returns total number of tokens generated.
 // GIL is released for heavy C++ work (decode, sampling) and only re-acquired
 // around the Python callback, allowing the main thread to process the queue.
+//
+// Multi-token stop sequence handling: tokens are buffered up to the length of
+// the longest stop sequence before being yielded. This prevents partial stop
+// sequence tokens from reaching the consumer.
 int32_t generate_tokens_streaming(
     Context &ctx, SamplerChain &sampler, const std::vector<llama_token> &prompt,
     int32_t max_new_tokens, bool add_bos, llama_token eos_token,
@@ -1261,6 +1285,15 @@ int32_t generate_tokens_streaming(
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
+  // Find max stop sequence length for buffering.
+  // Tokens within max_stop_len of the end could be part of a stop sequence,
+  // so we only yield tokens that are further back than this threshold.
+  size_t max_stop_len = 0;
+  for (const auto &seq : stop_sequences) {
+    max_stop_len = std::max(max_stop_len, seq.size());
+  }
+  size_t n_yielded = 0; // Number of tokens already yielded via callback
+
   std::vector<llama_token> priming = prompt;
   if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
     priming.insert(priming.begin(), ctx.model().bos());
@@ -1273,6 +1306,21 @@ int32_t generate_tokens_streaming(
   if (!priming.empty()) {
     ctx.decode(priming, /*return_logits=*/true);
   }
+
+  // Helper: yield tokens that are safe (too far from the end to be part of
+  // any stop sequence). Returns false if callback requested cancellation.
+  auto yield_safe_tokens = [&]() -> bool {
+    size_t safe =
+        output.size() > max_stop_len ? output.size() - max_stop_len : 0;
+    while (n_yielded < safe) {
+      nb::gil_scoped_acquire gil;
+      if (!callback(output[n_yielded])) {
+        return false;
+      }
+      ++n_yielded;
+    }
+    return true;
+  };
 
   for (int i = 0; i < max_new_tokens; ++i) {
     llama_token token = ctx.generate_next(sampler, -1);
@@ -1298,20 +1346,28 @@ int32_t generate_tokens_streaming(
     }
 
     if (matched) {
+      // Remove stop tokens; buffering guarantees none were yielded
       output.erase(output.end() - static_cast<long>(remove_n), output.end());
       break;
     }
 
-    // Call Python callback with GIL acquired
-    {
-      nb::gil_scoped_acquire gil;
-      if (!callback(token)) {
-        break; // Callback returned False, stop generation
-      }
+    // Yield tokens that are confirmed safe (outside stop sequence window)
+    if (!yield_safe_tokens()) {
+      break; // Callback returned False, stop generation
     }
 
     ctx.decode_one(token, /*request_logits=*/true);
   }
+
+  // Flush remaining buffered tokens that weren't part of a stop sequence
+  while (n_yielded < output.size()) {
+    nb::gil_scoped_acquire gil;
+    if (!callback(output[n_yielded])) {
+      break;
+    }
+    ++n_yielded;
+  }
+
   return static_cast<int32_t>(output.size());
 }
 
@@ -1536,9 +1592,9 @@ NB_MODULE(_llama, m) {
            nb::call_guard<nb::gil_scoped_release>(),
            "Load context state from file")
       .def("get_state_data", &Context::get_state_data,
-           nb::call_guard<nb::gil_scoped_release>(), "Get state as bytes")
+           "Get state as bytes (returns Python bytes directly)")
       .def("set_state_data", &Context::set_state_data, "data"_a,
-           nb::call_guard<nb::gil_scoped_release>(), "Set state from bytes")
+           "Set state from bytes (accepts Python bytes directly)")
       .def("set_lora", &Context::set_lora, "adapter"_a, "scale"_a = 1.0f,
            "Apply LoRA adapter with scale")
       .def("remove_lora", &Context::remove_lora, "adapter"_a,

@@ -112,12 +112,11 @@ class LlamaPool:
             self._warmup_instances()
             logging.info("Warmup phase complete")
 
-        # Semaphore to limit concurrent access to pool_size
-        self._semaphore = asyncio.Semaphore(pool_size)
-
-        # Round-robin index for load balancing
-        self._round_robin_index = 0
-        self._index_lock = asyncio.Lock()
+        # Queue of available instances - ensures each instance is used by
+        # at most one request at a time (Llama is not thread-safe)
+        self._available: asyncio.Queue[Llama] = asyncio.Queue()
+        for instance in self.instances:
+            self._available.put_nowait(instance)
 
     def _warmup_instances(self) -> None:
         """Run dummy inference on each instance to pre-load GPU caches.
@@ -154,12 +153,17 @@ class LlamaPool:
                     f"Unexpected error during warmup for instance {i + 1} (non-fatal): {e}"
                 )
 
-    async def _get_instance(self) -> Llama:
-        """Get next available instance using round-robin selection."""
-        async with self._index_lock:
-            instance = self.instances[self._round_robin_index]
-            self._round_robin_index = (self._round_robin_index + 1) % self.pool_size
-            return instance
+    async def _checkout_instance(self) -> Llama:
+        """Check out an available instance from the pool.
+
+        Blocks until an instance is available. Each instance can only be
+        checked out by one caller at a time.
+        """
+        return await self._available.get()
+
+    def _return_instance(self, instance: Llama) -> None:
+        """Return an instance to the pool after use."""
+        self._available.put_nowait(instance)
 
     async def generate(
         self,
@@ -172,8 +176,9 @@ class LlamaPool:
     ) -> str:
         """Generate text using next available instance.
 
-        This method distributes requests across instances in the pool using
-        round-robin scheduling. Multiple calls run in parallel up to pool_size.
+        Instances are checked out exclusively - each request gets its own
+        instance, preventing concurrent access to non-thread-safe Llama objects.
+        Multiple calls run in parallel up to pool_size.
 
         Args:
             prompt: Input prompt string.
@@ -192,8 +197,8 @@ class LlamaPool:
             ...     pool.generate("Query 3"),
             ... )
         """
-        async with self._semaphore:
-            instance = await self._get_instance()
+        instance = await self._checkout_instance()
+        try:
             # Explicitly disable streaming - pool returns complete strings
             result = await instance.generate_async(
                 prompt,
@@ -204,6 +209,8 @@ class LlamaPool:
                 **kwargs,
             )
             return cast(str, result)  # generate_async returns str when stream=False
+        finally:
+            self._return_instance(instance)
 
     async def generate_batch(
         self,
@@ -273,8 +280,8 @@ class LlamaPool:
             ... )
             >>> print(response["choices"][0]["message"]["content"])
         """
-        async with self._semaphore:
-            instance = await self._get_instance()
+        instance = await self._checkout_instance()
+        try:
             # Explicitly disable streaming - pool returns complete dicts
             result = await instance.create_chat_completion_async(
                 messages,
@@ -284,6 +291,8 @@ class LlamaPool:
                 **kwargs,
             )
             return cast(dict[str, Any], result)  # returns dict when stream=False
+        finally:
+            self._return_instance(instance)
 
     async def create_chat_completion_batch(
         self,

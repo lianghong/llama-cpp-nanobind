@@ -1226,11 +1226,11 @@ class Llama:
 
     def get_state(self) -> bytes:
         """Get KV cache state as bytes."""
-        return bytes(self.ctx.get_state_data())
+        return self.ctx.get_state_data()
 
     def set_state(self, data: bytes) -> int:
         """Set KV cache state from bytes. Returns bytes read."""
-        result: int = self.ctx.set_state_data(list(data))
+        result: int = self.ctx.set_state_data(data)
         return result
 
     def load_lora(self, path: str, scale: float = 1.0) -> Any:
@@ -1502,12 +1502,14 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                         )
                     else:
                         logging.debug(
-                            f"Skipping invalid tool call at index {i}: {call}"
+                            "Skipping invalid tool call at index %d: %s",
+                            i,
+                            call,
                         )
     except json.JSONDecodeError as e:
-        logging.debug(f"Failed to parse tool calls from response: {e}")
+        logging.debug("Failed to parse tool calls from response: %s", e)
     except (KeyError, TypeError, ValueError) as e:
-        logging.debug(f"Invalid tool call structure: {e}")
+        logging.debug("Invalid tool call structure: %s", e)
 
     return tool_calls
 
