@@ -255,6 +255,8 @@ MALLOC_CHECK_=3 python examples/verify_double_free.py
 8. **Grammar sampler reuse**: Never cache grammar samplers — they are stateful and must be created fresh each generation
 9. **Falsy-value traps**: Use `is not None` checks (not `or`) when `0`/`0.0` are valid parameter values
 10. **Logprobs token bounds**: In the logprobs/details path (`generate_tokens_with_details`), always validate token range before indexing `logits[]` — sampler can return `LLAMA_TOKEN_NULL` (-1)
+11. **Translation hallucination**: LLMs may editorialize, reverse sentiment, or inject opinions when translating opinionated/sarcastic text. Mitigate with: low temperature (0.1–0.3), few-shot examples demonstrating faithful translation, and explicit system prompt rules against inserting commentary
+12. **14B+ models on 16GB Apple Silicon**: Expect ~10 tok/s generation (memory-bandwidth-limited). Default context 10240 may crash Metal; use `--ctx 4096`. Performance is near hardware ceiling — use 8B or 4B models for better throughput
 
 ## Integration with llama.cpp
 
@@ -281,3 +283,19 @@ UnifiedLLM auto-detects model families by filename patterns:
 - MiniCPM
 
 See `src/llama_cpp/unified.py` for family detection logic and `examples/translategemma_example.py` for translation usage.
+
+## Translation Example (`examples/translate.py`)
+
+English-to-Chinese translation script using `UnifiedLLM` with optimized settings:
+
+```bash
+python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --ctx 8192
+python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --thinking
+python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --temperature 0.1 -o
+```
+
+Key design decisions:
+- **Low default temperature (0.3)**: Reduces hallucination and sentiment drift in translations
+- **Few-shot example in system prompt**: Demonstrates faithful translation of editorially charged/sarcastic text, preventing the model from editorializing or reversing the author's sentiment
+- **`--temperature` CLI arg**: Overrides the model's default temperature after construction via `llm.model_config.temperature`
+- **VRAM check**: Estimates GPU memory usage before loading and warns if insufficient

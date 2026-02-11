@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Test maximum context size with translation task.
+# File              : translate.py
+# Author            : Lianghong Fei <feilianghong@gmail.com>
+# Date              : 2026-02-11
+# Last Modified Date: 2026-02-11
+# Last Modified By  : Lianghong Fei <feilianghong@gmail.com>
+"""English-to-Chinese translation using UnifiedLLM.
 
-This script tests LLM translation capabilities using UnifiedLLM with
-automatic model family detection and optimized settings.
+Translates text files from English to Simplified Chinese with automatic
+model family detection and optimized settings.
 
 Usage:
-    python examples/ctx_test.py --model models/Qwen3-8B-Q6_K.gguf --ctx 8192
-    python examples/ctx_test.py --model models/Qwen3-8B-Q6_K.gguf --thinking
-    python examples/ctx_test.py --model models/gpt-oss-20b-Q4_K_M.gguf --reasoning_level high
+    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --ctx 8192
+    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --thinking
+    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -o          # auto-named file
+    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -o out.txt  # specific file
 """
 
 import argparse
@@ -15,19 +21,30 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from llama_cpp.unified import GPTOSSBackend, UnifiedLLM
+
 DEFAULT_INPUT: Path = Path(__file__).parent / "example.txt"
 """Default input file for translation."""
 
-SYSTEM_PROMPT: str = """You are a professional English-to-Chinese translator. Follow these guidelines:
-1. Use standard Simplified Chinese characters and expressions
-2. Maintain the original meaning, tone, and style accurately
-3. Use natural, fluent Chinese that reads well to native speakers
-4. No explanations, no comments, just output the translation result"""
-"""System prompt for translation task."""
+SYSTEM_PROMPT: str = """\
+You are a professional English-to-Chinese translator. Translate the user's text \
+into Simplified Chinese following these rules strictly:
 
-USER_PROMPT_TEMPLATE: str = (
-    "Translate the following English text into Simplified Chinese:\n\n{text}"
-)
+1. ACCURACY: Convey the original meaning, tone, and intent exactly. Do not omit, \
+add, or distort anything. Never insert your own opinions or commentary.
+2. NATURAL CHINESE: Write idiomatic Simplified Chinese that reads naturally to \
+native speakers. Avoid translationese (翻译腔).
+3. STYLE MATCHING: Match the original register — use precise terms for technical \
+text, preserve literary qualities for narrative text. Preserve the author's \
+sentiment exactly, even if critical, sarcastic, or controversial.
+4. TERMINOLOGY: Use established Chinese translations for domain terms. Keep English \
+for terms without standard Chinese equivalents (e.g. brand names, product names).
+5. FORMATTING: Preserve paragraph structure, lists, and heading hierarchy.
+6. OUTPUT ONLY THE TRANSLATION. No notes, no commentary, no explanations, \
+no self-assessment. Stop immediately after the last translated sentence.
+"""
+
+USER_PROMPT_TEMPLATE: str = "Translate into Simplified Chinese:\n\n{text}"
 """User prompt template with {text} placeholder."""
 
 
@@ -80,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description="Test max context with translation")
     parser.add_argument("--model", required=True, help="Path to GGUF model")
-    parser.add_argument("--ctx", type=int, default=8192, help="Context size")
+    parser.add_argument("--ctx", type=int, default=10240, help="Context size")
     parser.add_argument("--batch", type=int, default=4096, help="Batch size")
     parser.add_argument("--ubatch", type=int, default=512, help="Micro batch size")
     parser.add_argument(
@@ -100,6 +117,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no_flash_attn", action="store_true", help="Disable flash attention"
     )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.3,
+        help="Sampling temperature (default: 0.3, lower = more faithful)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        nargs="?",
+        const=True,
+        default=None,
+        help="Save translation to file (optional path, auto-named if omitted)",
+    )
     return parser.parse_args()
 
 
@@ -110,9 +142,6 @@ def main() -> int:
         Exit code (0 for success, 1 for error).
     """
     args: argparse.Namespace = parse_args()
-
-    # Import after arg parsing to avoid crash on -h
-    from llama_cpp.unified import GPTOSSBackend, UnifiedLLM
 
     # Validate batch sizes
     n_batch: int = min(args.batch, args.ctx)
@@ -151,15 +180,19 @@ def main() -> int:
             n_batch=n_batch,
             n_ubatch=n_ubatch,
             n_gpu_layers=args.n_gpu_layers,
-            verbose=True,
+            verbose=False,
         ) as llm:
             # Configure model-specific settings
             if isinstance(llm.backend, GPTOSSBackend):
                 llm.set_reasoning_level(args.reasoning_level)
 
+            # Override temperature for translation (lower = more faithful)
+            llm.model_config.temperature = args.temperature
+
             # Print config
             print(f"Model: {args.model} ({llm.family.name})")
             print(f"Context: {args.ctx}, batch: {n_batch}, ubatch: {n_ubatch}")
+            print(f"Temperature: {args.temperature}")
 
             # Prepare prompt and calculate tokens
             user_prompt: str = USER_PROMPT_TEMPLATE.format(text=input_text)
@@ -208,16 +241,19 @@ def main() -> int:
             gen_time: float = time.perf_counter() - gen_start
             perf: dict[str, int] = llm.llm.perf()
             n_eval: int = perf.get("n_eval", 0)
+            speed: float = n_eval / gen_time if gen_time > 0 else 0
 
-            # Save output
-            timestamp: str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file: Path = Path(f"{Path(args.model).stem}_{timestamp}.txt")
-            output_file.write_text(result, encoding="utf-8")
-            print(f"\n[Saved: {output_file}]")
+            # Save output if requested
+            if args.output is not None:
+                if args.output is True:
+                    timestamp: str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    output_file = Path(f"{Path(args.model).stem}_{timestamp}.txt")
+                else:
+                    output_file = args.output
+                output_file.write_text(result, encoding="utf-8")
 
             # Print metrics
             print(f"\n{'=' * 50}\nMETRICS\n{'=' * 50}")
-            speed: float = n_eval / gen_time if gen_time > 0 else 0
             print(f"Generated: {n_eval} tokens in {gen_time:.1f}s ({speed:.1f} tok/s)")
             if thinking_tokens > 0:
                 answer_tokens: int = llm.n_tokens(result)
@@ -226,6 +262,8 @@ def main() -> int:
                     f"Answer: {answer_tokens} tokens, "
                     f"Total: {thinking_tokens + answer_tokens} tokens"
                 )
+            if args.output is not None:
+                print(f"Saved: {output_file}")
             print(f"Total time: {time.perf_counter() - start_time:.1f}s")
 
     except ValueError as e:

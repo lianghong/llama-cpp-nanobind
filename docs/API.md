@@ -274,6 +274,17 @@ Model-specific configuration (auto-selected based on family):
 | `supports_thinking` | Thinking mode support |
 | `stop_sequences` | Default stop sequences |
 
+**Runtime Temperature Override**
+
+The `model_config` is mutable after construction, allowing per-task temperature tuning:
+
+```python
+with UnifiedLLM("models/Qwen3-8B-Q6_K.gguf") as llm:
+    # Lower temperature for translation (more faithful, less creative)
+    llm.model_config.temperature = 0.3
+    response = llm.generate("Translate: ...", system_prompt=TRANSLATION_PROMPT)
+```
+
 ### detect_model_family
 
 ```python

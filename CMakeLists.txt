@@ -1,7 +1,16 @@
 cmake_minimum_required(VERSION 3.26)
 
-# Enforce GCC/G++ 15 on Linux (set before project()); macOS uses Apple Clang
-if(NOT APPLE)
+# Enforce specific compilers before project():
+# - macOS: Apple Clang (Homebrew LLVM has libc++ ABI mismatches)
+# - Linux: GCC 15
+if(APPLE)
+  if(NOT DEFINED CMAKE_C_COMPILER)
+    set(CMAKE_C_COMPILER /usr/bin/clang)
+  endif()
+  if(NOT DEFINED CMAKE_CXX_COMPILER)
+    set(CMAKE_CXX_COMPILER /usr/bin/clang++)
+  endif()
+else()
   if(NOT DEFINED CMAKE_C_COMPILER)
     set(CMAKE_C_COMPILER /usr/local/bin/gcc-15)
   endif()

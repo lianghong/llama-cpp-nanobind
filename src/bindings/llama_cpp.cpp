@@ -258,6 +258,36 @@ public:
     return out;
   }
 
+  nb::bytes detokenize_bytes(const std::vector<llama_token> &tokens,
+                             bool remove_special, bool unparse_special) const {
+    if (tokens.size() > static_cast<size_t>(INT32_MAX)) {
+      throw std::runtime_error("too many tokens for detokenization");
+    }
+    std::string out;
+    {
+      // Release GIL for the heavy detokenization work, but re-acquire
+      // before constructing the Python bytes object below.
+      nb::gil_scoped_release release;
+      int32_t n_tokens = static_cast<int32_t>(tokens.size());
+      int32_t needed =
+          llama_detokenize(vocab(), tokens.data(), n_tokens, nullptr, 0,
+                           remove_special, unparse_special);
+      if (needed < 0) {
+        needed = -needed;
+      }
+      out.resize(static_cast<size_t>(needed));
+      int32_t written =
+          llama_detokenize(vocab(), tokens.data(), n_tokens, out.data(), needed,
+                           remove_special, unparse_special);
+      if (written < 0) {
+        throw std::runtime_error("detokenize failed");
+      }
+      out.resize(static_cast<size_t>(written));
+    }
+    // GIL re-acquired — safe to create Python bytes object
+    return nb::bytes(out.data(), out.size());
+  }
+
 private:
   llama_model *model_ = nullptr;
 
@@ -1512,6 +1542,10 @@ NB_MODULE(_llama, m) {
       .def("detokenize", &Model::detokenize, "tokens"_a, nb::kw_only(),
            "remove_special"_a = true, "unparse_special"_a = false,
            nb::call_guard<nb::gil_scoped_release>(), "Convert tokens to text")
+      .def("detokenize_bytes", &Model::detokenize_bytes, "tokens"_a,
+           nb::kw_only(), "remove_special"_a = true,
+           "unparse_special"_a = false,
+           "Convert tokens to raw bytes (no UTF-8 validation)")
       .def("bos", &Model::bos, "Beginning-of-sequence token ID")
       .def("eos", &Model::eos, "End-of-sequence token ID")
       .def("eot", &Model::eot, "End-of-turn token ID")

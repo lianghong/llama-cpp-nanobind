@@ -146,6 +146,8 @@ uv pip install -e .
 - RAII `BatchGuard` in `Context::decode` replaces manual try/catch for `llama_batch` cleanup
 - O(n_vocab) candidate vector allocated once per generation call instead of per token in grammar/logprobs paths
 - Added logprobs test coverage (structure validation, short prompts, stop sequence interaction)
+- Added `examples/translate.py` — English-to-Chinese translation example with few-shot prompting to prevent hallucination/sentiment reversal, configurable `--temperature` (default 0.3 for faithful output)
+- Fixed mypy `no-any-return` in `Llama.get_state()` — explicit type annotation for C++ binding return value
 
 ### Optional build flags
 
@@ -218,6 +220,26 @@ print(response)
 # llm = UnifiedLLM("models/Qwen3-8B-Q6_K.gguf")
 # response = llm.generate("Solve: x^2 - 4 = 0", thinking=True)
 ```
+
+### Translation Example
+
+`examples/translate.py` provides English-to-Chinese translation with optimized settings for faithful output:
+
+```bash
+# Basic translation (default temperature=0.3 for accuracy)
+python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf
+
+# With thinking mode for complex text
+python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --thinking
+
+# Custom temperature and output file
+python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --temperature 0.1 -o
+
+# Custom input file
+python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --file input.txt --ctx 8192
+```
+
+The system prompt uses few-shot examples to prevent common LLM translation failures (hallucinated content, sentiment reversal, editorializing).
 
 ### Error Handling
 

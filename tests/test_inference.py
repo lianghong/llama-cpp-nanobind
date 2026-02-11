@@ -283,9 +283,7 @@ def test_logprobs_short_prompt(llm):
 @requires_model
 def test_logprobs_with_stop_sequences(llm):
     """Test logprobs combined with stop sequences."""
-    result = llm.generate(
-        "Count: 1, 2, 3", max_tokens=16, logprobs=1, stop=["."]
-    )
+    result = llm.generate("Count: 1, 2, 3", max_tokens=16, logprobs=1, stop=["."])
     assert isinstance(result, dict)
     assert "tokens" in result
     # All tokens should be valid (no out-of-range from stop handling)

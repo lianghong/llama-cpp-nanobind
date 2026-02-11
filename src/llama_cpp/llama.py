@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import codecs
 import contextlib
 import gc
 import json
@@ -401,10 +402,31 @@ class Llama:
         unparse_special: bool = False,
     ) -> str:
         self._check_closed()
-        result: str = self.model.detokenize(
+        raw: bytes = self.model.detokenize_bytes(
             list(tokens), remove_special=remove_special, unparse_special=unparse_special
         )
-        return result
+        return raw.decode("utf-8", errors="replace")
+
+    def detokenize_bytes(
+        self,
+        tokens: Sequence[int],
+        *,
+        remove_special: bool = True,
+        unparse_special: bool = False,
+    ) -> bytes:
+        """Return raw bytes from detokenization (no UTF-8 validation).
+
+        Useful for incremental/streaming decoding where individual tokens
+        may produce incomplete multi-byte UTF-8 sequences.
+        """
+        self._check_closed()
+        return bytes(
+            self.model.detokenize_bytes(
+                list(tokens),
+                remove_special=remove_special,
+                unparse_special=unparse_special,
+            )
+        )
 
     def n_tokens(self, text: str, *, add_special: bool = False) -> int:
         """Return number of tokens in text.
@@ -774,19 +796,28 @@ class Llama:
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
 
-        # Yield tokens as they arrive from the background thread
+        # Yield tokens as they arrive from the background thread.
+        # Use incremental UTF-8 decoder to handle multi-byte characters
+        # that may be split across token boundaries.
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
             while True:
                 queue_item = token_queue.get()
                 if queue_item is None:
+                    # Flush any remaining bytes in the decoder
+                    final = decoder.decode(b"", final=True)
+                    if final:
+                        yield final
                     break  # Generation complete
                 if isinstance(queue_item, Exception):
                     raise queue_item  # Propagate exception from worker thread
                 # queue_item is a token (int) at this point
-                text = self.detokenize(
+                raw = self.detokenize_bytes(
                     [queue_item], remove_special=True, unparse_special=True
                 )
-                yield text
+                text = decoder.decode(raw)
+                if text:
+                    yield text
         finally:
             # Signal background thread to stop, then wait for it
             cancel_event.set()
@@ -925,8 +956,17 @@ class Llama:
             }
 
         def stream_chunks() -> Generator[str]:
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
             for tok in output_tokens:
-                yield self.detokenize([tok], remove_special=True, unparse_special=True)
+                raw = self.detokenize_bytes(
+                    [tok], remove_special=True, unparse_special=True
+                )
+                text_piece = decoder.decode(raw)
+                if text_piece:
+                    yield text_piece
+            final = decoder.decode(b"", final=True)
+            if final:
+                yield final
 
         if stream:
             return stream_chunks()
@@ -1118,10 +1158,28 @@ class Llama:
         if stream:
 
             def stream_chunks() -> Generator[dict[str, Any]]:
+                decoder = codecs.getincrementaldecoder("utf-8")("replace")
                 for tok in generated:
-                    text_piece = self.detokenize(
+                    raw = self.detokenize_bytes(
                         [tok], remove_special=True, unparse_special=True
                     )
+                    text_piece = decoder.decode(raw)
+                    if text_piece:
+                        yield {
+                            "id": f"chatcmpl-{created}",
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_id,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": text_piece},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                final = decoder.decode(b"", final=True)
+                if final:
                     yield {
                         "id": f"chatcmpl-{created}",
                         "object": "chat.completion.chunk",
@@ -1130,7 +1188,7 @@ class Llama:
                         "choices": [
                             {
                                 "index": 0,
-                                "delta": {"content": text_piece},
+                                "delta": {"content": final},
                                 "finish_reason": None,
                             }
                         ],
@@ -1226,7 +1284,8 @@ class Llama:
 
     def get_state(self) -> bytes:
         """Get KV cache state as bytes."""
-        return self.ctx.get_state_data()
+        data: bytes = self.ctx.get_state_data()
+        return data
 
     def set_state(self, data: bytes) -> int:
         """Set KV cache state from bytes. Returns bytes read."""
