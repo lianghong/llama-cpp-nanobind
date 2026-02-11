@@ -76,8 +76,9 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 1. **External Dependencies** (`lib/`, `include/`, `models/`)
    - **Not included in repo** - must be obtained separately
    - `include/`: llama.cpp headers for C++ bindings
-   - `lib/`: CUDA-enabled llama.cpp shared libraries
+   - `lib/`: Prebuilt llama.cpp shared libraries (`.so` on Linux/CUDA, `.dylib` on macOS/Metal)
    - `models/`: GGUF model files
+   - On macOS, Homebrew llama.cpp is auto-detected by CMake
    - See README.md for setup instructions
 
 2. **C++ Bindings** (`src/bindings/llama_cpp.cpp`)
@@ -93,8 +94,9 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
    - `__init__.py`: Preloads shared libraries with `RTLD_GLOBAL` to avoid soname issues
 
 4. **Library Preloading**
-   - `_preload_shared_libs()` in `__init__.py` ensures CUDA/ggml libraries load correctly
+   - `_preload_shared_libs()` in `__init__.py` ensures CUDA/Metal/ggml libraries load correctly
    - Works for both editable installs (from `./lib`) and wheel installs (`llama_cpp/lib`)
+   - RPATH: `$ORIGIN/lib` on Linux, `@loader_path/lib` on macOS
 
 ### Key Design Patterns
 
@@ -258,11 +260,13 @@ MALLOC_CHECK_=3 python examples/verify_double_free.py
 
 This project uses **prebuilt** llama.cpp libraries in `lib/`. When updating llama.cpp:
 
-1. Build llama.cpp with CUDA support
+1. Build llama.cpp with GPU support (`-DGGML_CUDA=ON` on Linux, `-DGGML_METAL=ON` on macOS)
 2. Copy headers to `include/`
-3. Copy shared libraries to `lib/`
+3. Copy shared libraries to `lib/` (`.so` on Linux, `.dylib` on macOS)
 4. Verify RPATH and soname compatibility
 5. Update C++ bindings if API changed
+
+On macOS, `brew install llama.cpp` provides headers and libraries that CMake auto-detects.
 
 ## Model Support
 

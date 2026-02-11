@@ -4,10 +4,9 @@ High-performance nanobind bindings for `llama.cpp`, packaged as a wheel-ready Py
 
 ## Platform Support
 
-- **Operating System**: Linux (x86_64)
+- **Linux** (x86_64): NVIDIA CUDA GPU (compute capability 6.0+, CUDA 13.x)
+- **macOS** (Apple Silicon & Intel): Metal GPU acceleration via Homebrew llama.cpp
 - **Python**: 3.14+
-- **GPU**: NVIDIA CUDA-capable GPU (compute capability 6.0+)
-- **CUDA**: 13.x
 
 ## Project layout
 
@@ -26,29 +25,48 @@ High-performance nanobind bindings for `llama.cpp`, packaged as a wheel-ready Py
 
 - Python 3.14+
 - `uv` package manager (https://github.com/astral-sh/uv)
+- llama.cpp headers and libraries (see setup below)
+
+**Linux:**
 - GCC/G++ 15 at `/usr/local/bin/gcc-15` and `/usr/local/bin/g++-15`
 - CUDA-capable GPU
-- llama.cpp headers and libraries (see setup below)
+
+**macOS:**
+- Xcode Command Line Tools (`xcode-select --install`)
+- Homebrew llama.cpp (`brew install llama.cpp`) or manually built libraries
 
 ## External Dependencies Setup
 
 Before building, you need to obtain the llama.cpp headers and libraries:
 
-### Option 1: Build llama.cpp from source
+### Option 1: Homebrew (macOS)
 
 ```bash
-# Clone and build llama.cpp with CUDA
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-cmake -B build -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=ON
-cmake --build build --config Release
-
-# Copy to this project
-cp -r include/ /path/to/llama-cpp-nanobind/include/
-cp build/lib*.so /path/to/llama-cpp-nanobind/lib/
+brew install llama.cpp
+# CMake auto-detects Homebrew paths — no manual copying needed
 ```
 
-### Option 2: Use prebuilt release
+### Option 2: Build llama.cpp from source
+
+```bash
+# Clone and build llama.cpp
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Linux (CUDA)
+cmake -B build -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=ON
+cmake --build build --config Release
+cp -r include/ /path/to/llama-cpp-nanobind/include/
+cp build/lib*.so /path/to/llama-cpp-nanobind/lib/
+
+# macOS (Metal)
+cmake -B build -DGGML_METAL=ON -DBUILD_SHARED_LIBS=ON
+cmake --build build --config Release
+cp -r include/ /path/to/llama-cpp-nanobind/include/
+cp build/lib*.dylib /path/to/llama-cpp-nanobind/lib/
+```
+
+### Option 3: Use prebuilt release
 
 Download prebuilt libraries from [llama.cpp releases](https://github.com/ggerganov/llama.cpp/releases) and extract to `include/` and `lib/`.
 

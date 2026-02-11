@@ -25,7 +25,7 @@ wheel-portable: $(VENV)
 
 clean:
 	rm -rf build-debug build dist *.egg-info
-	rm -rf src/llama_cpp/*.so src/llama_cpp/__pycache__
+	rm -rf src/llama_cpp/*.so src/llama_cpp/*.dylib src/llama_cpp/__pycache__
 	rm -rf .pytest_cache .mypy_cache
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 

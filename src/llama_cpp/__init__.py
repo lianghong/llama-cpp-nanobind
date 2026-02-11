@@ -1,8 +1,8 @@
 """llama_cpp_nanobind package initializer.
 
-High-performance nanobind bindings for llama.cpp with CUDA enabled by default.
-The extension uses RUNPATH ($ORIGIN/lib) to locate bundled shared libraries,
-so no manual preloading is required.
+High-performance nanobind bindings for llama.cpp.
+The extension uses RUNPATH ($ORIGIN/lib on Linux, @loader_path/lib on macOS)
+to locate bundled shared libraries, so no manual preloading is required.
 """
 
 from ._about import __version__

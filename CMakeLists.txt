@@ -1,11 +1,13 @@
 cmake_minimum_required(VERSION 3.26)
 
-# Enforce GCC/G++ 15 as required by the environment (set before project())
-if(NOT DEFINED CMAKE_C_COMPILER)
-  set(CMAKE_C_COMPILER /usr/local/bin/gcc-15)
-endif()
-if(NOT DEFINED CMAKE_CXX_COMPILER)
-  set(CMAKE_CXX_COMPILER /usr/local/bin/g++-15)
+# Enforce GCC/G++ 15 on Linux (set before project()); macOS uses Apple Clang
+if(NOT APPLE)
+  if(NOT DEFINED CMAKE_C_COMPILER)
+    set(CMAKE_C_COMPILER /usr/local/bin/gcc-15)
+  endif()
+  if(NOT DEFINED CMAKE_CXX_COMPILER)
+    set(CMAKE_CXX_COMPILER /usr/local/bin/g++-15)
+  endif()
 endif()
 
 project(llama_cpp_nanobind VERSION 0.3.4 LANGUAGES C CXX)
@@ -57,13 +59,46 @@ if(NOT DEFINED LLAMA_INCLUDE_DIR)
   set(LLAMA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 endif()
 
+# On macOS, auto-detect Homebrew llama.cpp if local dirs are empty
+if(APPLE)
+  file(GLOB _LOCAL_LIBS "${LLAMA_LIB_DIR}/libllama.*" "${LLAMA_LIB_DIR}/libggml*.*")
+  file(GLOB _LOCAL_HDRS "${LLAMA_INCLUDE_DIR}/llama.h")
+  if(NOT _LOCAL_LIBS OR NOT _LOCAL_HDRS)
+    execute_process(
+      COMMAND brew --prefix llama.cpp
+      OUTPUT_VARIABLE BREW_LLAMA_PREFIX
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+      RESULT_VARIABLE BREW_RESULT
+    )
+    if(BREW_RESULT EQUAL 0 AND EXISTS "${BREW_LLAMA_PREFIX}")
+      if(NOT _LOCAL_LIBS AND EXISTS "${BREW_LLAMA_PREFIX}/lib")
+        set(LLAMA_LIB_DIR "${BREW_LLAMA_PREFIX}/lib")
+        message(STATUS "Using Homebrew llama.cpp libs: ${LLAMA_LIB_DIR}")
+      endif()
+      if(NOT _LOCAL_HDRS AND EXISTS "${BREW_LLAMA_PREFIX}/include")
+        set(LLAMA_INCLUDE_DIR "${BREW_LLAMA_PREFIX}/include")
+        message(STATUS "Using Homebrew llama.cpp headers: ${LLAMA_INCLUDE_DIR}")
+      endif()
+    endif()
+  endif()
+endif()
+
 # Collect all shared libraries including versioned symlinks
 # Using glob here is acceptable since these are prebuilt external libs
-file(GLOB LLAMA_SHARED_LIBS
-  "${LLAMA_LIB_DIR}/libllama.so*"
-  "${LLAMA_LIB_DIR}/libggml*.so*"
-  "${LLAMA_LIB_DIR}/libmtm*.so*"
-)
+if(APPLE)
+  file(GLOB LLAMA_SHARED_LIBS
+    "${LLAMA_LIB_DIR}/libllama.dylib"
+    "${LLAMA_LIB_DIR}/libggml*.dylib"
+    "${LLAMA_LIB_DIR}/libmtm*.dylib"
+  )
+else()
+  file(GLOB LLAMA_SHARED_LIBS
+    "${LLAMA_LIB_DIR}/libllama.so*"
+    "${LLAMA_LIB_DIR}/libggml*.so*"
+    "${LLAMA_LIB_DIR}/libmtm*.so*"
+  )
+endif()
 list(REMOVE_DUPLICATES LLAMA_SHARED_LIBS)
 
 if(NOT LLAMA_SHARED_LIBS)
@@ -120,16 +155,26 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     list(APPEND OPT_FLAGS -flto=auto)
     
     target_compile_options(_llama PRIVATE ${OPT_FLAGS})
-    target_link_options(_llama PRIVATE -flto=auto -fuse-linker-plugin)
+    set(LINK_OPT_FLAGS -flto=auto)
+    # -fuse-linker-plugin is GCC-only; skip on Clang
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      list(APPEND LINK_OPT_FLAGS -fuse-linker-plugin)
+    endif()
+    target_link_options(_llama PRIVATE ${LINK_OPT_FLAGS})
   endif()
 endif()
 
 target_link_libraries(_llama PRIVATE ${LLAMA_SHARED_LIBS})
 
 # Ensure the runtime loader finds packaged libs
+if(APPLE)
+  set(_RPATH "@loader_path/lib")
+else()
+  set(_RPATH "$ORIGIN/lib")
+endif()
 set_target_properties(_llama PROPERTIES
   OUTPUT_NAME "_llama"
-  INSTALL_RPATH "$ORIGIN/lib"
+  INSTALL_RPATH "${_RPATH}"
   BUILD_WITH_INSTALL_RPATH TRUE)
 
 # Install extension into the package folder
