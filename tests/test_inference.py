@@ -251,6 +251,48 @@ def test_stop_sequence_validation(llm):
         llm.generate("test", max_tokens=5, stop=["x" * 600])
 
 
+# Logprobs tests
+@requires_model
+def test_logprobs_basic(llm):
+    """Test logprobs returns valid structure."""
+    result = llm.generate("The capital of France is", max_tokens=8, logprobs=3)
+    assert isinstance(result, dict)
+    assert "text" in result
+    assert "tokens" in result
+    assert "token_probs" in result
+    assert len(result["tokens"]) > 0
+    assert len(result["token_probs"]) == len(result["tokens"])
+    for tp in result["token_probs"]:
+        assert isinstance(tp.token, int)
+        assert isinstance(tp.logprob, float)
+        assert tp.logprob <= 0.0  # Log-probs are non-positive
+        assert len(tp.top_logprobs) <= 3
+
+
+@requires_model
+def test_logprobs_short_prompt(llm):
+    """Test logprobs with minimal prompt to cover edge token values."""
+    result = llm.generate("Hi", max_tokens=4, logprobs=1)
+    assert isinstance(result, dict)
+    assert len(result["tokens"]) > 0
+    for tp in result["token_probs"]:
+        assert tp.token >= 0  # No NULL/-1 tokens in output
+        assert isinstance(tp.logprob, float)
+
+
+@requires_model
+def test_logprobs_with_stop_sequences(llm):
+    """Test logprobs combined with stop sequences."""
+    result = llm.generate(
+        "Count: 1, 2, 3", max_tokens=16, logprobs=1, stop=["."]
+    )
+    assert isinstance(result, dict)
+    assert "tokens" in result
+    # All tokens should be valid (no out-of-range from stop handling)
+    for tp in result["token_probs"]:
+        assert tp.token >= 0
+
+
 # LoRA lifecycle test
 @requires_model
 def test_lora_clear(llm):

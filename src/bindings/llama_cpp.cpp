@@ -965,6 +965,12 @@ std::vector<TokenProb> generate_tokens_with_details(
     llama_token token = ctx.generate_next(sampler, -1);
     llama_sampler_accept(sampler.get(), token);
 
+    // Check for EOS/NULL before accessing logits to avoid out-of-bounds read
+    if (token == eos_token || token == LLAMA_TOKEN_NULL ||
+        token < 0 || token >= n_vocab) {
+      break;
+    }
+
     // Find the adjusted logit for the sampled token
     float token_logit = logits[token];
     for (size_t j = 0; j < cur_p.size; ++j) {
@@ -995,14 +1001,6 @@ std::vector<TokenProb> generate_tokens_with_details(
     results.push_back(std::move(tp));
 
     generated.push_back(token);
-
-    // stop on EOS / NULL (do not emit the token)
-    if ((token == eos_token || token == LLAMA_TOKEN_NULL) &&
-        generated.size() >= 1) {
-      results.pop_back();
-      generated.pop_back();
-      break;
-    }
 
     // stop sequence check on generated tokens
     bool matched_stop = false;
