@@ -70,6 +70,7 @@ class ModelFamily(Enum):
     PHI = auto()
     MISTRAL = auto()
     QWEN3 = auto()
+    QWEN3_5 = auto()
     GPT_OSS = auto()
     TRANSLATEGEMMA = auto()
 
@@ -203,6 +204,22 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_ctx=16384,
         presence_penalty=1.0,
         stop_sequences=["<|im_end|>", "<|endoftext|>"],
+    ),
+    "qwen3.5": ModelConfig(
+        ModelFamily.QWEN3_5,
+        chat_format="chatml",
+        supports_thinking=True,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        max_ctx=262144,
+        presence_penalty=1.5,
+        stop_sequences=["<|im_end|>", "<|endoftext|>"],
+        think_temperature=0.6,
+        think_top_p=0.95,
+        think_top_k=20,
+        think_min_p=0.0,
     ),
     "gpt-oss": ModelConfig(
         ModelFamily.GPT_OSS,
@@ -727,6 +744,7 @@ class UnifiedLLM:
         ModelFamily.GRANITE: ChatTemplateBackend,
         ModelFamily.MINICPM: ChatTemplateBackend,
         ModelFamily.QWEN3: ChatTemplateBackend,
+        ModelFamily.QWEN3_5: ChatTemplateBackend,
         ModelFamily.PHI: PhiBackend,
         ModelFamily.MISTRAL: ChatTemplateBackend,
         ModelFamily.GPT_OSS: GPTOSSBackend,
