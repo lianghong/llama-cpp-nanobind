@@ -147,10 +147,6 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_ctx=202752,
         supports_thinking=True,
         stop_sequences=["<|endoftext|>", "<|user|>", "<|observation|>"],
-        think_temperature=1.0,
-        think_top_p=0.95,
-        think_top_k=0,
-        think_min_p=0.01,
     ),
     "granite": ModelConfig(
         ModelFamily.GRANITE, temperature=0.0, top_p=1.0, top_k=1, max_ctx=128000
