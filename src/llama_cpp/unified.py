@@ -113,7 +113,12 @@ class ModelConfig:
 
 MODEL_CONFIGS: dict[str, ModelConfig] = {
     "aya": ModelConfig(
-        ModelFamily.AYA, temperature=0.7, top_p=0.9, top_k=40, max_ctx=8192
+        ModelFamily.AYA,
+        temperature=0.3,
+        top_p=0.95,
+        top_k=50,
+        max_ctx=8192,
+        stop_sequences=["<|END_OF_TURN_TOKEN|>", "<|END_RESPONSE|>"],
     ),
     "gemma": ModelConfig(
         ModelFamily.GEMMA,
