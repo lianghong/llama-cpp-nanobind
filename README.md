@@ -203,7 +203,7 @@ llm.generate("Continue", max_tokens=10, reset_kv_cache=False)  # Faster
 
 ### UnifiedLLM (Multi-Model Support)
 
-For working with multiple model families (Qwen3, Gemma, TranslateGemma, Mistral, GPT-OSS, Phi, etc.):
+For working with multiple model families (Qwen3, Qwen3.5, Gemma, TranslateGemma, Aya, GLM-4/4.7, Mistral, GPT-OSS, Phi, etc.):
 
 ```python
 from llama_cpp.unified import UnifiedLLM
