@@ -11,19 +11,26 @@ Example:
     >>> print(response)
 """
 
+from abc import ABC, abstractmethod
 import atexit
 import contextlib
+from dataclasses import dataclass
+from dataclasses import field
+from datetime import datetime
+from enum import auto
+from enum import Enum
 import gc
+import os
 import re
 import threading
+from typing import Any, cast, ClassVar
 import weakref
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum, auto
-from typing import Any, ClassVar, cast
 
-from llama_cpp import Llama, LlamaConfig, SamplingParams
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
+from llama_cpp import LlamaError
+from llama_cpp import SamplingParams
+
 
 # ---------------------------------------------------------------------------
 # Instance tracking for cleanup at exit
@@ -112,6 +119,7 @@ class ModelConfig:
     presence_penalty: float = 0.0
 
 
+# Maps config key -> ModelConfig.  Used for auto-detection by filename.
 MODEL_CONFIGS: dict[str, ModelConfig] = {
     "aya": ModelConfig(
         ModelFamily.AYA,
@@ -240,6 +248,15 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     ),
 }
 
+# Reverse mapping: ModelFamily enum -> default config key.
+# When a user passes a ModelFamily enum directly (not a string key),
+# this determines which config to use.  The first config key registered
+# for each family is the default — additional keys (e.g.
+# "qwen3-instruct-2507" for QWEN3) are reachable only by string key.
+_FAMILY_DEFAULT_KEY: dict[ModelFamily, str] = {}
+for _key, _cfg in MODEL_CONFIGS.items():
+    _FAMILY_DEFAULT_KEY.setdefault(_cfg.family, _key)
+
 
 def detect_model_family(model_path: str) -> ModelConfig:
     """Detect model family from file path.
@@ -253,19 +270,25 @@ def detect_model_family(model_path: str) -> ModelConfig:
     Raises:
         ValueError: If model family cannot be detected from path.
     """
-    path_lower = model_path.lower()
+    # Match against filename only to avoid false positives from directory
+    # names (e.g. /home/user/phi-experiments/llama-model.gguf).
+    filename_lower = os.path.basename(model_path).lower()
 
-    if "ministral" in path_lower:
-        if "reasoning" in path_lower:
+    if "ministral" in filename_lower:
+        if "reasoning" in filename_lower:
             return MODEL_CONFIGS["ministral-reasoning"]
         return MODEL_CONFIGS["ministral-instruct"]
 
     # Qwen3-2507 variants (Instruct vs Thinking)
-    if "qwen3" in path_lower and "2507" in path_lower and "instruct" in path_lower:
+    if (
+        "qwen3" in filename_lower
+        and "2507" in filename_lower
+        and "instruct" in filename_lower
+    ):
         return MODEL_CONFIGS["qwen3-instruct-2507"]
 
     for key in sorted(MODEL_CONFIGS.keys(), key=len, reverse=True):
-        if key in path_lower:
+        if key in filename_lower:
             return MODEL_CONFIGS[key]
 
     raise ValueError(
@@ -365,7 +388,9 @@ class Backend(ABC):
         if requested is not None and requested <= 0:
             raise ValueError(f"max_tokens must be positive, got {requested}")
         # Count tokens with BOS to match actual generation
-        tokens = self.llm.n_tokens(formatted_text, add_special=self.llm.config.add_bos)
+        tokens = self.llm.n_tokens(
+            formatted_text, add_special=bool(self.llm.config.add_bos)
+        )
         return self._calc_max_tokens_from_count(tokens, requested)
 
     def _calc_max_tokens_from_count(
@@ -644,7 +669,7 @@ class GPTOSSBackend(Backend):
 
     _date_lock: ClassVar = threading.Lock()
     _cached_date: ClassVar[str | None] = None
-    _cached_date_day: ClassVar[int | None] = None
+    _cached_date_key: ClassVar[tuple[int, int, int] | None] = None
 
     def __init__(self, llm: Llama, config: ModelConfig, n_ctx: int) -> None:
         super().__init__(llm, config, n_ctx)
@@ -654,10 +679,11 @@ class GPTOSSBackend(Backend):
     def _get_current_date(cls) -> str:
         """Get current date with daily caching (thread-safe)."""
         now = datetime.now()
+        today = (now.year, now.month, now.day)
         with cls._date_lock:
-            if cls._cached_date_day != now.day or cls._cached_date is None:
+            if cls._cached_date_key != today or cls._cached_date is None:
                 cls._cached_date = now.strftime("%Y-%m-%d")
-                cls._cached_date_day = now.day
+                cls._cached_date_key = today
             return cls._cached_date
 
     def generate(
@@ -720,6 +746,11 @@ class UnifiedLLM:
     Automatically detects model family from path and applies appropriate
     chat templates, sampling parameters, and generation strategies.
 
+    Thread safety: Methods are NOT thread-safe. Do not call generate(),
+    generate_with_thinking(), or other methods concurrently from multiple
+    threads on the same instance. For parallelism, use multiple UnifiedLLM
+    instances or LlamaPool.
+
     Attributes:
         llm: Underlying Llama instance.
         backend: Family-specific backend for generation.
@@ -779,13 +810,11 @@ class UnifiedLLM:
         # Resolve model config from explicit family or auto-detect
         if family is not None:
             if isinstance(family, ModelFamily):
-                # Find config by family enum
-                for cfg in MODEL_CONFIGS.values():
-                    if cfg.family == family:
-                        self.model_config = cfg
-                        break
-                else:
+                # O(1) lookup via reverse mapping
+                default_key = _FAMILY_DEFAULT_KEY.get(family)
+                if default_key is None:
                     raise ValueError(f"No config for family: {family}")
+                self.model_config = MODEL_CONFIGS[default_key]
             elif isinstance(family, str):
                 if family not in MODEL_CONFIGS:
                     raise ValueError(
@@ -829,10 +858,17 @@ class UnifiedLLM:
             self.llm.close()
             raise
 
+        self._closed = False
+
         # Register for cleanup at exit (lazy registration on first instance)
         _register_unified_cleanup()
         self._ref = weakref.ref(self, lambda r: _unified_instances.discard(r))
         _unified_instances.add(self._ref)
+
+    def _check_closed(self) -> None:
+        """Raise LlamaError if instance has been closed."""
+        if self._closed:
+            raise LlamaError("UnifiedLLM instance has been closed")
 
     @property
     def family(self) -> ModelFamily:
@@ -879,6 +915,7 @@ class UnifiedLLM:
         Returns:
             Generated text response.
         """
+        self._check_closed()
         return self.backend.generate(
             prompt, system_prompt, max_tokens, thinking=thinking, stop=stop
         )
@@ -902,6 +939,7 @@ class UnifiedLLM:
         Returns:
             Tuple of (thinking_text, answer_text).
         """
+        self._check_closed()
         return self.backend.generate_with_thinking(
             prompt, system_prompt, max_tokens, stop=stop
         )
@@ -928,8 +966,6 @@ class UnifiedLLM:
     def __repr__(self) -> str:
         if self.llm is None:
             return "<UnifiedLLM (closed)>"
-        import os
-
         model_name = os.path.basename(self.llm.config.model_path)
         return (
             f"<UnifiedLLM model={model_name!r} "
@@ -958,7 +994,10 @@ class UnifiedLLM:
         self.llm.kv_cache_clear()
 
     def close(self) -> None:
-        """Release model resources."""
+        """Release model resources. Safe to call multiple times (idempotent)."""
+        if getattr(self, "_closed", True):
+            return
+        self._closed = True
         # Remove from instance tracking
         if hasattr(self, "_ref"):
             _unified_instances.discard(self._ref)

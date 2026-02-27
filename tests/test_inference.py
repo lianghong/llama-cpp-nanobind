@@ -1,17 +1,15 @@
 """Tests for Llama inference API."""
 
+from conftest import MODEL_PATH
+from conftest import requires_model
+from llama_cpp import disable_logging
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
+from llama_cpp import LlamaGrammar
+from llama_cpp import ModelLoadError
+from llama_cpp import SamplingParams
+from llama_cpp import ValidationError
 import pytest
-from conftest import MODEL_PATH, requires_model
-
-from llama_cpp import (
-    Llama,
-    LlamaConfig,
-    LlamaGrammar,
-    ModelLoadError,
-    SamplingParams,
-    ValidationError,
-    disable_logging,
-)
 
 
 # Basic generation tests
@@ -289,6 +287,145 @@ def test_logprobs_with_stop_sequences(llm):
     # All tokens should be valid (no out-of-range from stop handling)
     for tp in result["token_probs"]:
         assert tp.token >= 0
+
+
+# Model architecture introspection tests
+@requires_model
+def test_model_architecture_introspection(llm):
+    """Test that model introspection methods return sensible values."""
+    assert isinstance(llm.n_head(), int)
+    assert llm.n_head() > 0
+    assert isinstance(llm.has_encoder(), bool)
+    assert isinstance(llm.has_decoder(), bool)
+    assert isinstance(llm.is_recurrent(), bool)
+    assert isinstance(llm.is_hybrid(), bool)
+    # Standard decoder-only model (Qwen3) should have decoder but no encoder
+    assert llm.has_decoder() is True
+    assert llm.has_encoder() is False
+
+
+# Special tokens extended tests
+@requires_model
+def test_special_tokens_extended(llm):
+    """Test extended special token access (sep, nl, pad)."""
+    assert isinstance(llm.token_sep(), int)
+    assert isinstance(llm.token_nl(), int)
+    assert isinstance(llm.token_pad(), int)
+    # Newline token should exist for text models
+    assert llm.token_nl() >= 0
+
+
+# Auto-detect BOS test
+@requires_model
+def test_auto_detect_bos(llm):
+    """Test that add_bos is auto-detected from model preference."""
+    assert isinstance(llm.get_add_bos(), bool)
+    # Config should have been resolved from None to actual value
+    assert llm.config.add_bos is not None
+    assert isinstance(llm.config.add_bos, bool)
+
+
+# Memory introspection tests
+@requires_model
+def test_memory_introspection(llm):
+    """Test memory introspection methods."""
+    assert isinstance(llm.memory_can_shift(), bool)
+    llm.reset()
+    # After reset, seq_pos_min should indicate empty
+    min_pos = llm.kv_cache_seq_pos_min()
+    assert isinstance(min_pos, int)
+
+
+# Runtime context toggle tests
+@requires_model
+def test_set_causal_attn(llm):
+    """Test runtime causal attention toggle."""
+    # Should not raise
+    llm.set_causal_attn(True)
+    llm.set_causal_attn(False)
+    llm.set_causal_attn(True)
+
+
+# New sampler tests
+def test_dry_sampler_params():
+    """Test DRY sampler parameter validation."""
+    p = SamplingParams(dry_multiplier=0.8)
+    assert p.dry_multiplier == 0.8
+    assert p.dry_base == 1.75
+    assert p.dry_allowed_length == 2
+    with pytest.raises(ValidationError):
+        SamplingParams(dry_multiplier=-1.0)
+    with pytest.raises(ValidationError):
+        SamplingParams(dry_base=0.0)
+    with pytest.raises(ValidationError):
+        SamplingParams(dry_allowed_length=0)
+
+
+def test_xtc_sampler_params():
+    """Test XTC sampler parameter validation."""
+    p = SamplingParams(xtc_probability=0.5, xtc_threshold=0.2)
+    assert p.xtc_probability == 0.5
+    assert p.xtc_threshold == 0.2
+    with pytest.raises(ValidationError):
+        SamplingParams(xtc_probability=1.5)
+    with pytest.raises(ValidationError):
+        SamplingParams(xtc_threshold=-0.1)
+
+
+def test_dynamic_temp_params():
+    """Test dynamic temperature parameter validation."""
+    p = SamplingParams(temp_delta=0.5, temp_exponent=2.0)
+    assert p.temp_delta == 0.5
+    assert p.temp_exponent == 2.0
+    with pytest.raises(ValidationError):
+        SamplingParams(temp_delta=-1.0)
+    with pytest.raises(ValidationError):
+        SamplingParams(temp_exponent=0.0)
+
+
+def test_top_n_sigma_params():
+    """Test top-n-sigma parameter works."""
+    p = SamplingParams(top_n_sigma=2.0)
+    assert p.top_n_sigma == 2.0
+    # Negative means disabled (valid)
+    p2 = SamplingParams(top_n_sigma=-1.0)
+    assert p2.top_n_sigma == -1.0
+
+
+@requires_model
+def test_dry_sampler_generation(llm):
+    """Test generation with DRY sampler enabled."""
+    params = SamplingParams(dry_multiplier=0.8, temperature=0.7)
+    out = llm.generate("Hello world", max_tokens=8, sampling=params)
+    assert isinstance(out, str)
+    assert len(out) > 0
+
+
+@requires_model
+def test_xtc_sampler_generation(llm):
+    """Test generation with XTC sampler enabled."""
+    params = SamplingParams(xtc_probability=0.5, xtc_threshold=0.1, temperature=0.7)
+    out = llm.generate("Hello world", max_tokens=8, sampling=params)
+    assert isinstance(out, str)
+    assert len(out) > 0
+
+
+@requires_model
+def test_dynamic_temp_generation(llm):
+    """Test generation with dynamic temperature."""
+    params = SamplingParams(temperature=0.8, temp_delta=0.3, temp_exponent=1.5)
+    out = llm.generate("Hello world", max_tokens=8, sampling=params)
+    assert isinstance(out, str)
+    assert len(out) > 0
+
+
+@requires_model
+def test_top_n_sigma_generation(llm):
+    """Test generation with top-n-sigma sampler."""
+    params = SamplingParams(top_n_sigma=2.0, temperature=0.7)
+    out = llm.generate("Hello world", max_tokens=8, sampling=params)
+    assert isinstance(out, str)
+    assert len(out) > 0
 
 
 # LoRA lifecycle test

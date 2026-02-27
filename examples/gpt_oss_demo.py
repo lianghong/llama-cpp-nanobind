@@ -6,6 +6,7 @@ import time
 
 from llama_cpp.unified import UnifiedLLM
 
+
 DEFAULT_MODEL = "models/gpt-oss-20b-Q4_K_M.gguf"
 SEPARATOR = "=" * 60
 

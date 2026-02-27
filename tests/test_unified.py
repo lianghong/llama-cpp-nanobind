@@ -2,15 +2,13 @@
 
 import os
 
+from conftest import MODEL_PATH
+from conftest import requires_model
+from llama_cpp.unified import detect_model_family
+from llama_cpp.unified import MODEL_CONFIGS
+from llama_cpp.unified import ModelFamily
+from llama_cpp.unified import UnifiedLLM
 import pytest
-from conftest import MODEL_PATH, requires_model
-
-from llama_cpp.unified import (
-    MODEL_CONFIGS,
-    ModelFamily,
-    UnifiedLLM,
-    detect_model_family,
-)
 
 
 # Model family detection tests (no model loading required)
@@ -132,6 +130,14 @@ def test_qwen35_no_think_suffix():
     # The _build_messages guard only triggers for ModelFamily.QWEN3,
     # so QWEN3_5 naturally skips the /think suffix
     assert config.family != ModelFamily.QWEN3
+
+
+def test_detect_ignores_directory_names():
+    """Directory names must not trigger false-positive detection."""
+    with pytest.raises(ValueError):
+        detect_model_family("/home/user/phi-experiments/llama-model.gguf")
+    with pytest.raises(ValueError):
+        detect_model_family("/data/qwen3-finetuning/my_custom_model.gguf")
 
 
 def test_detect_ministral():

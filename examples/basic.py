@@ -15,7 +15,11 @@ import argparse
 import re
 import time
 
-from llama_cpp import Llama, LlamaConfig, ModelLoadError, SamplingParams
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
+from llama_cpp import ModelLoadError
+from llama_cpp import SamplingParams
+
 
 DEFAULT_MODEL = "models/Qwen3-8B-Q6_K.gguf"
 

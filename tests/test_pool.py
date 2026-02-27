@@ -2,9 +2,9 @@
 
 import asyncio
 
+from llama_cpp import LlamaConfig
+from llama_cpp import LlamaPool
 import pytest
-
-from llama_cpp import LlamaConfig, LlamaPool
 
 
 @pytest.mark.asyncio

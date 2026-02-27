@@ -24,7 +24,12 @@ import asyncio
 import logging
 from typing import Any, cast
 
-from .llama import Llama, LlamaConfig, SamplingParams
+from .llama import Llama
+from .llama import LlamaConfig
+from .llama import SamplingParams
+
+
+_POOL_CLOSED = object()  # Sentinel to unblock waiters on shutdown
 
 
 class LlamaPool:
@@ -96,6 +101,7 @@ class LlamaPool:
         self.model_path = model_path
         self.pool_size = pool_size
         self.config = config or LlamaConfig(model_path=model_path)
+        self._closed = False
 
         # Create worker instances
         logging.info(f"Initializing LlamaPool with {pool_size} instances...")
@@ -114,7 +120,7 @@ class LlamaPool:
 
         # Queue of available instances - ensures each instance is used by
         # at most one request at a time (Llama is not thread-safe)
-        self._available: asyncio.Queue[Llama] = asyncio.Queue()
+        self._available: asyncio.Queue[Llama | object] = asyncio.Queue()
         for instance in self.instances:
             self._available.put_nowait(instance)
 
@@ -153,13 +159,28 @@ class LlamaPool:
                     f"Unexpected error during warmup for instance {i + 1} (non-fatal): {e}"
                 )
 
-    async def _checkout_instance(self) -> Llama:
+    async def _checkout_instance(self, timeout: float | None = None) -> Llama:
         """Check out an available instance from the pool.
 
-        Blocks until an instance is available. Each instance can only be
-        checked out by one caller at a time.
+        Args:
+            timeout: Maximum seconds to wait for an available instance.
+                None means wait indefinitely.
+
+        Raises:
+            RuntimeError: If pool is closed.
+            TimeoutError: If timeout expires before an instance is available.
         """
-        return await self._available.get()
+        if self._closed:
+            raise RuntimeError("LlamaPool is closed")
+        if timeout is not None:
+            item = await asyncio.wait_for(self._available.get(), timeout=timeout)
+        else:
+            item = await self._available.get()
+        if item is _POOL_CLOSED:
+            # Re-inject sentinel so the next blocked waiter also wakes up
+            self._available.put_nowait(_POOL_CLOSED)
+            raise RuntimeError("LlamaPool is closed")
+        return cast(Llama, item)
 
     def _return_instance(self, instance: Llama) -> None:
         """Return an instance to the pool after use."""
@@ -172,6 +193,7 @@ class LlamaPool:
         max_tokens: int = 128,
         sampling: SamplingParams | None = None,
         stop: list[str] | None = None,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> str:
         """Generate text using next available instance.
@@ -185,6 +207,8 @@ class LlamaPool:
             max_tokens: Maximum tokens to generate.
             sampling: Optional sampling parameters.
             stop: Optional stop sequences.
+            timeout: Maximum seconds to wait for an available instance.
+                None means wait indefinitely. Raises TimeoutError on expiry.
             **kwargs: Additional arguments passed to Llama.generate_async().
 
         Returns:
@@ -197,7 +221,7 @@ class LlamaPool:
             ...     pool.generate("Query 3"),
             ... )
         """
-        instance = await self._checkout_instance()
+        instance = await self._checkout_instance(timeout=timeout)
         try:
             # Explicitly disable streaming - pool returns complete strings
             result = await instance.generate_async(
@@ -219,6 +243,7 @@ class LlamaPool:
         max_tokens: int = 128,
         sampling: SamplingParams | None = None,
         stop: list[str] | None = None,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> list[str]:
         """Generate text for multiple prompts in parallel.
@@ -231,6 +256,8 @@ class LlamaPool:
             max_tokens: Maximum tokens per generation.
             sampling: Optional sampling parameters (same for all).
             stop: Optional stop sequences (same for all).
+            timeout: Maximum seconds to wait for an available instance.
+                None means wait indefinitely. Raises TimeoutError on expiry.
             **kwargs: Additional arguments passed to generate().
 
         Returns:
@@ -248,6 +275,7 @@ class LlamaPool:
                 max_tokens=max_tokens,
                 sampling=sampling,
                 stop=stop,
+                timeout=timeout,
                 **kwargs,
             )
             for prompt in prompts
@@ -260,6 +288,7 @@ class LlamaPool:
         *,
         max_tokens: int = 128,
         temperature: float | None = None,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Create chat completion using next available instance.
@@ -268,6 +297,8 @@ class LlamaPool:
             messages: List of chat messages.
             max_tokens: Maximum tokens to generate.
             temperature: Optional temperature override.
+            timeout: Maximum seconds to wait for an available instance.
+                None means wait indefinitely. Raises TimeoutError on expiry.
             **kwargs: Additional arguments passed to create_chat_completion_async().
 
         Returns:
@@ -280,7 +311,7 @@ class LlamaPool:
             ... )
             >>> print(response["choices"][0]["message"]["content"])
         """
-        instance = await self._checkout_instance()
+        instance = await self._checkout_instance(timeout=timeout)
         try:
             # Explicitly disable streaming - pool returns complete dicts
             result = await instance.create_chat_completion_async(
@@ -300,6 +331,7 @@ class LlamaPool:
         *,
         max_tokens: int = 128,
         temperature: float | None = None,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Create chat completions for multiple conversations in parallel.
@@ -308,6 +340,8 @@ class LlamaPool:
             message_lists: List of message lists (one per conversation).
             max_tokens: Maximum tokens per generation.
             temperature: Optional temperature override.
+            timeout: Maximum seconds to wait for an available instance.
+                None means wait indefinitely. Raises TimeoutError on expiry.
             **kwargs: Additional arguments passed to create_chat_completion().
 
         Returns:
@@ -322,26 +356,117 @@ class LlamaPool:
         """
         tasks = [
             self.create_chat_completion(
-                messages, max_tokens=max_tokens, temperature=temperature, **kwargs
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout=timeout,
+                **kwargs,
             )
             for messages in message_lists
         ]
         return await asyncio.gather(*tasks)
 
     def close(self) -> None:
-        """Close all instances in the pool.
+        """Close all instances in the pool immediately.
 
         Releases all resources including GPU memory. Should be called when
-        pool is no longer needed, or use async context manager.
+        pool is no longer needed, or use async context manager. Safe to call
+        multiple times (idempotent).
+
+        Warning:
+            Any instances currently checked out by in-flight requests will be
+            closed while still in use. Use ``close_graceful()`` to wait for
+            in-flight requests to finish first.
 
         Example:
             >>> pool = LlamaPool("model.gguf", pool_size=2)
             >>> # ... use pool ...
             >>> pool.close()
         """
-        logging.info(f"Closing LlamaPool with {len(self.instances)} instances...")
+        if self._closed:
+            return
+        self._closed = True
+        # Warn if instances are checked out (in-flight requests will be disrupted)
+        in_flight = self.pool_size - self._available.qsize()
+        if in_flight > 0:
+            logging.warning(
+                "LlamaPool.close() called with %d in-flight request(s); "
+                "use close_graceful() to wait for them. "
+                "In-flight requests may encounter errors.",
+                in_flight,
+            )
+        # Drain real instances from the queue
+        while not self._available.empty():
+            try:
+                self._available.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        # Inject sentinel to unblock any coroutines waiting on get().
+        # Each woken waiter re-injects it, so one sentinel propagates
+        # through all blocked waiters (poison-pill pattern).
+        self._available.put_nowait(_POOL_CLOSED)
+        logging.info("Closing LlamaPool with %d instances...", len(self.instances))
         for i, instance in enumerate(self.instances):
-            logging.debug(f"Closing instance {i + 1}/{len(self.instances)}...")
+            logging.debug("Closing instance %d/%d...", i + 1, len(self.instances))
+            instance.close()
+        self.instances.clear()
+        logging.info("LlamaPool closed")
+
+    async def close_graceful(self, timeout: float = 30.0) -> None:
+        """Gracefully close the pool, waiting for in-flight requests to finish.
+
+        Stops accepting new requests immediately, then waits up to ``timeout``
+        seconds for checked-out instances to be returned before force-closing.
+
+        Args:
+            timeout: Maximum seconds to wait for in-flight requests to complete.
+                After this, any still-checked-out instances are force-closed.
+
+        Example:
+            >>> pool = LlamaPool("model.gguf", pool_size=2)
+            >>> # ... use pool ...
+            >>> await pool.close_graceful(timeout=10.0)
+        """
+        if self._closed:
+            return
+        self._closed = True
+        # Inject sentinel to reject new checkout attempts
+        self._available.put_nowait(_POOL_CLOSED)
+
+        # Wait for checked-out instances to be returned to the queue
+        returned = 0
+        try:
+            deadline = asyncio.get_running_loop().time() + timeout
+            while returned < self.pool_size:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    item = await asyncio.wait_for(
+                        self._available.get(), timeout=remaining
+                    )
+                    if item is _POOL_CLOSED:
+                        # Put it back for other waiters, don't count it
+                        self._available.put_nowait(_POOL_CLOSED)
+                        continue
+                    returned += 1
+                except TimeoutError:
+                    break
+        except Exception:
+            pass  # Best-effort drain; force-close below handles the rest
+
+        if returned < self.pool_size:
+            logging.warning(
+                "Graceful shutdown timed out: %d/%d instances still checked out, "
+                "force-closing",
+                self.pool_size - returned,
+                self.pool_size,
+            )
+
+        # Force-close all instances regardless of checkout state
+        logging.info("Closing LlamaPool with %d instances...", len(self.instances))
+        for i, instance in enumerate(self.instances):
+            logging.debug("Closing instance %d/%d...", i + 1, len(self.instances))
             instance.close()
         self.instances.clear()
         logging.info("LlamaPool closed")
@@ -351,8 +476,8 @@ class LlamaPool:
         return self
 
     async def __aexit__(self, *_args: Any) -> None:
-        """Async context manager exit."""
-        self.close()
+        """Async context manager exit — waits for in-flight requests."""
+        await self.close_graceful()
 
     def __repr__(self) -> str:
         """String representation."""

@@ -3,7 +3,10 @@
 
 import time
 
-from llama_cpp import Llama, LlamaConfig, SamplingParams
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
+from llama_cpp import SamplingParams
+
 
 MODEL = "models/Qwen3-8B-Q6_K.gguf"
 

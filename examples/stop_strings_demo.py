@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Demonstrate stop string control for generation."""
 
-from llama_cpp import Llama, LlamaConfig
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
 
 
 def main() -> None:

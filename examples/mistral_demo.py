@@ -6,6 +6,7 @@ import time
 
 from llama_cpp.unified import UnifiedLLM
 
+
 DEFAULT_MODEL = "models/Mistral-Instruct.gguf"
 SEPARATOR = "=" * 60
 

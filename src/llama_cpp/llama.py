@@ -3,7 +3,10 @@
 import asyncio
 import atexit
 import codecs
+from collections.abc import AsyncIterator, Iterator, Sequence
 import contextlib
+from dataclasses import asdict
+from dataclasses import dataclass
 import gc
 import json
 import logging
@@ -11,14 +14,18 @@ import os
 import queue
 import threading
 import time
+from typing import Any, cast
 import uuid
 import weakref
-from collections.abc import AsyncGenerator, Generator, Sequence
-from dataclasses import asdict, dataclass
-from typing import Any
 
 from . import _about  # noqa: F401
 from . import _llama  # type: ignore[attr-defined]  # C++ extension module
+
+
+def _uuid7_hex() -> str:
+    """Generate a UUID7 hex string (Python 3.14+)."""
+    return str(uuid.uuid7().hex)  # type: ignore[attr-defined]
+
 
 # ---------------------------------------------------------------------------
 # Instance tracking for cleanup at exit
@@ -147,6 +154,20 @@ class SamplingParams:
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
     seed: int | None = None
+    # Dynamic temperature
+    temp_delta: float = 0.0
+    temp_exponent: float = 1.0
+    # XTC sampler
+    xtc_probability: float = 0.0
+    xtc_threshold: float = 0.1
+    # Top-n-sigma (negative = disabled)
+    top_n_sigma: float = -1.0
+    # DRY (Don't Repeat Yourself) anti-repetition
+    dry_multiplier: float = 0.0
+    dry_base: float = 1.75
+    dry_allowed_length: int = 2
+    dry_penalty_last_n: int = -1
+    dry_seq_breakers: list[str] | None = None
 
     def __post_init__(self) -> None:
         """Validate sampling parameters."""
@@ -162,6 +183,22 @@ class SamplingParams:
             raise ValidationError("repeat_penalty must be non-negative")
         if self.min_keep < 1:
             raise ValidationError("min_keep must be at least 1")
+        if self.temp_delta < 0:
+            raise ValidationError("temp_delta must be non-negative")
+        if self.temp_exponent <= 0:
+            raise ValidationError("temp_exponent must be positive")
+        if not 0.0 <= self.xtc_probability <= 1.0:
+            raise ValidationError("xtc_probability must be between 0.0 and 1.0")
+        if self.xtc_threshold < 0:
+            raise ValidationError("xtc_threshold must be non-negative")
+        if self.dry_multiplier < 0:
+            raise ValidationError("dry_multiplier must be non-negative")
+        if self.dry_base <= 0:
+            raise ValidationError("dry_base must be positive")
+        if self.dry_allowed_length < 1:
+            raise ValidationError("dry_allowed_length must be at least 1")
+        if self.dry_seq_breakers is None:
+            self.dry_seq_breakers = ["\n", ":", '"', "*"]
 
     def to_native(self) -> _llama.SamplerParams:
         native = _llama.SamplerParams()
@@ -175,6 +212,16 @@ class SamplingParams:
         native.freq_penalty = float(self.frequency_penalty)
         native.presence_penalty = float(self.presence_penalty)
         native.seed = -1 if self.seed is None else int(self.seed)
+        native.temp_delta = float(self.temp_delta)
+        native.temp_exponent = float(self.temp_exponent)
+        native.xtc_probability = float(self.xtc_probability)
+        native.xtc_threshold = float(self.xtc_threshold)
+        native.top_n_sigma = float(self.top_n_sigma)
+        native.dry_multiplier = float(self.dry_multiplier)
+        native.dry_base = float(self.dry_base)
+        native.dry_allowed_length = int(self.dry_allowed_length)
+        native.dry_penalty_last_n = int(self.dry_penalty_last_n)
+        native.dry_seq_breakers = list(self.dry_seq_breakers or [])
         return native
 
 
@@ -199,7 +246,7 @@ class LlamaConfig:
     embeddings: bool = False
     rope_freq_base: float = 0.0
     rope_freq_scale: float = 0.0
-    add_bos: bool = True
+    add_bos: bool | None = None  # None = auto-detect from model preference
     parse_special: bool = False
     chat_format: str | None = None  # e.g. "llama-2", "chatml", "gemma", etc.
     verbose: bool = True  # WARNING: Affects logging GLOBALLY (llama.cpp limitation)
@@ -312,6 +359,10 @@ class Llama:
             self.model = _llama.Model(cfg.model_path, model_params)
         except RuntimeError as e:
             raise ModelLoadError(f"Failed to load model: {cfg.model_path}") from e
+
+        # Auto-detect add_bos from model preference if not explicitly set
+        if cfg.add_bos is None:
+            cfg.add_bos = bool(self.model.get_add_bos())
 
         try:
             self.ctx = _llama.Context(self.model, ctx_params)
@@ -487,6 +538,73 @@ class Llama:
         result: int = self.model.n_layer()
         return result
 
+    def n_head(self) -> int:
+        """Return number of attention heads."""
+        result: int = self.model.n_head()
+        return result
+
+    def has_encoder(self) -> bool:
+        """Return whether model has an encoder component."""
+        result: bool = self.model.has_encoder()
+        return result
+
+    def has_decoder(self) -> bool:
+        """Return whether model has a decoder component."""
+        result: bool = self.model.has_decoder()
+        return result
+
+    def is_recurrent(self) -> bool:
+        """Return whether model uses recurrent architecture."""
+        result: bool = self.model.is_recurrent()
+        return result
+
+    def is_hybrid(self) -> bool:
+        """Return whether model uses hybrid attention architecture."""
+        result: bool = self.model.is_hybrid()
+        return result
+
+    def token_sep(self) -> int:
+        """Return separator token id."""
+        result: int = self.model.sep()
+        return result
+
+    def token_nl(self) -> int:
+        """Return newline token id."""
+        result: int = self.model.nl()
+        return result
+
+    def token_pad(self) -> int:
+        """Return padding token id."""
+        result: int = self.model.pad()
+        return result
+
+    def get_add_bos(self) -> bool:
+        """Return whether model prefers BOS token to be added."""
+        result: bool = self.model.get_add_bos()
+        return result
+
+    def kv_cache_seq_pos_min(self, seq_id: int = 0) -> int:
+        """Return minimum position in KV cache for sequence."""
+        self._check_closed()
+        result: int = self.ctx.kv_cache_seq_pos_min(seq_id)
+        return result
+
+    def memory_can_shift(self) -> bool:
+        """Return whether memory supports KV cache shifting."""
+        self._check_closed()
+        result: bool = self.ctx.memory_can_shift()
+        return result
+
+    def set_embeddings(self, enabled: bool) -> None:
+        """Enable or disable embedding extraction at runtime."""
+        self._check_closed()
+        self.ctx.set_embeddings(enabled)
+
+    def set_causal_attn(self, enabled: bool) -> None:
+        """Enable or disable causal attention at runtime."""
+        self._check_closed()
+        self.ctx.set_causal_attn(enabled)
+
     def get_chat_template(self, name: str = "") -> str:
         """Return model's chat template. Empty string if not available."""
         result: str = self.model.chat_template(name)
@@ -511,14 +629,19 @@ class Llama:
             self._metadata_cache = result
         return self._metadata_cache
 
+    def _apply_adapters(self) -> None:
+        """Push current adapter list to the C++ context."""
+        scales = [scale for _, scale in self._lora_configs]
+        self.ctx.set_adapters_lora(self._lora_adapters, scales)
+
     def _reapply_lora_adapters(self) -> None:
         """Reapply all loaded LoRA adapters after context reset."""
         if self._lora_configs:
             self._lora_adapters.clear()
-            for path, scale in self._lora_configs:
+            for path, _scale in self._lora_configs:
                 adapter = _llama.LoraAdapter(self.model, path)
-                self.ctx.set_lora(adapter, scale)
                 self._lora_adapters.append(adapter)
+            self._apply_adapters()
 
     def embed(self, text: str) -> list[float]:
         """Get embedding for text. Clears KV cache."""
@@ -618,8 +741,13 @@ class Llama:
                 self.model, msg_pairs, chat_format, True
             )
             return result
-        except Exception:
-            # Fallback to simple format
+        except Exception as e:
+            # Fallback to simple format — log so users can diagnose template issues
+            logging.debug(
+                "chat_apply_template failed (format=%r): %s; using simple format",
+                chat_format,
+                e,
+            )
             parts = [f"{role}: {content}" for role, content in msg_pairs]
             parts.append("assistant:")
             return "\n".join(parts)
@@ -715,7 +843,7 @@ class Llama:
         stop: Sequence[str | int] | None = None,
         seed: int | None = None,
         reset_kv_cache: bool = True,
-    ) -> Generator[str]:
+    ) -> Iterator[str]:
         """True streaming generation - yields text as tokens are decoded.
 
         Unlike generate(..., stream=True) which buffers all tokens first,
@@ -742,6 +870,20 @@ class Llama:
             raise ValidationError("prompt must be a non-empty string")
         if max_tokens < 1:
             raise ValidationError("max_tokens must be positive")
+        if len(prompt) > _MAX_PROMPT_LENGTH:
+            raise ValidationError(
+                f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
+            )
+        if stop:
+            if len(stop) > _MAX_STOP_SEQUENCES:
+                raise ValidationError(
+                    f"too many stop sequences (max {_MAX_STOP_SEQUENCES})"
+                )
+            for item in stop:
+                if isinstance(item, str) and len(item) > _MAX_STOP_SEQUENCE_LENGTH:
+                    raise ValidationError(
+                        f"stop sequence too long (max {_MAX_STOP_SEQUENCE_LENGTH} chars)"
+                    )
 
         sampler_params = sampling or self.sampling
         if seed is not None:
@@ -770,7 +912,11 @@ class Llama:
         cancel_event = threading.Event()
 
         def worker() -> None:
-            """Background thread that generates tokens and puts them in queue."""
+            """Background thread that generates tokens and puts them in queue.
+
+            Holds self._lock for the duration of generation to prevent
+            concurrent access from async methods (_generate_locked, etc.).
+            """
             try:
 
                 def on_token(token: int) -> bool:
@@ -779,16 +925,17 @@ class Llama:
                     token_queue.put(token)
                     return True
 
-                _llama.generate_tokens_streaming(
-                    self.ctx,
-                    sampler,
-                    prompt_tokens,
-                    int(max_tokens),
-                    bool(self.config.add_bos),
-                    eos,
-                    stop_sequences,
-                    on_token,
-                )
+                with self._lock:
+                    _llama.generate_tokens_streaming(
+                        self.ctx,
+                        sampler,
+                        prompt_tokens,
+                        int(max_tokens),
+                        bool(self.config.add_bos),
+                        eos,
+                        stop_sequences,
+                        on_token,
+                    )
                 token_queue.put(None)  # Sentinel: generation complete
             except Exception as e:
                 token_queue.put(e)  # Propagate exception to main thread
@@ -802,7 +949,14 @@ class Llama:
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
             while True:
-                queue_item = token_queue.get()
+                try:
+                    queue_item = token_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if not thread.is_alive():
+                        raise RuntimeError(
+                            "generate_stream worker thread died unexpectedly"
+                        ) from None
+                    continue
                 if queue_item is None:
                     # Flush any remaining bytes in the decoder
                     final = decoder.decode(b"", final=True)
@@ -835,7 +989,7 @@ class Llama:
         stream: bool = False,
         seed: int | None = None,
         reset_kv_cache: bool = True,
-    ) -> str | Generator[str] | dict[str, Any]:
+    ) -> str | Iterator[str] | dict[str, Any]:
         """Generate text for ``prompt``.
 
         Args:
@@ -955,7 +1109,7 @@ class Llama:
                 "token_probs": token_probs,
             }
 
-        def stream_chunks() -> Generator[str]:
+        def stream_chunks() -> Iterator[str]:
             decoder = codecs.getincrementaldecoder("utf-8")("replace")
             for tok in output_tokens:
                 raw = self.detokenize_bytes(
@@ -986,7 +1140,7 @@ class Llama:
         echo: bool = False,
         stream: bool = False,
         **kwargs: Any,
-    ) -> dict[str, Any] | Generator[dict[str, Any]]:
+    ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         """Generate completion with OpenAI-compatible response format.
 
         Note: Streaming yields chunks after full generation (not true streaming).
@@ -996,8 +1150,9 @@ class Llama:
 
         if stream:
 
-            def stream_chunks() -> Generator[dict[str, Any]]:
+            def stream_chunks() -> Iterator[dict[str, Any]]:
                 created = int(time.time())
+                cmpl_id = f"cmpl-{_uuid7_hex()}"
                 for chunk in self.generate(
                     prompt,
                     max_tokens=max_tokens,
@@ -1007,13 +1162,13 @@ class Llama:
                     **kwargs,
                 ):
                     yield {
-                        "id": f"cmpl-{created}",
+                        "id": cmpl_id,
                         "object": "text_completion",
                         "created": created,
                         "choices": [{"text": chunk, "index": 0, "finish_reason": None}],
                     }
                 yield {
-                    "id": f"cmpl-{created}",
+                    "id": cmpl_id,
                     "object": "text_completion",
                     "created": created,
                     "choices": [{"text": "", "index": 0, "finish_reason": "stop"}],
@@ -1035,7 +1190,7 @@ class Llama:
         else:
             completion_tokens = 0
         return {
-            "id": f"cmpl-{created}",
+            "id": f"cmpl-{_uuid7_hex()}",
             "object": "text_completion",
             "created": created,
             "model": os.path.basename(self.config.model_path),
@@ -1058,12 +1213,12 @@ class Llama:
             chunks: list[dict[str, Any]] = list(result)  # type: ignore[arg-type]
             text = "".join(c["choices"][0]["text"] for c in chunks)
             return {
-                "id": chunks[0]["id"] if chunks else f"cmpl-{int(time.time())}",
+                "id": chunks[0]["id"] if chunks else f"cmpl-{_uuid7_hex()}",
                 "object": "text_completion",
                 "created": chunks[0]["created"] if chunks else int(time.time()),
                 "choices": [{"text": text, "index": 0, "finish_reason": "stop"}],
             }
-        return dict(result)  # type: ignore[arg-type]
+        return cast(dict[str, Any], result)
 
     # OpenAI-style / llama-cpp-python compatible chat API
     def create_chat_completion(
@@ -1079,7 +1234,7 @@ class Llama:
         tool_choice: str | dict[str, Any] | None = None,
         reset_kv_cache: bool = True,
         **sampling_overrides: Any,
-    ) -> dict[str, Any] | Generator[dict[str, Any]]:
+    ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         """Chat completions endpoint compatible with llama-cpp-python.
 
         Args:
@@ -1153,11 +1308,12 @@ class Llama:
         )
 
         created = int(time.time())
+        cmpl_id = f"chatcmpl-{_uuid7_hex()}"
         model_id = os.path.basename(self.config.model_path)
 
         if stream:
 
-            def stream_chunks() -> Generator[dict[str, Any]]:
+            def stream_chunks() -> Iterator[dict[str, Any]]:
                 decoder = codecs.getincrementaldecoder("utf-8")("replace")
                 for tok in generated:
                     raw = self.detokenize_bytes(
@@ -1166,7 +1322,7 @@ class Llama:
                     text_piece = decoder.decode(raw)
                     if text_piece:
                         yield {
-                            "id": f"chatcmpl-{created}",
+                            "id": cmpl_id,
                             "object": "chat.completion.chunk",
                             "created": created,
                             "model": model_id,
@@ -1181,7 +1337,7 @@ class Llama:
                 final = decoder.decode(b"", final=True)
                 if final:
                     yield {
-                        "id": f"chatcmpl-{created}",
+                        "id": cmpl_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model_id,
@@ -1194,7 +1350,7 @@ class Llama:
                         ],
                     }
                 yield {
-                    "id": f"chatcmpl-{created}",
+                    "id": cmpl_id,
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": model_id,
@@ -1225,7 +1381,7 @@ class Llama:
                 finish_reason = "tool_calls"
 
         return {
-            "id": f"chatcmpl-{created}",
+            "id": cmpl_id,
             "object": "chat.completion",
             "created": created,
             "model": model_id,
@@ -1299,19 +1455,19 @@ class Llama:
         Returns adapter handle for use with remove_lora().
         """
         adapter = _llama.LoraAdapter(self.model, path)
-        self.ctx.set_lora(adapter, scale)
         self._lora_adapters.append(adapter)
         self._lora_configs.append((path, scale))
+        self._apply_adapters()
         return adapter
 
     def remove_lora(self, adapter: Any) -> None:
         """Remove a specific LoRA adapter."""
-        self.ctx.remove_lora(adapter)
         if adapter in self._lora_adapters:
             idx = self._lora_adapters.index(adapter)
-            self._lora_adapters.remove(adapter)
+            self._lora_adapters.pop(idx)
             if idx < len(self._lora_configs):
                 self._lora_configs.pop(idx)
+            self._apply_adapters()
 
     def clear_lora(self) -> None:
         """Remove all LoRA adapters."""
@@ -1342,14 +1498,28 @@ class Llama:
     # thread-safe. For true parallelism, use multiple Llama instances.
 
     def _generate_locked(self, prompt: str, **kwargs: Any) -> Any:
-        """Thread-safe wrapper for generate()."""
+        """Thread-safe wrapper for generate().
+
+        For stream=True, the generator is eagerly consumed under the lock
+        so that iteration does not happen without synchronization.
+        """
         with self._lock:
-            return self.generate(prompt, **kwargs)
+            result = self.generate(prompt, **kwargs)
+            if kwargs.get("stream"):
+                return list(result)
+            return result
 
     def _chat_locked(self, messages: Sequence[dict[str, Any]], **kwargs: Any) -> Any:
-        """Thread-safe wrapper for create_chat_completion()."""
+        """Thread-safe wrapper for create_chat_completion().
+
+        For stream=True, the generator is eagerly consumed under the lock
+        so that iteration does not happen without synchronization.
+        """
         with self._lock:
-            return self.create_chat_completion(messages, **kwargs)
+            result = self.create_chat_completion(messages, **kwargs)
+            if kwargs.get("stream"):
+                return list(result)
+            return result
 
     async def generate_async(
         self,
@@ -1362,7 +1532,7 @@ class Llama:
         logprobs: int | None = None,
         stream: bool = False,
         seed: int | None = None,
-    ) -> str | AsyncGenerator[str] | dict[str, Any]:
+    ) -> str | AsyncIterator[str] | dict[str, Any]:
         """Async version of generate(). Runs in thread pool.
 
         Note: Concurrent calls serialize due to thread safety lock.
@@ -1370,8 +1540,8 @@ class Llama:
         """
         if stream:
 
-            async def async_stream() -> AsyncGenerator[str]:
-                gen = await asyncio.to_thread(
+            async def async_stream() -> AsyncIterator[str]:
+                chunks = await asyncio.to_thread(
                     self._generate_locked,
                     prompt,
                     max_tokens=max_tokens,
@@ -1382,7 +1552,7 @@ class Llama:
                     stream=True,
                     seed=seed,
                 )
-                for chunk in gen:
+                for chunk in chunks:
                     yield chunk
 
             return async_stream()
@@ -1411,7 +1581,7 @@ class Llama:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         **sampling_overrides: Any,
-    ) -> dict[str, Any] | AsyncGenerator[dict[str, Any]]:
+    ) -> dict[str, Any] | AsyncIterator[dict[str, Any]]:
         """Async version of create_chat_completion(). Runs in thread pool.
 
         Note: Concurrent calls serialize due to thread safety lock.
@@ -1419,8 +1589,8 @@ class Llama:
         """
         if stream:
 
-            async def async_stream() -> AsyncGenerator[dict[str, Any]]:
-                gen = await asyncio.to_thread(
+            async def async_stream() -> AsyncIterator[dict[str, Any]]:
+                chunks = await asyncio.to_thread(
                     self._chat_locked,
                     messages,
                     max_tokens=max_tokens,
@@ -1432,7 +1602,7 @@ class Llama:
                     tool_choice=tool_choice,
                     **sampling_overrides,
                 )
-                for chunk in gen:
+                for chunk in chunks:
                     yield chunk
 
             return async_stream()
@@ -1537,7 +1707,7 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                 # Single function call - validate required fields
                 tool_calls.append(
                     {
-                        "id": f"call_{uuid.uuid7().hex[:16]}",
+                        "id": f"call_{_uuid7_hex()[:16]}",
                         "type": "function",
                         "function": {
                             "name": data.get("name"),
@@ -1551,7 +1721,7 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                     if isinstance(call, dict) and call.get("name"):
                         tool_calls.append(
                             {
-                                "id": f"call_{uuid.uuid7().hex[:16]}",
+                                "id": f"call_{_uuid7_hex()[:16]}",
                                 "type": "function",
                                 "function": {
                                     "name": call.get("name"),
@@ -1603,7 +1773,17 @@ ws ::= ([ \t\n] ws)?
 
 
 def _json_schema_to_grammar(schema: dict[str, Any]) -> str:
-    """Convert JSON schema to GBNF grammar (simplified)."""
+    """Convert JSON schema to GBNF grammar (simplified).
+
+    Supports: object with typed properties, string, number/integer,
+    boolean, null, array (generic).
+
+    Not supported: $ref, anyOf, oneOf, allOf, required field enforcement,
+    nested array item types, enum, const, pattern, min/max constraints,
+    additionalProperties. For complex schemas, use LlamaGrammar.from_string()
+    with a hand-written GBNF grammar or llama.cpp's built-in JSON schema
+    support.
+    """
 
     def _type_to_rule(t: str, props: dict[str, Any] | None = None) -> str:
         if t == "string":

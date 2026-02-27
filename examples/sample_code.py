@@ -6,7 +6,10 @@
 # Last Modified By  : Lianghong Fei <feilianghong@gmail.com>
 import gc
 
-from llama_cpp import Llama, LlamaConfig, SamplingParams, shutdown
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
+from llama_cpp import SamplingParams
+from llama_cpp import shutdown
 from llama_cpp.unified import UnifiedLLM
 
 

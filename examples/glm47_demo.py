@@ -25,6 +25,7 @@ import time
 
 from llama_cpp.unified import UnifiedLLM
 
+
 DEFAULT_MODEL = "models/GLM-4.7-Flash-REAP-23B-A3B-Q4_K_M.gguf"
 SEPARATOR = "=" * 60
 

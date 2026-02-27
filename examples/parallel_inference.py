@@ -11,7 +11,10 @@ Run this to see the speedup from parallel inference.
 import asyncio
 import time
 
-from llama_cpp import Llama, LlamaConfig, LlamaPool
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
+from llama_cpp import LlamaPool
+
 
 # Model path - adjust to your model location
 MODEL_PATH = "models/Qwen3-8B-Q6_K.gguf"

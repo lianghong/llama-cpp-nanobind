@@ -126,6 +126,11 @@ public:
     return llama_model_is_recurrent(model_);
   }
 
+  bool is_hybrid() const {
+    check_model();
+    return llama_model_is_hybrid(model_);
+  }
+
   std::string chat_template(const std::string &name = "") const {
     check_model();
     const char *tmpl = llama_model_chat_template(
@@ -149,6 +154,11 @@ public:
   llama_token bos() const { return llama_vocab_bos(vocab()); }
   llama_token eos() const { return llama_vocab_eos(vocab()); }
   llama_token eot() const { return llama_vocab_eot(vocab()); }
+  llama_token sep() const { return llama_vocab_sep(vocab()); }
+  llama_token nl() const { return llama_vocab_nl(vocab()); }
+  llama_token pad() const { return llama_vocab_pad(vocab()); }
+
+  bool get_add_bos() const { return llama_vocab_get_add_bos(vocab()); }
 
   std::string token_to_piece(llama_token token) const {
     const char *text = llama_vocab_get_text(vocab(), token);
@@ -264,6 +274,7 @@ public:
       throw std::runtime_error("too many tokens for detokenization");
     }
     std::string out;
+    bool detok_failed = false;
     {
       // Release GIL for the heavy detokenization work, but re-acquire
       // before constructing the Python bytes object below.
@@ -280,9 +291,14 @@ public:
           llama_detokenize(vocab(), tokens.data(), n_tokens, out.data(), needed,
                            remove_special, unparse_special);
       if (written < 0) {
-        throw std::runtime_error("detokenize failed");
+        detok_failed = true;
+      } else {
+        out.resize(static_cast<size_t>(written));
       }
-      out.resize(static_cast<size_t>(written));
+    }
+    // GIL re-acquired — safe to throw
+    if (detok_failed) {
+      throw std::runtime_error("detokenize failed");
     }
     // GIL re-acquired — safe to create Python bytes object
     return nb::bytes(out.data(), out.size());
@@ -315,6 +331,20 @@ public:
     float freq_penalty = 0.0f;
     float presence_penalty = 0.0f;
     int32_t seed = -1;
+    // Dynamic temperature
+    float temp_delta = 0.0f;
+    float temp_exponent = 1.0f;
+    // XTC sampler
+    float xtc_probability = 0.0f;
+    float xtc_threshold = 0.1f;
+    // Top-n-sigma (negative = disabled)
+    float top_n_sigma = -1.0f;
+    // DRY (Don't Repeat Yourself) anti-repetition
+    float dry_multiplier = 0.0f;
+    float dry_base = 1.75f;
+    int32_t dry_allowed_length = 2;
+    int32_t dry_penalty_last_n = -1;
+    std::vector<std::string> dry_seq_breakers = {"\n", ":", "\"", "*"};
   };
 
   SamplerChain(const Model &model, const Params &params) {
@@ -324,6 +354,25 @@ public:
       throw std::runtime_error("failed to create sampler chain");
     }
 
+    // Canonical sampler ordering:
+    // 1. DRY (anti-repetition on raw logits)
+    if (params.dry_multiplier > 0.0f) {
+      // Convert breaker strings to C-style array
+      std::vector<const char *> breaker_ptrs;
+      breaker_ptrs.reserve(params.dry_seq_breakers.size());
+      for (const auto &s : params.dry_seq_breakers) {
+        breaker_ptrs.push_back(s.c_str());
+      }
+      llama_sampler_chain_add(
+          sampler_, llama_sampler_init_dry(
+                        model.vocab(), model.n_ctx_train(),
+                        params.dry_multiplier, params.dry_base,
+                        params.dry_allowed_length, params.dry_penalty_last_n,
+                        breaker_ptrs.data(),
+                        breaker_ptrs.size()));
+    }
+
+    // 2. Penalties (repeat/freq/presence)
     if (params.penalty_last_n != 0 || params.repeat_penalty != 1.0f ||
         params.freq_penalty != 0.0f || params.presence_penalty != 0.0f) {
       llama_sampler *penalties = llama_sampler_init_penalties(
@@ -332,30 +381,60 @@ public:
       llama_sampler_chain_add(sampler_, penalties);
     }
 
+    // 3. Top-n-sigma (truncate by standard deviations)
+    if (params.top_n_sigma >= 0.0f) {
+      llama_sampler_chain_add(
+          sampler_, llama_sampler_init_top_n_sigma(params.top_n_sigma));
+    }
+
+    // 4. Top-K
     if (params.top_k > 0) {
       llama_sampler_chain_add(sampler_, llama_sampler_init_top_k(params.top_k));
     }
+
+    // 5. Top-P
     if (params.top_p < 1.0f) {
       llama_sampler_chain_add(
           sampler_, llama_sampler_init_top_p(params.top_p, params.min_keep));
     }
+
+    // 6. Min-P
     if (params.min_p > 0.0f) {
       llama_sampler_chain_add(
           sampler_, llama_sampler_init_min_p(params.min_p, params.min_keep));
     }
-    if (params.temp != 1.0f) {
+
+    // 7. XTC (on filtered candidates)
+    if (params.xtc_probability > 0.0f) {
+      uint32_t xtc_seed =
+          params.seed >= 0
+              ? static_cast<uint32_t>(params.seed)
+              : static_cast<uint32_t>(llama_time_us() & 0xFFFFFFFF);
+      llama_sampler_chain_add(
+          sampler_, llama_sampler_init_xtc(params.xtc_probability,
+                                           params.xtc_threshold, params.min_keep,
+                                           xtc_seed));
+    }
+
+    // 8. Temperature: use dynamic temp if delta > 0, otherwise static temp
+    if (params.temp_delta > 0.0f) {
+      llama_sampler_chain_add(
+          sampler_,
+          llama_sampler_init_temp_ext(params.temp, params.temp_delta,
+                                      params.temp_exponent));
+    } else if (params.temp != 1.0f) {
       llama_sampler_chain_add(sampler_, llama_sampler_init_temp(params.temp));
     }
 
+    // 9. Dist (final sampling)
     uint32_t rng_seed =
         params.seed >= 0 ? static_cast<uint32_t>(params.seed)
                          : static_cast<uint32_t>(llama_time_us() & 0xFFFFFFFF);
     llama_sampler_chain_add(sampler_, llama_sampler_init_dist(rng_seed));
 
-    llama_token bos = llama_vocab_bos(model.vocab());
-    if (bos != LLAMA_TOKEN_NULL) {
-      llama_sampler_accept(sampler_, bos);
-    }
+    // Note: BOS is NOT pre-accepted here. All generation functions accept
+    // prompt tokens (including BOS) into the sampler before generating,
+    // so pre-accepting BOS here would double-count it in penalty tracking.
   }
 
   ~SamplerChain() {
@@ -449,7 +528,8 @@ public:
     llama_set_n_threads(ctx_, params_.raw.n_threads,
                         params_.raw.n_threads_batch);
     cur_pos_ = 0;
-    // Reinitialize single-token batch if needed
+    // single_batch_ persists across resets (allocated in constructor,
+    // freed only in close()). Reinitialize only if it was freed.
     if (!single_batch_.token) {
       single_batch_ = llama_batch_init(1, 0, 1);
     }
@@ -591,23 +671,26 @@ public:
     check_ctx();
     const auto *ptr = reinterpret_cast<const uint8_t *>(data.data());
     size_t len = data.size();
-    nb::gil_scoped_release release;
-    size_t result = llama_state_set_data(ctx_, ptr, len);
-    // Update cur_pos_ from KV cache to maintain correct position bookkeeping
-    cur_pos_ = kv_cache_seq_pos_max(0) + 1;
-    if (cur_pos_ < 0)
-      cur_pos_ = 0;
+    size_t result;
+    {
+      nb::gil_scoped_release release;
+      result = llama_state_set_data(ctx_, ptr, len);
+      // Update cur_pos_ from KV cache to maintain correct position bookkeeping
+      cur_pos_ = kv_cache_seq_pos_max(0) + 1;
+      if (cur_pos_ < 0)
+        cur_pos_ = 0;
+    }
+    // GIL re-acquired — `data` (nb::bytes) guaranteed alive until function returns
     return result;
   }
 
   // LoRA adapter management - defined after LoraAdapter class
-  int32_t set_lora(LoraAdapter &adapter, float scale = 1.0f);
-  int32_t remove_lora(LoraAdapter &adapter);
+  int32_t set_adapters_lora(nb::list py_adapters, nb::list py_scales);
 
   void clear_lora() {
     if (!ctx_)
       return;
-    llama_clear_adapter_lora(ctx_);
+    llama_set_adapters_lora(ctx_, nullptr, 0, nullptr);
   }
 
   // Performance metrics
@@ -636,7 +719,9 @@ public:
     if (!ctx_)
       return;
     llama_memory_t mem = llama_get_memory(ctx_);
-    llama_memory_seq_rm(mem, -1, -1, -1);
+    // Use llama_memory_clear for full reset (handles both attention KV cache
+    // and recurrent state in hybrid architectures like Qwen3.5)
+    llama_memory_clear(mem, false);
     cur_pos_ = 0;
   }
 
@@ -690,6 +775,30 @@ public:
     return llama_memory_seq_pos_max(mem, seq_id);
   }
 
+  int32_t kv_cache_seq_pos_min(int32_t seq_id = 0) {
+    if (!ctx_)
+      return -1;
+    llama_memory_t mem = llama_get_memory(ctx_);
+    return llama_memory_seq_pos_min(mem, seq_id);
+  }
+
+  bool memory_can_shift() {
+    if (!ctx_)
+      return false;
+    llama_memory_t mem = llama_get_memory(ctx_);
+    return llama_memory_can_shift(mem);
+  }
+
+  void set_embeddings(bool enabled) {
+    check_ctx();
+    llama_set_embeddings(ctx_, enabled);
+  }
+
+  void set_causal_attn(bool enabled) {
+    check_ctx();
+    llama_set_causal_attn(ctx_, enabled);
+  }
+
 private:
   Model *model_ = nullptr;
   llama_context *ctx_ = nullptr;
@@ -734,8 +843,8 @@ generate_tokens(Context &ctx, SamplerChain &sampler,
   }
 
   for (int i = 0; i < max_new_tokens; ++i) {
+    // llama_sampler_sample (called by generate_next) already accepts the token
     llama_token token = ctx.generate_next(sampler, -1);
-    llama_sampler_accept(sampler.get(), token);
     if (token == eos_token || token == LLAMA_TOKEN_NULL) {
       break;
     }
@@ -872,16 +981,24 @@ private:
 };
 
 // Context LoRA methods (defined after LoraAdapter)
-inline int32_t Context::set_lora(LoraAdapter &adapter, float scale) {
+inline int32_t Context::set_adapters_lora(nb::list py_adapters,
+                                          nb::list py_scales) {
   if (!ctx_)
     return -1;
-  return llama_set_adapter_lora(ctx_, adapter.get(), scale);
-}
-
-inline int32_t Context::remove_lora(LoraAdapter &adapter) {
-  if (!ctx_)
-    return -1;
-  return llama_rm_adapter_lora(ctx_, adapter.get());
+  size_t n = nb::len(py_adapters);
+  if (n != nb::len(py_scales)) {
+    throw std::invalid_argument("adapters and scales must have same length");
+  }
+  if (n == 0) {
+    return llama_set_adapters_lora(ctx_, nullptr, 0, nullptr);
+  }
+  std::vector<llama_adapter_lora *> adapters(n);
+  std::vector<float> scales(n);
+  for (size_t i = 0; i < n; i++) {
+    adapters[i] = nb::cast<LoraAdapter &>(py_adapters[i]).get();
+    scales[i] = nb::cast<float>(py_scales[i]);
+  }
+  return llama_set_adapters_lora(ctx_, adapters.data(), n, scales.data());
 }
 
 struct TokenProb {
@@ -942,8 +1059,6 @@ std::vector<TokenProb> generate_tokens_with_details(
     llama_sampler_accept(sampler.get(), t);
   }
 
-  const size_t prompt_out_start = results.size();
-
   // process prompt
   if (!priming.empty()) {
     ctx.decode(priming, /*return_logits=*/true);
@@ -956,6 +1071,10 @@ std::vector<TokenProb> generate_tokens_with_details(
       }
     }
   }
+
+  // Index where generated (non-prompt) tokens begin in results.
+  // Set AFTER echo block so stop-sequence removal never removes prompt tokens.
+  const size_t generated_start = results.size();
 
   std::vector<llama_token> generated;
   generated.reserve(static_cast<size_t>(max_new_tokens));
@@ -992,8 +1111,19 @@ std::vector<TokenProb> generate_tokens_with_details(
       lse = std::log(sum) + double(max_l);
     }
 
-    llama_token token = ctx.generate_next(sampler, -1);
-    llama_sampler_accept(sampler.get(), token);
+    // Use token selected by the apply above — do NOT call generate_next
+    // (llama_sampler_sample) which would re-apply the sampler chain,
+    // advancing the dist sampler's RNG and potentially selecting a
+    // different token than what cur_p reflects.
+    llama_token token = LLAMA_TOKEN_NULL;
+    if (cur_p.size > 0 && cur_p.selected >= 0 &&
+        static_cast<size_t>(cur_p.selected) < cur_p.size) {
+      token = cur_p.data[cur_p.selected].id;
+    }
+    // Accept into sampler for penalty tracking
+    if (token >= 0) {
+      llama_sampler_accept(sampler.get(), token);
+    }
 
     // Check for EOS/NULL before accessing logits to avoid out-of-bounds read
     if (token == eos_token || token == LLAMA_TOKEN_NULL ||
@@ -1001,14 +1131,9 @@ std::vector<TokenProb> generate_tokens_with_details(
       break;
     }
 
-    // Find the adjusted logit for the sampled token
-    float token_logit = logits[token];
-    for (size_t j = 0; j < cur_p.size; ++j) {
-      if (cur_p.data[j].id == token) {
-        token_logit = cur_p.data[j].logit;
-        break;
-      }
-    }
+    // The token logit comes directly from cur_p (post-sampler), which is
+    // consistent with the lse computed above from cur_p values.
+    float token_logit = cur_p.data[static_cast<size_t>(cur_p.selected)].logit;
 
     TokenProb tp;
     tp.token = token;
@@ -1018,7 +1143,7 @@ std::vector<TokenProb> generate_tokens_with_details(
       std::vector<size_t> idx(cur_p.size);
       std::iota(idx.begin(), idx.end(), 0);
       size_t n = std::min(static_cast<size_t>(top_logprobs), cur_p.size);
-      std::partial_sort(idx.begin(), idx.begin() + static_cast<long>(n),
+      std::partial_sort(idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(n),
                         idx.end(), [&](size_t a, size_t b) {
                           return cur_p.data[a].logit > cur_p.data[b].logit;
                         });
@@ -1048,7 +1173,7 @@ std::vector<TokenProb> generate_tokens_with_details(
       // remove stop tokens from output (but never remove echoed prompt)
       for (size_t j = 0; j < remove_n && !generated.empty(); ++j) {
         generated.pop_back();
-        if (results.size() > prompt_out_start) {
+        if (results.size() > generated_start) {
           results.pop_back();
         }
       }
@@ -1174,8 +1299,8 @@ std::vector<llama_token> generate_tokens_multi_stop(
   }
 
   for (int i = 0; i < max_new_tokens; ++i) {
+    // llama_sampler_sample (called by generate_next) already accepts the token
     llama_token token = ctx.generate_next(sampler, -1);
-    llama_sampler_accept(sampler.get(), token);
     if (token == eos_token || token == LLAMA_TOKEN_NULL) {
       break;
     }
@@ -1188,7 +1313,7 @@ std::vector<llama_token> generate_tokens_multi_stop(
         continue;
       if (std::equal(seq.rbegin(), seq.rend(), output.rbegin())) {
         matched = true;
-        output.erase(output.end() - static_cast<long>(seq.size()),
+        output.erase(output.end() - static_cast<std::ptrdiff_t>(seq.size()),
                      output.end());
         break;
       }
@@ -1279,7 +1404,7 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
         continue;
       if (std::equal(seq.rbegin(), seq.rend(), output.rbegin())) {
         matched = true;
-        output.erase(output.end() - static_cast<long>(seq.size()),
+        output.erase(output.end() - static_cast<std::ptrdiff_t>(seq.size()),
                      output.end());
         break;
       }
@@ -1351,8 +1476,8 @@ int32_t generate_tokens_streaming(
   };
 
   for (int i = 0; i < max_new_tokens; ++i) {
+    // llama_sampler_sample (called by generate_next) already accepts the token
     llama_token token = ctx.generate_next(sampler, -1);
-    llama_sampler_accept(sampler.get(), token);
 
     if (token == eos_token || token == LLAMA_TOKEN_NULL) {
       break;
@@ -1375,7 +1500,7 @@ int32_t generate_tokens_streaming(
 
     if (matched) {
       // Remove stop tokens; buffering guarantees none were yielded
-      output.erase(output.end() - static_cast<long>(remove_n), output.end());
+      output.erase(output.end() - static_cast<std::ptrdiff_t>(remove_n), output.end());
       break;
     }
 
@@ -1387,7 +1512,10 @@ int32_t generate_tokens_streaming(
     ctx.decode_one(token, /*request_logits=*/true);
   }
 
-  // Flush remaining buffered tokens that weren't part of a stop sequence
+  // Flush remaining buffered tokens. These are tokens that were held back
+  // by the stop-sequence window but never completed a match. Partial stop
+  // sequence prefixes at end-of-generation are NOT treated as stops — only
+  // complete matches trigger removal. So these tokens are valid output.
   while (n_yielded < output.size()) {
     nb::gil_scoped_acquire gil;
     if (!callback(output[n_yielded])) {
@@ -1549,6 +1677,11 @@ NB_MODULE(_llama, m) {
       .def("bos", &Model::bos, "Beginning-of-sequence token ID")
       .def("eos", &Model::eos, "End-of-sequence token ID")
       .def("eot", &Model::eot, "End-of-turn token ID")
+      .def("sep", &Model::sep, "Separator token ID")
+      .def("nl", &Model::nl, "Newline token ID")
+      .def("pad", &Model::pad, "Padding token ID")
+      .def("get_add_bos", &Model::get_add_bos,
+           "Whether model prefers BOS token to be added")
       .def("n_embd", &Model::n_embd, "Embedding dimension")
       .def("meta_count", &Model::meta_count, "Number of metadata entries")
       .def("meta_val_str", &Model::meta_val_str, "key"_a,
@@ -1560,6 +1693,15 @@ NB_MODULE(_llama, m) {
       .def("model_size", &Model::model_size, "Model size in bytes")
       .def("n_params", &Model::n_params, "Number of parameters")
       .def("n_layer", &Model::n_layer, "Number of layers")
+      .def("n_head", &Model::n_head, "Number of attention heads")
+      .def("has_encoder", &Model::has_encoder,
+           "Whether model has an encoder component")
+      .def("has_decoder", &Model::has_decoder,
+           "Whether model has a decoder component")
+      .def("is_recurrent", &Model::is_recurrent,
+           "Whether model uses recurrent architecture")
+      .def("is_hybrid", &Model::is_hybrid,
+           "Whether model uses hybrid attention architecture")
       .def("chat_template", &Model::chat_template, "name"_a = "",
            "Get chat template string")
       .def("token_to_piece", &Model::token_to_piece, "token"_a,
@@ -1584,7 +1726,29 @@ NB_MODULE(_llama, m) {
               "Frequency penalty")
       .def_rw("presence_penalty", &SamplerChain::Params::presence_penalty,
               "Presence penalty")
-      .def_rw("seed", &SamplerChain::Params::seed, "RNG seed (-1 = random)");
+      .def_rw("seed", &SamplerChain::Params::seed, "RNG seed (-1 = random)")
+      .def_rw("temp_delta", &SamplerChain::Params::temp_delta,
+              "Dynamic temperature delta (0 = disabled)")
+      .def_rw("temp_exponent", &SamplerChain::Params::temp_exponent,
+              "Dynamic temperature exponent")
+      .def_rw("xtc_probability", &SamplerChain::Params::xtc_probability,
+              "XTC probability (0 = disabled)")
+      .def_rw("xtc_threshold", &SamplerChain::Params::xtc_threshold,
+              "XTC threshold")
+      .def_rw("top_n_sigma", &SamplerChain::Params::top_n_sigma,
+              "Top-n-sigma threshold (negative = disabled)")
+      .def_rw("dry_multiplier", &SamplerChain::Params::dry_multiplier,
+              "DRY multiplier (0 = disabled)")
+      .def_rw("dry_base", &SamplerChain::Params::dry_base, "DRY base")
+      .def_rw("dry_allowed_length",
+              &SamplerChain::Params::dry_allowed_length,
+              "DRY minimum repeat length")
+      .def_rw("dry_penalty_last_n",
+              &SamplerChain::Params::dry_penalty_last_n,
+              "DRY window size (-1 = context size)")
+      .def_rw("dry_seq_breakers",
+              &SamplerChain::Params::dry_seq_breakers,
+              "DRY sequence breaker strings");
 
   nb::class_<SamplerChain>(m, "SamplerChain",
                            "Sampler chain for token selection")
@@ -1627,10 +1791,8 @@ NB_MODULE(_llama, m) {
            "Get state as bytes (returns Python bytes directly)")
       .def("set_state_data", &Context::set_state_data, "data"_a,
            "Set state from bytes (accepts Python bytes directly)")
-      .def("set_lora", &Context::set_lora, "adapter"_a, "scale"_a = 1.0f,
-           "Apply LoRA adapter with scale")
-      .def("remove_lora", &Context::remove_lora, "adapter"_a,
-           "Remove specific LoRA adapter")
+      .def("set_adapters_lora", &Context::set_adapters_lora, "adapters"_a,
+           "scales"_a, "Set LoRA adapters with scales (replaces all)")
       .def("clear_lora", &Context::clear_lora, "Remove all LoRA adapters")
       .def("perf", &Context::perf, "Get performance metrics dict")
       .def("perf_reset", &Context::perf_reset, "Reset performance counters")
@@ -1645,7 +1807,15 @@ NB_MODULE(_llama, m) {
       .def("kv_cache_seq_add", &Context::kv_cache_seq_add, "seq_id"_a, "p0"_a,
            "p1"_a, "delta"_a, "Add position delta to sequence")
       .def("kv_cache_seq_pos_max", &Context::kv_cache_seq_pos_max,
-           "seq_id"_a = 0, "Get max position in sequence");
+           "seq_id"_a = 0, "Get max position in sequence")
+      .def("kv_cache_seq_pos_min", &Context::kv_cache_seq_pos_min,
+           "seq_id"_a = 0, "Get min position in sequence")
+      .def("memory_can_shift", &Context::memory_can_shift,
+           "Whether memory supports KV cache shifting")
+      .def("set_embeddings", &Context::set_embeddings, "enabled"_a,
+           "Enable or disable embedding extraction at runtime")
+      .def("set_causal_attn", &Context::set_causal_attn, "enabled"_a,
+           "Enable or disable causal attention at runtime");
 
   nb::class_<LoraAdapter>(m, "LoraAdapter",
                           "LoRA adapter for model fine-tuning")

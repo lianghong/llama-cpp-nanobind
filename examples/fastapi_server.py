@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
 from pydantic import BaseModel
 
-from llama_cpp import Llama, LlamaConfig
 
 # Global model instance
 llm: Llama | None = None

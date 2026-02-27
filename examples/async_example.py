@@ -4,7 +4,8 @@
 import asyncio
 import time
 
-from llama_cpp import Llama, LlamaConfig
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
 
 
 async def main() -> None:

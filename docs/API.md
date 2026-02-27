@@ -48,8 +48,17 @@ with Llama("model.gguf") as llm:
 - `get_state()`, `set_state(data)` → State as bytes
 - `load_lora(path, scale=1.0)`, `remove_lora(adapter)`, `clear_lora()` → LoRA management
 - `perf()`, `perf_reset()` → Performance metrics
+- `n_head()` → `int` – Number of attention heads
+- `has_encoder()`, `has_decoder()` → `bool` – Architecture type
+- `is_recurrent()`, `is_hybrid()` → `bool` – Architecture variant (e.g., Qwen3.5 hybrid)
+- `token_sep()`, `token_nl()`, `token_pad()` → `int` – Special token IDs
+- `get_add_bos()` → `bool` – Model's BOS preference
 - `kv_cache_clear()` → Clear KV cache without recreating context
 - `kv_cache_seq_rm()`, `kv_cache_seq_cp()`, `kv_cache_seq_keep()`, `kv_cache_seq_add()`, `kv_cache_seq_pos_max()` → KV cache management
+- `kv_cache_seq_pos_min()` → `int` – Minimum position in KV cache for sequence
+- `memory_can_shift()` → `bool` – Whether KV cache supports shifting
+- `set_embeddings(enabled)` → None – Toggle embedding computation at runtime
+- `set_causal_attn(enabled)` → None – Toggle causal attention at runtime
 
 ### True Streaming
 
@@ -144,7 +153,7 @@ if __name__ == "__main__":
 | `offload_kqv` | True | Offload K/Q/V to GPU |
 | `flash_attn` | 1 | Flash-attention mode |
 | `embeddings` | False | Enable embeddings (required for `embed()` and `create_embedding()`) |
-| `add_bos` | True | Add BOS during tokenization |
+| `add_bos` | None | Add BOS during tokenization (None = auto-detect from model) |
 | `parse_special` | False | Parse special tokens |
 | `chat_format` | None | Chat template name |
 | `verbose` | True | Control logging |
@@ -166,6 +175,18 @@ Raises `ValidationError` if `n_ctx < 1`, `n_batch < 1`, `n_seq_max < 1`, or `n_g
 | `presence_penalty` | 0.0 |
 | `frequency_penalty` | 0.0 |
 | `seed` | None |
+| `dry_multiplier` | 0.0 | DRY anti-repetition multiplier (0 = disabled) |
+| `dry_base` | 1.75 | DRY base for penalty scaling |
+| `dry_allowed_length` | 2 | DRY minimum repeat length |
+| `dry_penalty_last_n` | -1 | DRY lookback window (-1 = context size) |
+| `dry_seq_breakers` | `["\n",":",'"',"*"]` | DRY sequence breakers |
+| `xtc_probability` | 0.0 | XTC removal probability (0 = disabled) |
+| `xtc_threshold` | 0.1 | XTC minimum probability threshold |
+| `temp_delta` | 0.0 | Dynamic temperature range delta |
+| `temp_exponent` | 1.0 | Dynamic temperature exponent |
+| `top_n_sigma` | -1.0 | Top-n-sigma cutoff (negative = disabled) |
+
+Sampler chain ordering: DRY → penalties → top_n_sigma → top_k → top_p → min_p → XTC → temp → dist
 
 ## llama_cpp.LlamaGrammar
 
@@ -397,6 +418,38 @@ Run `examples/verify_double_free.py` to exercise all cleanup paths (20 scenarios
 
 ```bash
 MALLOC_CHECK_=3 python examples/verify_double_free.py
+```
+
+## llama_cpp.LlamaPool
+
+Pool of Llama instances for true parallel inference. Supports async context manager.
+
+**Constructor**
+
+```python
+LlamaPool(model_path: str, pool_size: int = 4, config: LlamaConfig | None = None, warmup: bool = False)
+```
+
+- `model_path`: Path to GGUF model file.
+- `pool_size`: Number of parallel worker instances.
+- `config`: Optional configuration shared by all instances.
+- `warmup`: Run dummy inference on each instance to pre-load GPU caches.
+
+**Methods**
+
+- `generate(prompt, max_tokens=128, sampling=None, stop=None, timeout=None)` → `str` – Generate using next available instance
+- `generate_batch(prompts, max_tokens=128, sampling=None, stop=None, timeout=None)` → `list[str]` – Generate for multiple prompts in parallel
+- `create_chat_completion(messages, max_tokens=128, temperature=None, timeout=None)` → `dict` – Chat completion using next available instance
+- `create_chat_completion_batch(message_lists, max_tokens=128, temperature=None, timeout=None)` → `list[dict]` – Batch chat completions in parallel
+- `close()` → None – Close all instances immediately (warns if in-flight requests exist)
+- `close_graceful(timeout=30.0)` → None – Wait for in-flight requests, then close
+
+**Context Manager**
+
+```python
+async with LlamaPool("model.gguf", pool_size=4) as pool:
+    results = await pool.generate_batch(["Q1", "Q2"], max_tokens=64)
+# close_graceful() called automatically on exit
 ```
 
 ## Thread Safety

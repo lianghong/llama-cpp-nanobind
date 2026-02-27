@@ -4,7 +4,8 @@
 import argparse
 import time
 
-from llama_cpp.unified import GPTOSSBackend, UnifiedLLM
+from llama_cpp.unified import GPTOSSBackend
+from llama_cpp.unified import UnifiedLLM
 
 
 def main() -> None:

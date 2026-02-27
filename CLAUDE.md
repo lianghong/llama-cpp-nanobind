@@ -109,8 +109,11 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 
 #### Sampling Pipeline
 - Grammar constraints apply **before** sampler chain
+- Sampler chain uses canonical ordering: DRY → penalties → top_n_sigma → top_k → top_p → min_p → XTC → temp_ext/temp → dist
 - Sampler chain respects temperature/top_p/top_k even with grammar
 - Use `cur_p.selected` from sampler, not argmax
+- In `generate_tokens_with_details` (logprobs path), use `cur_p.selected` directly after explicit `llama_sampler_apply` — do NOT call `generate_next`/`llama_sampler_sample` which would apply the chain a second time (advancing the dist sampler's RNG)
+- New samplers: DRY (anti-repetition on raw logits), XTC (cross-token consistency on filtered candidates), dynamic temperature (`temp_ext`), top-n-sigma (truncate by standard deviations)
 
 #### Stop Sequences
 - Multi-token stop sequences supported via `generate_tokens_multi_stop()`
@@ -129,7 +132,9 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
   - Exceptions propagated from worker thread to caller
   - Early termination via `threading.Event` cancellation flag (checked in callback)
   - 5s join timeout allows current decode step to complete
+  - **Worker liveness check**: `token_queue.get(timeout=0.5)` with `thread.is_alive()` check — prevents permanent block if worker thread dies unexpectedly
   - **Multi-token stop sequence buffering**: tokens are buffered up to `max_stop_len` before yielding to prevent partial stop sequence tokens from reaching the consumer
+  - **Flush invariant**: remaining buffered tokens at end-of-generation are always yielded (partial stop sequence prefixes are NOT treated as stops)
 - **`generate(..., stream=True)`**: Buffered streaming
   - All tokens generated first, then yielded (higher latency)
   - Simpler implementation, no threading overhead
@@ -153,6 +158,10 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
   - `asyncio.Queue`-based checkout/return ensures exclusive instance access (Llama is not thread-safe)
   - Each instance is checked out by at most one request at a time
   - Instances returned to pool after use via try/finally
+- **Shutdown**: Two modes:
+  - `close()`: Immediate force-close; logs warning if instances are checked out (in-flight)
+  - `close_graceful(timeout=30.0)`: Waits for in-flight requests to return, then force-closes after timeout
+  - `__aexit__` calls `close_graceful()` — async context manager is the recommended pattern
 - **GPU Memory**: `VRAM ≈ model_size × pool_size`
 - **Model Warmup** (optional, `warmup=True`):
   - Runs dummy inference (3 tokens) on each instance during init
@@ -174,6 +183,7 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 6. **Hold `g_init_mutex`** when freeing resources in `close()` methods (prevents races with GC)
 7. **Validate token range before indexing logits**: sampler can return `LLAMA_TOKEN_NULL` (-1); always check `token >= 0 && token < n_vocab` before `logits[token]`
 8. **Use `nb::bytes` for binary data**: state save/load uses `nb::bytes` directly (not `std::vector<uint8_t>`) to avoid per-element Python↔C++ conversion; manage GIL manually when mixing Python object construction with heavy C++ calls
+9. **Logprobs path uses `cur_p.selected` directly**: In `generate_tokens_with_details`, `llama_sampler_apply` is called explicitly for logprob computation, then the selected token is read from `cur_p.data[cur_p.selected].id` — do NOT call `generate_next`/`llama_sampler_sample` after an explicit apply, as it would re-apply the chain and advance the dist sampler's RNG
 
 ### When Modifying Python Wrappers (`src/llama_cpp/llama.py`, `unified.py`)
 
@@ -183,6 +193,7 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 4. **Stop sequences**: Use `generate_tokens_multi_stop()` when stop sequences present and details not needed
 5. **Grammar samplers are stateful**: Never cache or reuse them — `llama_sampler_accept` mutates internal state, so each generation must create a fresh sampler
 6. **Falsy-value defaults**: Use `if x is not None else fallback` (not `x or fallback`) when `0` or `0.0` is a valid value
+7. **BOS auto-detection**: `LlamaConfig.add_bos` defaults to `None` (auto-detected from model metadata via `llama_vocab_get_add_bos` after model load). The C++ generation functions have a guard `if (add_bos && front != bos)` as a safety net against double BOS
 
 ### Model File Requirement
 

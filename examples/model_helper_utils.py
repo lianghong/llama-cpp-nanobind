@@ -9,10 +9,11 @@ Features:
 - Small CLI demo that inspects models in ./models.
 """
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+import re
+
 
 _RE_TOOL_JSON = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 _RE_GPTOSS_TOOL = re.compile(

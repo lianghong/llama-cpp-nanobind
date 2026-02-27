@@ -39,6 +39,7 @@ import time
 
 from llama_cpp.unified import UnifiedLLM
 
+
 DEFAULT_MODEL = "models/Qwen3.5-27B-Q4_K_M.gguf"
 SEPARATOR = "=" * 60
 

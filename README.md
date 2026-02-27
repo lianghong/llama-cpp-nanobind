@@ -149,6 +149,20 @@ uv pip install -e .
 - Added `examples/translate.py` — English-to-Chinese translation example with few-shot prompting to prevent hallucination/sentiment reversal, configurable `--temperature` (default 0.3 for faithful output)
 - Fixed mypy `no-any-return` in `Llama.get_state()` — explicit type annotation for C++ binding return value
 
+**API Modernization:**
+- Added model introspection: `n_head()`, `has_encoder()`, `has_decoder()`, `is_recurrent()`, `is_hybrid()` — query architecture properties
+- Added special token access: `token_sep()`, `token_nl()`, `token_pad()`, `get_add_bos()` — access vocabulary tokens and model's BOS preference
+- Auto-detect BOS: `LlamaConfig.add_bos` defaults to `None` (auto-detected from model metadata via `llama_vocab_get_add_bos`)
+- Added memory introspection: `kv_cache_seq_pos_min()`, `memory_can_shift()` — query KV cache state
+- Added runtime toggles: `set_embeddings()`, `set_causal_attn()` — change context behavior at runtime
+- New samplers: DRY (anti-repetition), XTC (cross-token consistency), dynamic temperature, top-n-sigma — all exposed via `SamplingParams`
+- Sampler chain uses canonical ordering: DRY → penalties → top_n_sigma → top_k → top_p → min_p → XTC → temp → dist
+- Fixed double sampler application in logprobs path — `generate_tokens_with_details` now uses `cur_p.selected` directly instead of re-applying sampler chain
+- `generate_stream()` now detects worker thread death (timeout-based polling with liveness check)
+- `LlamaPool.close_graceful(timeout)` — async graceful shutdown waiting for in-flight requests
+- `LlamaPool.close()` now warns when called with in-flight requests
+- Code quality: all ruff, ruff format, isort, and mypy issues resolved; `Iterator`/`AsyncIterator` types for yield-only generators
+
 ### Optional build flags
 
 ```bash
@@ -466,7 +480,7 @@ The script tests 20 scenarios across both `Llama` and `UnifiedLLM`: double `clos
 - `Llama` – main class for model loading and inference (supports context manager)
 - `LlamaPool` – pool manager for parallel inference with multiple instances
 - `LlamaConfig` – configuration (chat_format, embeddings, GPU settings, n_seq_max)
-- `SamplingParams` – temperature, top_k, top_p, penalties
+- `SamplingParams` – temperature, top_k, top_p, penalties, DRY, XTC, dynamic temp, top-n-sigma
 - `LlamaGrammar` – constrained generation via GBNF or JSON schema
 - `UnifiedLLM` – multi-model wrapper with auto-detection
 
@@ -484,6 +498,10 @@ The script tests 20 scenarios across both `Llama` and `UnifiedLLM`: double `clos
 - `tokenize()`, `detokenize()`, `n_tokens()` – tokenization
 - `save_state()`, `load_state()`, `get_state()`, `set_state()` – state management
 - `load_lora()`, `remove_lora()`, `clear_lora()` – LoRA adapters
+- `n_head()`, `has_encoder()`, `has_decoder()`, `is_recurrent()`, `is_hybrid()` – model architecture
+- `token_sep()`, `token_nl()`, `token_pad()`, `get_add_bos()` – special tokens
+- `kv_cache_seq_pos_min()`, `memory_can_shift()` – memory introspection
+- `set_embeddings()`, `set_causal_attn()` – runtime context toggles
 - `perf()`, `perf_reset()` – performance metrics
 
 **Utilities:**

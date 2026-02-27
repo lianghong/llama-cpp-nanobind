@@ -18,20 +18,21 @@ Requirements:
 """
 
 import argparse
+from dataclasses import dataclass
 import gc
 import hashlib
+from pathlib import Path
 import random
 import re
 import signal
 import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
 from types import FrameType
-from typing import TYPE_CHECKING, Final, Self
+from typing import Final, Self, TYPE_CHECKING
 from urllib.parse import urlparse
 
 import requests
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

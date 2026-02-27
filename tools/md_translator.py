@@ -22,20 +22,22 @@ Requirements:
 """
 
 import argparse
+from collections.abc import Callable
+from dataclasses import dataclass
+from dataclasses import field
+from enum import StrEnum
 import gc
+from pathlib import Path
 import re
 import signal
 import sys
 import traceback
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from enum import StrEnum
-from pathlib import Path
 from types import FrameType
-from typing import TYPE_CHECKING, Final, Self, TypedDict
+from typing import Final, Self, TYPE_CHECKING, TypedDict
 
 from llama_cpp import SamplingParams
 from llama_cpp.unified import UnifiedLLM
+
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

@@ -17,11 +17,13 @@ Usage:
 """
 
 import argparse
-import time
 from datetime import datetime
 from pathlib import Path
+import time
 
-from llama_cpp.unified import GPTOSSBackend, UnifiedLLM
+from llama_cpp.unified import GPTOSSBackend
+from llama_cpp.unified import UnifiedLLM
+
 
 DEFAULT_INPUT: Path = Path(__file__).parent / "example.txt"
 """Default input file for translation."""

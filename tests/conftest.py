@@ -2,9 +2,11 @@
 
 import os
 
+from llama_cpp import disable_logging
+from llama_cpp import Llama
+from llama_cpp import LlamaConfig
 import pytest
 
-from llama_cpp import Llama, LlamaConfig, disable_logging
 
 MODEL_PATH = os.environ.get(
     "LLAMA_TEST_MODEL",

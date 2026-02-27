@@ -24,6 +24,7 @@ Regionalized variants are also supported (e.g., "en-US", "pt-BR", "zh-CN").
 
 from llama_cpp.unified import UnifiedLLM
 
+
 # Language code mappings for common languages
 LANGUAGE_NAMES: dict[str, str] = {
     "af": "Afrikaans",

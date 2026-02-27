@@ -7,12 +7,15 @@
 """GPT-OSS generation with custom chat template."""
 
 import argparse
+from datetime import datetime
+from datetime import timezone
 import re
 import time
-from datetime import datetime, timezone
 from typing import TypedDict
 
-from llama_cpp import Llama, LlamaConfig, SamplingParams  # type: ignore[import-untyped]
+from llama_cpp import Llama  # type: ignore[import-untyped]
+from llama_cpp import LlamaConfig
+from llama_cpp import SamplingParams
 
 
 class GenerationResult(TypedDict):
