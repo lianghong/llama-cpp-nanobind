@@ -132,10 +132,25 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     "glm-4": ModelConfig(
         ModelFamily.GLM4,
         chat_format="glm4",
-        temperature=0.95,
-        top_p=0.7,
-        top_k=1,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=0,
+        min_p=0.01,
         max_ctx=131072,
+    ),
+    "glm-4.7": ModelConfig(
+        ModelFamily.GLM4,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=0,
+        min_p=0.01,
+        max_ctx=202752,
+        supports_thinking=True,
+        stop_sequences=["<|endoftext|>", "<|user|>", "<|observation|>"],
+        think_temperature=1.0,
+        think_top_p=0.95,
+        think_top_k=0,
+        think_min_p=0.01,
     ),
     "granite": ModelConfig(
         ModelFamily.GRANITE, temperature=0.0, top_p=1.0, top_k=1, max_ctx=128000
