@@ -34,6 +34,24 @@ def test_detect_model_family_phi():
     assert config.family == ModelFamily.PHI
 
 
+def test_detect_model_family_aya():
+    config = detect_model_family("models/tiny-aya-global-q8_0.gguf")
+    assert config.family == ModelFamily.AYA
+
+
+def test_detect_model_family_glm47():
+    config = detect_model_family("models/GLM-4.7-Flash-REAP-23B-A3B-Q4_K_M.gguf")
+    assert config.family == ModelFamily.GLM4
+    assert config.supports_thinking is True
+
+
+def test_detect_model_family_glm4_legacy():
+    """Older GLM-4 models still match glm-4 config."""
+    config = detect_model_family("models/glm-4-9b-chat-Q6_K.gguf")
+    assert config.family == ModelFamily.GLM4
+    assert config.supports_thinking is False
+
+
 def test_detect_model_family_unknown():
     with pytest.raises(ValueError) as exc_info:
         detect_model_family("unknown_model.gguf")
@@ -45,6 +63,8 @@ def test_model_configs_exist():
     expected = [
         "aya",
         "gemma",
+        "glm-4",
+        "glm-4.7",
         "granite",
         "minicpm",
         "ministral-instruct",
@@ -52,9 +72,32 @@ def test_model_configs_exist():
         "phi-4",
         "qwen3",
         "gpt-oss",
+        "translategemma",
     ]
     for key in expected:
         assert key in MODEL_CONFIGS
+
+
+def test_aya_config_values():
+    """Verify Aya config has correct stop sequences and params."""
+    config = MODEL_CONFIGS["aya"]
+    assert config.temperature == 0.3
+    assert config.top_p == 0.95
+    assert "<|END_OF_TURN_TOKEN|>" in config.stop_sequences
+    assert "<|END_RESPONSE|>" in config.stop_sequences
+    assert config.supports_thinking is False
+
+
+def test_glm47_config_values():
+    """Verify GLM-4.7 config has thinking support and correct params."""
+    config = MODEL_CONFIGS["glm-4.7"]
+    assert config.supports_thinking is True
+    assert config.temperature == 1.0
+    assert config.top_p == 0.95
+    assert config.min_p == 0.01
+    assert "<|endoftext|>" in config.stop_sequences
+    assert "<|user|>" in config.stop_sequences
+    assert "<|observation|>" in config.stop_sequences
 
 
 def test_detect_ministral():
