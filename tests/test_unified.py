@@ -71,6 +71,7 @@ def test_model_configs_exist():
         "ministral-reasoning",
         "phi-4",
         "qwen3",
+        "qwen3.5",
         "gpt-oss",
         "translategemma",
     ]
@@ -98,6 +99,39 @@ def test_glm47_config_values():
     assert "<|endoftext|>" in config.stop_sequences
     assert "<|user|>" in config.stop_sequences
     assert "<|observation|>" in config.stop_sequences
+
+
+def test_detect_model_family_qwen35():
+    config = detect_model_family("models/Qwen3.5-27B-Q4_K_M.gguf")
+    assert config.family == ModelFamily.QWEN3_5
+
+
+def test_detect_model_family_qwen3_not_qwen35():
+    """Qwen3 filenames must NOT match qwen3.5 config."""
+    config = detect_model_family("models/Qwen3-8B-Q6_K.gguf")
+    assert config.family == ModelFamily.QWEN3
+
+
+def test_qwen35_config_values():
+    """Verify Qwen3.5 config has correct params from model card."""
+    config = MODEL_CONFIGS["qwen3.5"]
+    assert config.family == ModelFamily.QWEN3_5
+    assert config.supports_thinking is True
+    assert config.temperature == 1.0
+    assert config.top_p == 0.95
+    assert config.top_k == 20
+    assert config.presence_penalty == 1.5
+    assert config.max_ctx == 262144
+    assert "<|im_end|>" in config.stop_sequences
+    assert "<|endoftext|>" in config.stop_sequences
+
+
+def test_qwen35_no_think_suffix():
+    """Qwen3.5 must NOT append /think or /nothink suffixes."""
+    config = MODEL_CONFIGS["qwen3.5"]
+    # The _build_messages guard only triggers for ModelFamily.QWEN3,
+    # so QWEN3_5 naturally skips the /think suffix
+    assert config.family != ModelFamily.QWEN3
 
 
 def test_detect_ministral():
