@@ -21,6 +21,7 @@ Example:
 """
 
 import asyncio
+import copy
 import logging
 from typing import Any, cast
 
@@ -108,7 +109,7 @@ class LlamaPool:
         self.instances: list[Llama] = []
         for i in range(pool_size):
             logging.debug(f"Loading instance {i + 1}/{pool_size}...")
-            instance = Llama(model_path, config=self.config)
+            instance = Llama(model_path, config=copy.copy(self.config))
             self.instances.append(instance)
         logging.info(f"LlamaPool initialized with {pool_size} instances")
 

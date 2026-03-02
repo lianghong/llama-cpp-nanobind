@@ -408,20 +408,27 @@ class Llama:
         """Release model and context resources."""
         if getattr(self, "_closed", True):
             return
-        self._closed = True
-        # Remove from instance tracking
-        if hasattr(self, "_ref"):
-            _instances.discard(self._ref)
-        if hasattr(self, "_lora_adapters"):
-            self._lora_adapters.clear()
-        # Explicitly free context before model (C++ dependency)
-        if getattr(self, "ctx", None) is not None:
-            self.ctx.close()
-            self.ctx = None
-        if getattr(self, "model", None) is not None:
-            self.model.close()
-            self.model = None
-        # Force GC to collect any reference cycles while interpreter is safe
+
+        # Serialize shutdown with active generation/async paths
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+
+            # Remove from instance tracking
+            if hasattr(self, "_ref"):
+                _instances.discard(self._ref)
+            if hasattr(self, "_lora_adapters"):
+                self._lora_adapters.clear()
+            # Explicitly free context before model (C++ dependency)
+            if getattr(self, "ctx", None) is not None:
+                self.ctx.close()
+                self.ctx = None
+            if getattr(self, "model", None) is not None:
+                self.model.close()
+                self.model = None
+
+        # Force GC outside lock to avoid potential deadlocks from finalizers
         gc.collect()
 
     # Compatibility helpers -------------------------------------------------
