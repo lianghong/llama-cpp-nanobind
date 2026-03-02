@@ -220,6 +220,28 @@ def test_qwen35_config_presence_penalty():
     assert MODEL_CONFIGS["qwen3.5-small"].presence_penalty == 1.5
 
 
+def test_gpt_oss_config_values():
+    """Verify GPT-OSS config matches OpenAI recommended settings."""
+    config = MODEL_CONFIGS["gpt-oss"]
+    assert config.family == ModelFamily.GPT_OSS
+    assert config.temperature == 1.0
+    assert config.top_p == 1.0
+    assert config.top_k == 0  # OpenAI: disable top-k
+    assert config.min_p == 0.0
+    assert config.max_ctx == 131072  # 128K context window
+    assert config.supports_thinking is True
+    assert config.repeat_penalty == 1.0  # RL-trained, disable penalty
+
+
+def test_gpt_oss_stop_sequences():
+    """GPTOSSBackend must include <|return|> EOS token."""
+    from llama_cpp.unified import GPTOSSBackend
+
+    assert "<|return|>" in GPTOSSBackend.STOP
+    assert "<|start|>user" in GPTOSSBackend.STOP
+    assert "<|end|><|end|>" in GPTOSSBackend.STOP
+
+
 # Integration tests (require model)
 @pytest.fixture(scope="module")
 def unified_llm():

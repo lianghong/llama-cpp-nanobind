@@ -267,9 +267,11 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         ModelFamily.GPT_OSS,
         temperature=1.0,
         top_p=1.0,
-        top_k=40,
-        max_ctx=128000,
+        top_k=0,
+        min_p=0.0,
+        max_ctx=131072,
         supports_thinking=True,
+        repeat_penalty=1.0,
     ),
     "translategemma": ModelConfig(
         ModelFamily.TRANSLATEGEMMA,
@@ -709,7 +711,7 @@ class GPTOSSBackend(Backend):
         r"<\|channel\|\>\s*final\s*<\|message\|\>(.*?)(?:<\|end\|\>|$)", re.DOTALL
     )
     SYSTEM: ClassVar[str] = "You are ChatGPT, a large language model trained by OpenAI."
-    STOP: ClassVar[list[str]] = ["<|start|>user", "<|end|><|end|>"]
+    STOP: ClassVar[list[str]] = ["<|start|>user", "<|end|><|end|>", "<|return|>"]
 
     _date_lock: ClassVar = threading.Lock()
     _cached_date: ClassVar[str | None] = None
