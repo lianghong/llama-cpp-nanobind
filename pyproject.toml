@@ -50,7 +50,7 @@ Issues = "https://github.com/pplmx/llama-cpp-nanobind/issues"
 cmake.version = ">=3.26"
 cmake.build-type = "Release"
 wheel.packages = ["src/llama_cpp"]
-sdist.include = ["include", "lib", "examples", "tests"]
+sdist.include = ["examples", "tests"]
 sdist.exclude = ["models"]
 ninja.make-fallback = true
 install.components = ["python"]

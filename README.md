@@ -16,10 +16,9 @@ High-performance nanobind bindings for `llama.cpp`, packaged as a wheel-ready Py
 - `examples/` – runnable scripts
 - `tests/` – pytest-based smoke tests
 
-**External dependencies (not included, see setup below):**
-- `include/` – headers from llama.cpp
-- `lib/` – precompiled shared libraries
-- `models/` – GGUF model files
+**External dependencies:**
+- System-installed llama.cpp (headers + shared libraries)
+- `models/` – GGUF model files (not included)
 
 ## Prerequisites
 
@@ -37,38 +36,39 @@ High-performance nanobind bindings for `llama.cpp`, packaged as a wheel-ready Py
 
 ## External Dependencies Setup
 
-Before building, you need to obtain the llama.cpp headers and libraries:
+Before building, you need llama.cpp installed on your system. CMake uses `find_library()` and `find_path()` to discover headers and libraries from standard system paths.
 
 ### Option 1: Homebrew (macOS)
 
 ```bash
 brew install llama.cpp
-# CMake auto-detects Homebrew paths — no manual copying needed
+# CMake auto-detects Homebrew paths — no manual setup needed
 ```
 
-### Option 2: Build llama.cpp from source
+### Option 2: Build and install llama.cpp from source
 
 ```bash
-# Clone and build llama.cpp
 git clone https://github.com/ggerganov/llama.cpp
 cd llama.cpp
 
 # Linux (CUDA)
 cmake -B build -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=ON
 cmake --build build --config Release
-cp -r include/ /path/to/llama-cpp-nanobind/include/
-cp build/lib*.so /path/to/llama-cpp-nanobind/lib/
+sudo cmake --install build
 
 # macOS (Metal)
 cmake -B build -DGGML_METAL=ON -DBUILD_SHARED_LIBS=ON
 cmake --build build --config Release
-cp -r include/ /path/to/llama-cpp-nanobind/include/
-cp build/lib*.dylib /path/to/llama-cpp-nanobind/lib/
+sudo cmake --install build
 ```
 
-### Option 3: Use prebuilt release
+### Custom install prefix
 
-Download prebuilt libraries from [llama.cpp releases](https://github.com/ggerganov/llama.cpp/releases) and extract to `include/` and `lib/`.
+If llama.cpp is installed to a non-standard location, pass it via `CMAKE_PREFIX_PATH`:
+
+```bash
+CMAKE_ARGS="-DCMAKE_PREFIX_PATH=/opt/llama" uv pip install -e .
+```
 
 ### Model files
 
@@ -90,7 +90,7 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-`scikit-build-core` drives the build; it automatically links against the prebuilt libraries in `./lib` and installs them into the wheel. RPATH is set so the extension finds `llama_cpp/lib` at runtime.
+`scikit-build-core` drives the build; it links against system-installed llama.cpp libraries found via CMake's `find_library()`.
 
 **Note**: Release builds use aggressive optimizations (`-O3`, `-march=native`, `-flto=auto`, `-ffast-math`) for maximum performance.
 
@@ -166,13 +166,13 @@ uv pip install -e .
 ### Optional build flags
 
 ```bash
-# Custom build type or different lib/include roots
-CMAKE_BUILD_TYPE=RelWithDebInfo \
-LLAMA_LIB_DIR=$(pwd)/lib \
-LLAMA_INCLUDE_DIR=$(pwd)/include \
-uv pip install -e .
+# Custom build type
+CMAKE_BUILD_TYPE=RelWithDebInfo uv pip install -e .
 
-# Portable build without -march=native (for distributable wheels)
+# Custom llama.cpp install prefix
+CMAKE_ARGS="-DCMAKE_PREFIX_PATH=/opt/llama" uv pip install -e .
+
+# Portable build without -march=native
 CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 ```
 
@@ -513,4 +513,4 @@ The script tests 20 scenarios across both `Llama` and `UnifiedLLM`: double `clos
 
 This project is licensed under the MIT License.
 
-This package includes prebuilt libraries from [llama.cpp](https://github.com/ggerganov/llama.cpp), which is also MIT licensed. See the llama.cpp repository for full license details and attribution requirements.
+This package links against [llama.cpp](https://github.com/ggerganov/llama.cpp), which is also MIT licensed. See the llama.cpp repository for full license details and attribution requirements.

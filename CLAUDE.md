@@ -62,8 +62,8 @@ The project uses scikit-build-core with CMake. Key environment variables:
 # Custom build type
 CMAKE_BUILD_TYPE=RelWithDebInfo uv pip install -e .
 
-# Custom lib/include paths
-LLAMA_LIB_DIR=$(pwd)/lib LLAMA_INCLUDE_DIR=$(pwd)/include uv pip install -e .
+# Custom llama.cpp install prefix
+CMAKE_ARGS="-DCMAKE_PREFIX_PATH=/opt/llama" uv pip install -e .
 
 # Portable build (no -march=native)
 CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
@@ -73,13 +73,11 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 
 ### Component Structure
 
-1. **External Dependencies** (`lib/`, `include/`, `models/`)
-   - **Not included in repo** - must be obtained separately
-   - `include/`: llama.cpp headers for C++ bindings
-   - `lib/`: Prebuilt llama.cpp shared libraries (`.so` on Linux/CUDA, `.dylib` on macOS/Metal)
-   - `models/`: GGUF model files
-   - On macOS, Homebrew llama.cpp is auto-detected by CMake
-   - See README.md for setup instructions
+1. **External Dependencies** (`models/`)
+   - llama.cpp must be installed on the system (headers + shared libraries)
+   - CMake discovers headers via `find_path()` and libraries via `find_library()`
+   - On macOS, Homebrew llama.cpp prefix is auto-added to `CMAKE_PREFIX_PATH`
+   - `models/`: GGUF model files (not included)
 
 2. **C++ Bindings** (`src/bindings/llama_cpp.cpp`)
    - Single-file nanobind extension module
@@ -91,12 +89,12 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 3. **Python Wrappers** (`src/llama_cpp/`)
    - `llama.py`: Core `Llama` class with high-level inference API
    - `unified.py`: `UnifiedLLM` class for multi-model support (auto-detects Qwen3, Gemma, Mistral, etc.)
-   - `__init__.py`: Preloads shared libraries with `RTLD_GLOBAL` to avoid soname issues
+   - `__init__.py`: Package initializer with public API exports
 
-4. **Library Preloading**
-   - `_preload_shared_libs()` in `__init__.py` ensures CUDA/Metal/ggml libraries load correctly
-   - Works for both editable installs (from `./lib`) and wheel installs (`llama_cpp/lib`)
-   - RPATH: `$ORIGIN/lib` on Linux, `@loader_path/lib` on macOS
+4. **Library Linking**
+   - Extension links against system-installed llama.cpp shared libraries
+   - No RPATH or library bundling — relies on system linker paths
+   - On macOS, Homebrew llama.cpp is auto-detected via `brew --prefix`
 
 ### Key Design Patterns
 
@@ -271,13 +269,12 @@ MALLOC_CHECK_=3 python examples/verify_double_free.py
 
 ## Integration with llama.cpp
 
-This project uses **prebuilt** llama.cpp libraries in `lib/`. When updating llama.cpp:
+This project links against system-installed llama.cpp. When updating:
 
 1. Build llama.cpp with GPU support (`-DGGML_CUDA=ON` on Linux, `-DGGML_METAL=ON` on macOS)
-2. Copy headers to `include/`
-3. Copy shared libraries to `lib/` (`.so` on Linux, `.dylib` on macOS)
-4. Verify RPATH and soname compatibility
-5. Update C++ bindings if API changed
+2. Install to system: `sudo cmake --install build`
+3. Rebuild the extension: `uv pip install -e .`
+4. Update C++ bindings if API changed
 
 On macOS, `brew install llama.cpp` provides headers and libraries that CMake auto-detects.
 

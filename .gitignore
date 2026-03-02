@@ -48,11 +48,9 @@ htmlcov/
 *.dylib
 _skbuild/
 
-# External dependencies (obtain separately, keep README.md)
-include/*
-!include/README.md
-lib/*
-!lib/README.md
+# Local copies of external dependencies (not used by build)
+include/
+lib/
 models/*
 !models/README.md
 

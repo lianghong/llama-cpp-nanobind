@@ -60,59 +60,44 @@ endif()
 find_package(Python 3.14 COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(nanobind CONFIG REQUIRED)
 
-# Paths for headers and pre-built libraries
-if(NOT DEFINED LLAMA_LIB_DIR)
-  set(LLAMA_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
-endif()
-if(NOT DEFINED LLAMA_INCLUDE_DIR)
-  set(LLAMA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
-endif()
-
-# On macOS, auto-detect Homebrew llama.cpp if local dirs are empty
+# On macOS, add Homebrew llama.cpp to search paths
 if(APPLE)
-  file(GLOB _LOCAL_LIBS "${LLAMA_LIB_DIR}/libllama.*" "${LLAMA_LIB_DIR}/libggml*.*")
-  file(GLOB _LOCAL_HDRS "${LLAMA_INCLUDE_DIR}/llama.h")
-  if(NOT _LOCAL_LIBS OR NOT _LOCAL_HDRS)
-    execute_process(
-      COMMAND brew --prefix llama.cpp
-      OUTPUT_VARIABLE BREW_LLAMA_PREFIX
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-      ERROR_QUIET
-      RESULT_VARIABLE BREW_RESULT
-    )
-    if(BREW_RESULT EQUAL 0 AND EXISTS "${BREW_LLAMA_PREFIX}")
-      if(NOT _LOCAL_LIBS AND EXISTS "${BREW_LLAMA_PREFIX}/lib")
-        set(LLAMA_LIB_DIR "${BREW_LLAMA_PREFIX}/lib")
-        message(STATUS "Using Homebrew llama.cpp libs: ${LLAMA_LIB_DIR}")
-      endif()
-      if(NOT _LOCAL_HDRS AND EXISTS "${BREW_LLAMA_PREFIX}/include")
-        set(LLAMA_INCLUDE_DIR "${BREW_LLAMA_PREFIX}/include")
-        message(STATUS "Using Homebrew llama.cpp headers: ${LLAMA_INCLUDE_DIR}")
-      endif()
-    endif()
+  execute_process(
+    COMMAND brew --prefix llama.cpp
+    OUTPUT_VARIABLE BREW_LLAMA_PREFIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE BREW_RESULT
+  )
+  if(BREW_RESULT EQUAL 0 AND EXISTS "${BREW_LLAMA_PREFIX}")
+    list(PREPEND CMAKE_PREFIX_PATH "${BREW_LLAMA_PREFIX}")
+    message(STATUS "Added Homebrew llama.cpp to search paths: ${BREW_LLAMA_PREFIX}")
   endif()
 endif()
 
-# Collect all shared libraries including versioned symlinks
-# Using glob here is acceptable since these are prebuilt external libs
-if(APPLE)
-  file(GLOB LLAMA_SHARED_LIBS
-    "${LLAMA_LIB_DIR}/libllama.dylib"
-    "${LLAMA_LIB_DIR}/libggml*.dylib"
-    "${LLAMA_LIB_DIR}/libmtm*.dylib"
-  )
-else()
-  file(GLOB LLAMA_SHARED_LIBS
-    "${LLAMA_LIB_DIR}/libllama.so*"
-    "${LLAMA_LIB_DIR}/libggml*.so*"
-    "${LLAMA_LIB_DIR}/libmtm*.so*"
-  )
-endif()
-list(REMOVE_DUPLICATES LLAMA_SHARED_LIBS)
+# Find llama.cpp headers
+find_path(LLAMA_INCLUDE_DIR llama.h REQUIRED)
+message(STATUS "Found llama.h: ${LLAMA_INCLUDE_DIR}")
 
-if(NOT LLAMA_SHARED_LIBS)
-  message(FATAL_ERROR "No prebuilt llama.cpp libraries found in ${LLAMA_LIB_DIR}")
-endif()
+# Find llama.cpp shared libraries
+find_library(LLAMA_LIB llama REQUIRED)
+find_library(GGML_LIB ggml REQUIRED)
+find_library(GGML_BASE_LIB ggml-base REQUIRED)
+find_library(GGML_CPU_LIB ggml-cpu REQUIRED)
+
+# Optional GPU backend libraries
+find_library(GGML_CUDA_LIB ggml-cuda)
+find_library(GGML_METAL_LIB ggml-metal)
+find_library(GGML_BLAS_LIB ggml-blas)
+
+set(LLAMA_SHARED_LIBS ${LLAMA_LIB} ${GGML_LIB} ${GGML_BASE_LIB} ${GGML_CPU_LIB})
+foreach(_optlib GGML_CUDA_LIB GGML_METAL_LIB GGML_BLAS_LIB)
+  if(${_optlib})
+    list(APPEND LLAMA_SHARED_LIBS ${${_optlib}})
+  endif()
+endforeach()
+
+message(STATUS "llama.cpp libraries: ${LLAMA_SHARED_LIBS}")
 
 set(BINDINGS_SOURCES
   src/bindings/llama_cpp.cpp)
@@ -175,23 +160,11 @@ endif()
 
 target_link_libraries(_llama PRIVATE ${LLAMA_SHARED_LIBS})
 
-# Ensure the runtime loader finds packaged libs
-if(APPLE)
-  set(_RPATH "@loader_path/lib")
-else()
-  set(_RPATH "$ORIGIN/lib")
-endif()
 set_target_properties(_llama PROPERTIES
-  OUTPUT_NAME "_llama"
-  INSTALL_RPATH "${_RPATH}"
-  BUILD_WITH_INSTALL_RPATH TRUE)
+  OUTPUT_NAME "_llama")
 
 # Install extension into the package folder
 install(TARGETS _llama
   LIBRARY DESTINATION llama_cpp
   COMPONENT python)
 
-# Ship the prebuilt libraries alongside the extension
-install(FILES ${LLAMA_SHARED_LIBS}
-  DESTINATION llama_cpp/lib
-  COMPONENT python)
