@@ -292,7 +292,7 @@ On macOS, `brew install llama.cpp` provides headers and libraries that CMake aut
 UnifiedLLM auto-detects model families by filename patterns:
 - Aya (Cohere's multilingual model, Tiny Aya variants, 70+ languages)
 - Qwen3 (with thinking/non-thinking mode detection)
-- Qwen3.5 (hybrid attention, 262K context, thinking mode default-on)
+- Qwen3.5 (hybrid attention, 262K context / 1M via YaRN, thinking default-on for large models, disabled for 0.8B-9B)
 - Gemma
 - TranslateGemma (Google's 55-language translation model, 128K context)
 - Mistral

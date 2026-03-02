@@ -69,7 +69,10 @@ def test_model_configs_exist():
         "ministral-reasoning",
         "phi-4",
         "qwen3",
+        "qwen3-instruct-2507",
+        "qwen3-thinking-2507",
         "qwen3.5",
+        "qwen3.5-small",
         "gpt-oss",
         "translategemma",
     ]
@@ -94,6 +97,7 @@ def test_glm47_config_values():
     assert config.temperature == 1.0
     assert config.top_p == 0.95
     assert config.min_p == 0.01
+    assert config.repeat_penalty == 1.0  # Z.ai: must be disabled
     assert "<|endoftext|>" in config.stop_sequences
     assert "<|user|>" in config.stop_sequences
     assert "<|observation|>" in config.stop_sequences
@@ -144,6 +148,76 @@ def test_detect_ministral():
     """Test Ministral model detection."""
     config = detect_model_family("models/Ministral-3-14B-Reasoning-2512-Q6_K.gguf")
     assert config.family == ModelFamily.MISTRAL
+
+
+def test_detect_qwen3_instruct_2507():
+    """Qwen3-Instruct-2507 should be non-thinking with Instruct defaults."""
+    config = detect_model_family("models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf")
+    assert config.family == ModelFamily.QWEN3
+    assert config.supports_thinking is False
+    assert config.temperature == 0.7
+    assert config.top_p == 0.8
+    assert config.top_k == 20
+    assert config.presence_penalty == 1.0
+
+
+def test_detect_qwen3_thinking_2507():
+    """Qwen3-Thinking-2507 should be thinking-enabled with Thinking defaults."""
+    config = detect_model_family("models/Qwen3-8B-Thinking-2507-Q6_K.gguf")
+    assert config.family == ModelFamily.QWEN3
+    assert config.supports_thinking is True
+    assert config.temperature == 0.6
+    assert config.top_p == 0.95
+    assert config.top_k == 20
+    assert config.presence_penalty == 1.0
+
+
+def test_qwen3_2507_configs_in_model_configs():
+    """Verify both 2507 configs are registered."""
+    assert "qwen3-instruct-2507" in MODEL_CONFIGS
+    assert "qwen3-thinking-2507" in MODEL_CONFIGS
+
+
+def test_detect_qwen35_small_9b():
+    """Qwen3.5-9B should detect as small (thinking disabled)."""
+    config = detect_model_family("models/Qwen3.5-9B-Q6_K.gguf")
+    assert config.family == ModelFamily.QWEN3_5
+    assert config.supports_thinking is False
+    assert config.temperature == 0.7
+    assert config.top_p == 0.8
+
+
+def test_detect_qwen35_small_sizes():
+    """All Qwen3.5 small sizes (0.8B, 2B, 4B, 9B) should detect as small."""
+    for size in ["0.8B", "2B", "4B", "9B"]:
+        config = detect_model_family(f"models/Qwen3.5-{size}-Q4_K_M.gguf")
+        assert config.supports_thinking is False, (
+            f"Qwen3.5-{size} should be non-thinking"
+        )
+
+
+def test_detect_qwen35_large_still_thinking():
+    """Large Qwen3.5 models (27B, 35B, 122B, 397B) keep thinking enabled."""
+    for name in [
+        "Qwen3.5-27B-Q4_K_M.gguf",
+        "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "Qwen3.5-122B-A10B-Q4_K_M.gguf",
+        "Qwen3.5-397B-A17B-Q4_K_M.gguf",
+    ]:
+        config = detect_model_family(f"models/{name}")
+        assert config.supports_thinking is True, f"{name} should have thinking"
+
+
+def test_qwen35_repeat_penalty_disabled():
+    """Qwen3.5 configs should have repeat_penalty=1.0 (disabled per Unsloth guide)."""
+    assert MODEL_CONFIGS["qwen3.5"].repeat_penalty == 1.0
+    assert MODEL_CONFIGS["qwen3.5-small"].repeat_penalty == 1.0
+
+
+def test_qwen35_config_presence_penalty():
+    """Both Qwen3.5 configs should have presence_penalty=1.5."""
+    assert MODEL_CONFIGS["qwen3.5"].presence_penalty == 1.5
+    assert MODEL_CONFIGS["qwen3.5-small"].presence_penalty == 1.5
 
 
 # Integration tests (require model)

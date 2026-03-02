@@ -10,6 +10,13 @@ from ._about import __version__
 # ruff: noqa: E402
 from .llama import disable_logging
 from .llama import GenerationError
+from .llama import GGML_TYPE_F16
+from .llama import GGML_TYPE_F32
+from .llama import GGML_TYPE_Q4_0
+from .llama import GGML_TYPE_Q4_1
+from .llama import GGML_TYPE_Q5_0
+from .llama import GGML_TYPE_Q5_1
+from .llama import GGML_TYPE_Q8_0
 from .llama import Llama
 from .llama import LlamaConfig
 from .llama import LlamaError
@@ -30,6 +37,13 @@ __all__ = [
     "SamplingParams",
     "LlamaGrammar",
     "LlamaPool",
+    "GGML_TYPE_F32",
+    "GGML_TYPE_F16",
+    "GGML_TYPE_Q4_0",
+    "GGML_TYPE_Q4_1",
+    "GGML_TYPE_Q5_0",
+    "GGML_TYPE_Q5_1",
+    "GGML_TYPE_Q8_0",
     "set_log_level",
     "disable_logging",
     "reset_logging",

@@ -101,6 +101,7 @@ class ModelConfig:
         think_top_k: Top-k override for thinking mode.
         think_min_p: Min-p override for thinking mode.
         presence_penalty: Penalty for token presence (0.0-2.0, reduces repetition).
+        repeat_penalty: Repetition penalty multiplier (1.0 = disabled, >1.0 penalizes).
     """
 
     family: ModelFamily
@@ -117,6 +118,7 @@ class ModelConfig:
     think_top_k: int | None = None
     think_min_p: float | None = None
     presence_penalty: float = 0.0
+    repeat_penalty: float = 1.1  # 1.0 = disabled
 
 
 # Maps config key -> ModelConfig.  Used for auto-detection by filename.
@@ -155,6 +157,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         min_p=0.01,
         max_ctx=202752,
         supports_thinking=True,
+        repeat_penalty=1.0,
         stop_sequences=["<|endoftext|>", "<|user|>", "<|observation|>"],
     ),
     "granite": ModelConfig(
@@ -213,6 +216,22 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         presence_penalty=1.0,
         stop_sequences=["<|im_end|>", "<|endoftext|>"],
     ),
+    "qwen3-thinking-2507": ModelConfig(
+        ModelFamily.QWEN3,
+        chat_format="chatml",
+        supports_thinking=True,
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        max_ctx=32768,
+        presence_penalty=1.0,
+        stop_sequences=["<|im_end|>", "<|endoftext|>"],
+        think_temperature=0.6,
+        think_top_p=0.95,
+        think_top_k=20,
+        think_min_p=0.0,
+    ),
     "qwen3.5": ModelConfig(
         ModelFamily.QWEN3_5,
         chat_format="chatml",
@@ -223,11 +242,26 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         min_p=0.0,
         max_ctx=262144,
         presence_penalty=1.5,
+        repeat_penalty=1.0,
         stop_sequences=["<|im_end|>", "<|endoftext|>"],
         think_temperature=0.6,
         think_top_p=0.95,
         think_top_k=20,
         think_min_p=0.0,
+    ),
+    # Qwen3.5 Small (0.8B, 2B, 4B, 9B) — thinking disabled by default
+    "qwen3.5-small": ModelConfig(
+        ModelFamily.QWEN3_5,
+        chat_format="chatml",
+        supports_thinking=False,
+        temperature=0.7,
+        top_p=0.8,
+        top_k=20,
+        min_p=0.0,
+        max_ctx=262144,
+        presence_penalty=1.5,
+        repeat_penalty=1.0,
+        stop_sequences=["<|im_end|>", "<|endoftext|>"],
     ),
     "gpt-oss": ModelConfig(
         ModelFamily.GPT_OSS,
@@ -280,12 +314,18 @@ def detect_model_family(model_path: str) -> ModelConfig:
         return MODEL_CONFIGS["ministral-instruct"]
 
     # Qwen3-2507 variants (Instruct vs Thinking)
-    if (
-        "qwen3" in filename_lower
-        and "2507" in filename_lower
-        and "instruct" in filename_lower
-    ):
+    if "qwen3" in filename_lower and "2507" in filename_lower:
+        if "thinking" in filename_lower:
+            return MODEL_CONFIGS["qwen3-thinking-2507"]
         return MODEL_CONFIGS["qwen3-instruct-2507"]
+
+    # Qwen3.5 Small (0.8B, 2B, 4B, 9B) — thinking disabled by default
+    _QWEN35_SMALL_SIZES = {"0.8b", "2b", "4b", "9b"}
+    if "qwen3.5" in filename_lower:
+        for size in _QWEN35_SMALL_SIZES:
+            if f"-{size}" in filename_lower:
+                return MODEL_CONFIGS["qwen3.5-small"]
+        return MODEL_CONFIGS["qwen3.5"]
 
     for key in sorted(MODEL_CONFIGS.keys(), key=len, reverse=True):
         if key in filename_lower:
@@ -459,6 +499,7 @@ class ChatTemplateBackend(Backend):
             "top_p": self.config.top_p,
             "top_k": self.config.top_k,
             "min_p": self.config.min_p,
+            "repeat_penalty": self.config.repeat_penalty,
         }
         if self.config.presence_penalty > 0:
             kwargs["presence_penalty"] = self.config.presence_penalty
@@ -519,7 +560,10 @@ class ChatTemplateBackend(Backend):
             "top_p": top_p,
             "top_k": top_k,
             "min_p": min_p,
+            "repeat_penalty": self.config.repeat_penalty,
         }
+        if self.config.presence_penalty > 0:
+            kwargs["presence_penalty"] = self.config.presence_penalty
         all_stop = (
             list(self.config.stop_sequences) if self.config.stop_sequences else []
         )
@@ -848,6 +892,7 @@ class UnifiedLLM:
             top_p=self.model_config.top_p,
             top_k=self.model_config.top_k,
             min_p=self.model_config.min_p,
+            repeat_penalty=self.model_config.repeat_penalty,
         )
 
         self.llm = Llama(model_path, config=llama_config, sampling=sampling)

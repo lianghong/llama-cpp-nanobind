@@ -36,6 +36,15 @@ _cleanup_registered = False
 _llama_initialized = False
 _cleanup_lock = threading.Lock()
 
+# ggml_type constants for KV cache quantization (cache_type_k, cache_type_v)
+GGML_TYPE_F32 = 0
+GGML_TYPE_F16 = 1  # default
+GGML_TYPE_Q4_0 = 2
+GGML_TYPE_Q4_1 = 3
+GGML_TYPE_Q5_0 = 6
+GGML_TYPE_Q5_1 = 7
+GGML_TYPE_Q8_0 = 8
+
 # Configuration constants
 _ALL_GPU_LAYERS_SENTINEL = (
     1_000_000  # Special value meaning "offload all layers to GPU"
@@ -246,6 +255,8 @@ class LlamaConfig:
     embeddings: bool = False
     rope_freq_base: float = 0.0
     rope_freq_scale: float = 0.0
+    cache_type_k: int = 1  # ggml_type for K cache (1=f16, 3=q4_1, etc.)
+    cache_type_v: int = 1  # ggml_type for V cache (1=f16, 3=q4_1, etc.)
     add_bos: bool | None = None  # None = auto-detect from model preference
     parse_special: bool = False
     chat_format: str | None = None  # e.g. "llama-2", "chatml", "gemma", etc.
@@ -354,6 +365,8 @@ class Llama:
         ctx_params.embeddings = bool(cfg.embeddings)
         ctx_params.rope_freq_base = float(cfg.rope_freq_base)
         ctx_params.rope_freq_scale = float(cfg.rope_freq_scale)
+        ctx_params.type_k = int(cfg.cache_type_k)
+        ctx_params.type_v = int(cfg.cache_type_v)
 
         try:
             self.model = _llama.Model(cfg.model_path, model_params)
