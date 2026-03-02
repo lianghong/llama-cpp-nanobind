@@ -447,11 +447,19 @@ grammar = LlamaGrammar.from_string('root ::= "yes" | "no"')
 response = llm.create_chat_completion(messages=[...], grammar=grammar)
 ```
 
-## Tests
+## Tests & Code Quality
 
 ```bash
 uv pip install -e .[test]
 uv run pytest -q
+
+# Python linting/formatting
+ruff format src/ tests/ examples/ tools/
+ruff check src/ tests/ examples/ tools/
+
+# C++ formatting and static analysis
+clang-format -i src/bindings/llama_cpp.cpp
+clang-tidy -p build src/bindings/llama_cpp.cpp
 ```
 
 ### Memory Safety Verification

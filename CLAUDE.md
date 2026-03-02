@@ -41,17 +41,23 @@ uv run pytest tests/test_inference.py::test_basic_generation -v
 ### Code Quality
 
 ```bash
-# Format code
+# Python: format
 ruff format src/ tests/ examples/ tools/
 
-# Sort imports
+# Python: sort imports
 isort src/ tests/ examples/ tools/
 
-# Lint
+# Python: lint
 ruff check src/ tests/ examples/ tools/
 
-# Type checking
+# Python: type checking
 mypy src/llama_cpp/
+
+# C++: format (Google-based, 100-col, 2-space indent)
+clang-format -i src/bindings/llama_cpp.cpp
+
+# C++: static analysis (requires compile_commands.json)
+clang-tidy -p build-tidy src/bindings/llama_cpp.cpp
 ```
 
 ### Build Configuration
@@ -85,6 +91,8 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
    - **Critical**: GIL released during heavy C++ operations (decode, generate, tokenize)
    - Maintains internal state: `cur_pos_` for KV cache position tracking
    - Reuses `single_batch_` to eliminate per-token allocations
+   - Style enforced by `.clang-format` (Google-based) and `.clang-tidy`
+   - All RAII classes explicitly delete copy and move operations (rule of 5)
 
 3. **Python Wrappers** (`src/llama_cpp/`)
    - `llama.py`: Core `Llama` class with high-level inference API
@@ -173,15 +181,16 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 
 ### When Modifying C++ Bindings (`src/bindings/llama_cpp.cpp`)
 
-1. **Always release GIL** for long operations: `nb::call_guard<nb::gil_scoped_release>()` or manual `nb::gil_scoped_release`
-2. **Update `cur_pos_`** when modifying KV cache or loading state
-3. **Reuse buffers** (like `single_batch_`) instead of per-call allocation
-4. **Use RAII for temporary resources**: `Context::decode` uses `BatchGuard` struct for `llama_batch` cleanup instead of try/catch
-5. **Respect sampler chain** after grammar constraints
-6. **Hold `g_init_mutex`** when freeing resources in `close()` methods (prevents races with GC)
-7. **Validate token range before indexing logits**: sampler can return `LLAMA_TOKEN_NULL` (-1); always check `token >= 0 && token < n_vocab` before `logits[token]`
-8. **Use `nb::bytes` for binary data**: state save/load uses `nb::bytes` directly (not `std::vector<uint8_t>`) to avoid per-element Python↔C++ conversion; manage GIL manually when mixing Python object construction with heavy C++ calls
-9. **Logprobs path uses `cur_p.selected` directly**: In `generate_tokens_with_details`, `llama_sampler_apply` is called explicitly for logprob computation, then the selected token is read from `cur_p.data[cur_p.selected].id` — do NOT call `generate_next`/`llama_sampler_sample` after an explicit apply, as it would re-apply the chain and advance the dist sampler's RNG
+1. **Run `clang-format -i` and `clang-tidy`** after changes to maintain code style and catch issues
+2. **Always release GIL** for long operations: `nb::call_guard<nb::gil_scoped_release>()` or manual `nb::gil_scoped_release`
+3. **Update `cur_pos_`** when modifying KV cache or loading state
+4. **Reuse buffers** (like `single_batch_`) instead of per-call allocation
+5. **Use RAII for temporary resources**: `Context::decode` uses `BatchGuard` struct for `llama_batch` cleanup instead of try/catch
+6. **Respect sampler chain** after grammar constraints
+7. **Hold `g_init_mutex`** when freeing resources in `close()` methods (prevents races with GC)
+8. **Validate token range before indexing logits**: sampler can return `LLAMA_TOKEN_NULL` (-1); always check `token >= 0 && token < n_vocab` before `logits[token]`
+9. **Use `nb::bytes` for binary data**: state save/load uses `nb::bytes` directly (not `std::vector<uint8_t>`) to avoid per-element Python↔C++ conversion; manage GIL manually when mixing Python object construction with heavy C++ calls
+10. **Logprobs path uses `cur_p.selected` directly**: In `generate_tokens_with_details`, `llama_sampler_apply` is called explicitly for logprob computation, then the selected token is read from `cur_p.data[cur_p.selected].id` — do NOT call `generate_next`/`llama_sampler_sample` after an explicit apply, as it would re-apply the chain and advance the dist sampler's RNG
 
 ### When Modifying Python Wrappers (`src/llama_cpp/llama.py`, `unified.py`)
 
