@@ -233,6 +233,25 @@ def test_gpt_oss_config_values():
     assert config.repeat_penalty == 1.0  # RL-trained, disable penalty
 
 
+def test_qwen3_config_values():
+    """Verify base Qwen3 config matches official recommended settings."""
+    config = MODEL_CONFIGS["qwen3"]
+    assert config.family == ModelFamily.QWEN3
+    assert config.temperature == 0.7
+    assert config.top_p == 0.8
+    assert config.top_k == 20
+    assert config.min_p == 0.0  # Official: 0.0
+    assert config.max_ctx == 131072  # 128K via YaRN
+    assert config.supports_thinking is True
+    assert "<|im_end|>" in config.stop_sequences
+    assert "<|endoftext|>" in config.stop_sequences
+    # Thinking mode overrides
+    assert config.think_temperature == 0.6
+    assert config.think_top_p == 0.95
+    assert config.think_top_k == 20
+    assert config.think_min_p == 0.0
+
+
 def test_gpt_oss_stop_sequences():
     """GPTOSSBackend must include <|return|> EOS token."""
     from llama_cpp.unified import GPTOSSBackend
