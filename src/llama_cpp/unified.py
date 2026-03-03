@@ -599,8 +599,11 @@ class ChatTemplateBackend(Backend):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        # Only add /think or /no_think for Qwen3 models that support thinking mode
-        if self.config.family == ModelFamily.QWEN3 and self.config.supports_thinking:
+        # Only add /think or /no_think for Qwen3 family models that support thinking
+        if (
+            self.config.family in (ModelFamily.QWEN3, ModelFamily.QWEN3_5)
+            and self.config.supports_thinking
+        ):
             suffix = " /think" if thinking else " /no_think"
             prompt = prompt + suffix
 

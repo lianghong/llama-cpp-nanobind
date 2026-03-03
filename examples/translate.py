@@ -2,15 +2,16 @@
 # File              : translate.py
 # Author            : Lianghong Fei <feilianghong@gmail.com>
 # Date              : 2026-02-11
-# Last Modified Date: 2026-02-11
+# Last Modified Date: 2026-03-03
 # Last Modified By  : Lianghong Fei <feilianghong@gmail.com>
-"""English-to-Chinese translation using UnifiedLLM.
+"""Translation tool using UnifiedLLM.
 
-Translates text files from English to Simplified Chinese with automatic
-model family detection and optimized settings.
+Translates text files into a target language (default: Simplified Chinese)
+with automatic model family detection and optimized settings.
 
 Usage:
     python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --ctx 8192
+    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -t Japanese
     python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --thinking
     python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -o          # auto-named file
     python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -o out.txt  # specific file
@@ -25,29 +26,44 @@ from llama_cpp.unified import GPTOSSBackend
 from llama_cpp.unified import UnifiedLLM
 
 
-DEFAULT_INPUT: Path = Path(__file__).parent / "example.txt"
+DEFAULT_INPUT: Path = Path(__file__).parent / "example.md"
 """Default input file for translation."""
 
-SYSTEM_PROMPT: str = """\
-You are a professional English-to-Chinese translator. Translate the user's text \
-into Simplified Chinese following these rules strictly:
+SYSTEM_PROMPT_TEMPLATE: str = """\
+You are an expert {target_lang} translator producing publication-ready output.
 
-1. ACCURACY: Convey the original meaning, tone, and intent exactly. Do not omit, \
-add, or distort anything. Never insert your own opinions or commentary.
-2. NATURAL CHINESE: Write idiomatic Simplified Chinese that reads naturally to \
-native speakers. Avoid translationese (翻译腔).
-3. STYLE MATCHING: Match the original register — use precise terms for technical \
-text, preserve literary qualities for narrative text. Preserve the author's \
-sentiment exactly, even if critical, sarcastic, or controversial.
-4. TERMINOLOGY: Use established Chinese translations for domain terms. Keep English \
-for terms without standard Chinese equivalents (e.g. brand names, product names).
-5. FORMATTING: Preserve paragraph structure, lists, and heading hierarchy.
-6. OUTPUT ONLY THE TRANSLATION. No notes, no commentary, no explanations, \
-no self-assessment. Stop immediately after the last translated sentence.
+FAITHFULNESS:
+Convey the original meaning, tone, and intent exactly. Never omit, add, \
+editorialize, or soften content. Preserve the author's voice and stance — \
+including sarcasm, criticism, irony, and controversial opinions — without \
+commentary or moral hedging.
+
+FLUENCY:
+Write natural, idiomatic {target_lang} as if the text were originally composed \
+by a native speaker. Restructure sentences to follow {target_lang} conventions \
+rather than mirroring the source syntax word-for-word.
+
+STYLE:
+Match the source register — formal for formal, casual for casual, literary for \
+literary. Use precise domain terms for technical text. Preserve rhetorical \
+devices (metaphor, parallelism, understatement) with {target_lang} equivalents.
+
+SPECIFICS:
+- Proper nouns: Keep names, brands, and product names in original form unless \
+{target_lang} has a widely established translation.
+- Markdown: Preserve all syntax (links, images, headings, bold, code blocks). \
+Translate display text only, never URLs or image paths.
+- Numbers, dates, percentages: Keep in original format.
+- Cultural references with no direct equivalent: Translate the meaning; \
+optionally keep the original term in parentheses for clarity.
+
+OUTPUT: Translation only. No notes, no commentary, no explanations. Stop \
+immediately after the last translated sentence.
 """
+"""System prompt template with {target_lang} placeholder."""
 
-USER_PROMPT_TEMPLATE: str = "Translate into Simplified Chinese:\n\n{text}"
-"""User prompt template with {text} placeholder."""
+USER_PROMPT_TEMPLATE: str = "Translate the following into {target_lang}:\n\n{text}"
+"""User prompt template with {target_lang} and {text} placeholders."""
 
 
 def get_gpu_free_memory_gb() -> float | None:
@@ -97,8 +113,14 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
-    parser = argparse.ArgumentParser(description="Test max context with translation")
+    parser = argparse.ArgumentParser(description="Translate text files using UnifiedLLM")
     parser.add_argument("--model", required=True, help="Path to GGUF model")
+    parser.add_argument(
+        "-t",
+        "--target-lang",
+        default="Simplified Chinese",
+        help="Target language (default: Simplified Chinese)",
+    )
     parser.add_argument("--ctx", type=int, default=10240, help="Context size")
     parser.add_argument("--batch", type=int, default=4096, help="Batch size")
     parser.add_argument("--ubatch", type=int, default=512, help="Micro batch size")
@@ -115,9 +137,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop", type=str, nargs="*", help="Stop sequences")
     parser.add_argument(
         "--n_gpu_layers", type=int, default=-1, help="GPU layers (-1=all)"
-    )
-    parser.add_argument(
-        "--no_flash_attn", action="store_true", help="Disable flash attention"
     )
     parser.add_argument(
         "--temperature",
@@ -149,7 +168,10 @@ def main() -> int:
     n_batch: int = min(args.batch, args.ctx)
     n_ubatch: int = min(args.ubatch, n_batch)
 
-    # Read input
+    # Validate paths
+    if not Path(args.model).exists():
+        print(f"Error: Model file not found: {args.model}")
+        return 1
     if not args.file.exists():
         print(f"Error: Input file not found: {args.file}")
         return 1
@@ -193,13 +215,19 @@ def main() -> int:
 
             # Print config
             print(f"Model: {args.model} ({llm.family.name})")
+            print(f"Target: {args.target_lang}")
             print(f"Context: {args.ctx}, batch: {n_batch}, ubatch: {n_ubatch}")
             print(f"Temperature: {args.temperature}")
 
-            # Prepare prompt and calculate tokens
-            user_prompt: str = USER_PROMPT_TEMPLATE.format(text=input_text)
+            # Build prompts for target language
+            system_prompt: str = SYSTEM_PROMPT_TEMPLATE.format(
+                target_lang=args.target_lang,
+            )
+            user_prompt: str = USER_PROMPT_TEMPLATE.format(
+                target_lang=args.target_lang, text=input_text,
+            )
             prompt_tokens: int = (
-                llm.llm.n_tokens(user_prompt) + llm.llm.n_tokens(SYSTEM_PROMPT) + 50
+                llm.n_tokens(user_prompt) + llm.n_tokens(system_prompt) + 50
             )
             available: int = args.ctx - prompt_tokens - 10
 
@@ -223,7 +251,7 @@ def main() -> int:
             if args.thinking:
                 thinking_text, result = llm.generate_with_thinking(
                     user_prompt,
-                    SYSTEM_PROMPT,
+                    system_prompt,
                     max_tokens=max_tokens,
                     stop=args.stop,
                 )
@@ -232,7 +260,7 @@ def main() -> int:
             else:
                 result = llm.generate(
                     user_prompt,
-                    SYSTEM_PROMPT,
+                    system_prompt,
                     max_tokens=max_tokens,
                     thinking=False,
                     stop=args.stop,
@@ -268,7 +296,7 @@ def main() -> int:
                 print(f"Saved: {output_file}")
             print(f"Total time: {time.perf_counter() - start_time:.1f}s")
 
-    except ValueError as e:
+    except (ValueError, RuntimeError, OSError) as e:
         print(f"Error: {e}")
         return 1
 
