@@ -58,7 +58,80 @@ clang-format -i src/bindings/llama_cpp.cpp
 
 # C++: static analysis (requires compile_commands.json)
 clang-tidy -p build-tidy src/bindings/llama_cpp.cpp
+
+# Python 3.14: Verify PEP 758/765 compliance
+python3.14 -We -m py_compile <file>
 ```
+
+### Python 3.14 Exception Handling Requirements
+
+**CRITICAL:** This project requires strict compliance with Python 3.14's PEP 758 and PEP 765.
+
+#### PEP 758: Unparenthesized Exception Lists
+
+**Allowed Forms:**
+```python
+# ✅ Form 1: Parenthesized (existing, always valid)
+except (ValueError, TypeError):
+    ...
+
+# ✅ Form 2: Unparenthesized (NEW - allowed without 'as')
+except ValueError, TypeError:
+    ...
+
+# ✅ Form 3: With capture (REQUIRES parentheses)
+except (ValueError, TypeError) as e:
+    ...
+
+# ❌ INVALID: Unparenthesized with 'as'
+except ValueError, TypeError as e:  # SyntaxError
+    ...
+```
+
+**Rule:** Parentheses are REQUIRED when using the `as` keyword to capture exception instances.
+
+#### PEP 765: Control Flow in Finally Blocks
+
+**Disallowed Patterns:**
+```python
+# ❌ INVALID: return from finally
+def f():
+    try:
+        ...
+    finally:
+        return 42  # SyntaxWarning (future SyntaxError)
+
+# ❌ INVALID: break from finally
+for x in items:
+    try:
+        ...
+    finally:
+        break  # SyntaxWarning
+
+# ❌ INVALID: continue from finally
+for x in items:
+    try:
+        ...
+    finally:
+        continue  # SyntaxWarning
+```
+
+**Allowed Patterns:**
+```python
+# ✅ VALID: Control flow in nested scope
+try:
+    ...
+finally:
+    def inner():
+        return 42  # OK - exits inner function, not finally
+    
+    for x in items:
+        break  # OK - exits inner loop, not finally
+```
+
+**Rule:** `return`, `break`, and `continue` statements MUST NOT exit a `finally` block directly. Use nested scopes if control flow is needed.
+
+**Verification:** All code is compiled with `-We` flag. See `docs/PEP758_PEP765_COMPLIANCE.md` for audit report.
 
 ### Build Configuration
 
