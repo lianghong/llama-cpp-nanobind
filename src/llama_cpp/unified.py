@@ -44,8 +44,6 @@ _cleanup_lock = threading.Lock()
 def _register_unified_cleanup() -> None:
     """Register cleanup handler only after an instance is created."""
     global _cleanup_registered
-    if _cleanup_registered:
-        return
     with _cleanup_lock:
         if _cleanup_registered:
             return
@@ -183,6 +181,12 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         temperature=0.15,
         max_ctx=256000,
     ),
+    "mistral": ModelConfig(
+        ModelFamily.MISTRAL,
+        temperature=0.7,
+        top_p=0.95,
+        max_ctx=32768,
+    ),
     "phi-4": ModelConfig(
         ModelFamily.PHI,
         temperature=0.8,
@@ -296,8 +300,80 @@ for _key, _cfg in MODEL_CONFIGS.items():
     _FAMILY_DEFAULT_KEY.setdefault(_cfg.family, _key)
 
 
+def detect_from_metadata(model: "Llama") -> ModelConfig | None:
+    """Detect model family using GGUF metadata (authoritative).
+
+    Args:
+        model: Loaded Llama instance with model metadata available.
+
+    Returns:
+        ModelConfig if detected from metadata, None if metadata unavailable or unrecognized.
+    """
+    try:
+        # Try to get architecture from GGUF metadata (most authoritative)
+        arch = model.model.meta_val_str("general.architecture")
+        name = model.model.meta_val_str("general.name")
+        name_lower = name.lower()
+
+        # Architecture-based detection with name-based variant refinement
+        if "qwen" in arch:
+            if "qwen3.5" in name_lower or "qwen-3.5" in name_lower:
+                # Check if it's a small model (thinking disabled)
+                _QWEN35_SMALL_SIZES = {"0.8b", "2b", "4b", "9b"}
+                for size in _QWEN35_SMALL_SIZES:
+                    if f"-{size}" in name_lower or f" {size}" in name_lower:
+                        return MODEL_CONFIGS["qwen3.5-small"]
+                return MODEL_CONFIGS["qwen3.5"]
+            elif "2507" in name_lower:
+                if "thinking" in name_lower:
+                    return MODEL_CONFIGS["qwen3-thinking-2507"]
+                else:
+                    return MODEL_CONFIGS["qwen3-instruct-2507"]
+            elif "qwen3" in arch or "qwen3" in name_lower:
+                return MODEL_CONFIGS["qwen3"]
+            elif "qwen" in arch:
+                # Older qwen models (qwen1, qwen2) might have different configs
+                # Fall back to qwen3 as reasonable default
+                return MODEL_CONFIGS["qwen3"]
+
+        elif "gemma" in arch:
+            if "translate" in name_lower:
+                return MODEL_CONFIGS["translategemma"]
+            return MODEL_CONFIGS["gemma"]
+
+        elif "ministral" in arch or "ministral" in name_lower:
+            if "reasoning" in name_lower:
+                return MODEL_CONFIGS["ministral-reasoning"]
+            return MODEL_CONFIGS["ministral-instruct"]
+
+        elif "mistral" in arch:
+            return MODEL_CONFIGS["mistral"]
+
+        elif "phi" in arch:
+            return MODEL_CONFIGS["phi-4"]
+
+        elif "glm" in arch:
+            if "glm-4.7" in name_lower or "glm4.7" in name_lower:
+                return MODEL_CONFIGS["glm-4.7"]
+            return MODEL_CONFIGS["glm-4"]
+
+        elif "llama" in arch:
+            # Generic llama architecture - could be llama2, llama3, etc.
+            # No specific config needed for now
+            return None
+
+    except (RuntimeError, AttributeError):
+        # Metadata not available or model not loaded
+        pass
+
+    return None
+
+
 def detect_model_family(model_path: str) -> ModelConfig:
-    """Detect model family from file path.
+    """Detect model family from file path (filename-based fallback).
+
+    This is used for initial detection before model is loaded. For more
+    reliable detection, use detect_from_metadata() after loading.
 
     Args:
         model_path: Path to the GGUF model file.
@@ -908,6 +984,18 @@ class UnifiedLLM:
 
         self.llm = Llama(model_path, config=llama_config, sampling=sampling)
 
+        # Refine model config detection using metadata (more reliable than filename)
+        # Only refine if family was auto-detected (not user-specified)
+        if family is None:
+            metadata_config = detect_from_metadata(self.llm)
+            if metadata_config is not None:
+                logging.debug(
+                    "Refined model detection: %s (metadata) vs %s (filename)",
+                    metadata_config.family,
+                    self.model_config.family,
+                )
+                self.model_config = metadata_config
+
         # Warn if n_ctx exceeds model's training context
         model_train_ctx = self.llm.model.n_ctx_train()
         if n_ctx > model_train_ctx:
@@ -1021,10 +1109,9 @@ class UnifiedLLM:
         Returns:
             Text with thinking content removed.
         """
-        if hasattr(self.backend, "_parse_thinking"):
+        if isinstance(self.backend, ChatTemplateBackend):
             _, answer = self.backend._parse_thinking(text)
-            result: str = answer
-            return result
+            return answer
         return text
 
     def __enter__(self) -> UnifiedLLM:
@@ -1051,14 +1138,17 @@ class UnifiedLLM:
 
     def n_tokens(self, text: str) -> int:
         """Count tokens for text."""
+        self._check_closed()
         return self.llm.n_tokens(text)
 
     def n_ctx(self) -> int:
         """Get context window size."""
+        self._check_closed()
         return self.llm.n_ctx()
 
     def kv_cache_clear(self) -> None:
         """Clear KV cache."""
+        self._check_closed()
         self.llm.kv_cache_clear()
 
     def close(self) -> None:

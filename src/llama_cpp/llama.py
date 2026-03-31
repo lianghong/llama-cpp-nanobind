@@ -53,6 +53,7 @@ _ALL_GPU_LAYERS_SENTINEL = (
 _MAX_PROMPT_LENGTH = 10_000_000  # Maximum prompt length in characters (10MB limit)
 _MAX_STOP_SEQUENCES = 20  # Maximum number of stop sequences allowed
 _MAX_STOP_SEQUENCE_LENGTH = 500  # Maximum length of each stop sequence in characters
+_MAX_PROMPT_MULTIPLIER = 2  # Maximum multiplier for tokenized prompt validation
 
 
 def _register_cleanup() -> None:
@@ -438,6 +439,30 @@ class Llama:
         if self._closed:
             raise LlamaError("Llama instance has been closed")
 
+    @staticmethod
+    def _validate_stop_sequences(stop: Sequence[str | int] | None) -> None:
+        """Validate stop sequences against configured limits.
+
+        Args:
+            stop: Stop sequences to validate (strings or token IDs).
+
+        Raises:
+            ValidationError: If validation fails (too many sequences or sequence too long).
+        """
+        if not stop:
+            return
+
+        if len(stop) > _MAX_STOP_SEQUENCES:
+            raise ValidationError(
+                f"too many stop sequences (max {_MAX_STOP_SEQUENCES})"
+            )
+
+        for item in stop:
+            if isinstance(item, str) and len(item) > _MAX_STOP_SEQUENCE_LENGTH:
+                raise ValidationError(
+                    f"stop sequence too long (max {_MAX_STOP_SEQUENCE_LENGTH} chars)"
+                )
+
     def close(self) -> None:
         """Release model and context resources."""
         if getattr(self, "_closed", True):
@@ -483,7 +508,9 @@ class Llama:
 
         # Raise first exception if any cleanup failed
         if close_errors:
-            raise LlamaError(f"Errors during close: {close_errors[0]}") from close_errors[0]
+            raise LlamaError(
+                f"Errors during close: {close_errors[0]}"
+            ) from close_errors[0]
 
     # Compatibility helpers -------------------------------------------------
     def tokenize(
@@ -556,91 +583,109 @@ class Llama:
 
     def token_bos(self) -> int:
         """Return BOS token id."""
+        self._check_closed()
         result: int = self.model.bos()
         return result
 
     def token_eos(self) -> int:
         """Return EOS token id."""
+        self._check_closed()
         result: int = self.model.eos()
         return result
 
     def token_eot(self) -> int:
         """Return EOT token id."""
+        self._check_closed()
         result: int = self.model.eot()
         return result
 
     def n_ctx(self) -> int:
         """Return context size."""
+        self._check_closed()
         result: int = self.ctx.n_ctx()
         return result
 
     def n_vocab(self) -> int:
         """Return vocabulary size."""
+        self._check_closed()
         result: int = self.model.n_vocab()
         return result
 
     def n_embd(self) -> int:
         """Return embedding dimension."""
+        self._check_closed()
         result: int = self.model.n_embd()
         return result
 
     def model_size(self) -> int:
         """Return total size of all tensors in bytes."""
+        self._check_closed()
         result: int = self.model.model_size()
         return result
 
     def n_params(self) -> int:
         """Return total number of parameters."""
+        self._check_closed()
         result: int = self.model.n_params()
         return result
 
     def n_layer(self) -> int:
         """Return number of layers."""
+        self._check_closed()
         result: int = self.model.n_layer()
         return result
 
     def n_head(self) -> int:
         """Return number of attention heads."""
+        self._check_closed()
         result: int = self.model.n_head()
         return result
 
     def has_encoder(self) -> bool:
         """Return whether model has an encoder component."""
+        self._check_closed()
         result: bool = self.model.has_encoder()
         return result
 
     def has_decoder(self) -> bool:
         """Return whether model has a decoder component."""
+        self._check_closed()
         result: bool = self.model.has_decoder()
         return result
 
     def is_recurrent(self) -> bool:
         """Return whether model uses recurrent architecture."""
+        self._check_closed()
         result: bool = self.model.is_recurrent()
         return result
 
     def is_hybrid(self) -> bool:
         """Return whether model uses hybrid attention architecture."""
+        self._check_closed()
         result: bool = self.model.is_hybrid()
         return result
 
     def token_sep(self) -> int:
         """Return separator token id."""
+        self._check_closed()
         result: int = self.model.sep()
         return result
 
     def token_nl(self) -> int:
         """Return newline token id."""
+        self._check_closed()
         result: int = self.model.nl()
         return result
 
     def token_pad(self) -> int:
         """Return padding token id."""
+        self._check_closed()
         result: int = self.model.pad()
         return result
 
     def get_add_bos(self) -> bool:
         """Return whether model prefers BOS token to be added."""
+        self._check_closed()
         result: bool = self.model.get_add_bos()
         return result
 
@@ -668,17 +713,20 @@ class Llama:
 
     def get_chat_template(self, name: str = "") -> str:
         """Return model's chat template. Empty string if not available."""
+        self._check_closed()
         result: str = self.model.chat_template(name)
         return result
 
     def token_to_piece(self, token: int) -> str:
         """Return the text representation of a token."""
+        self._check_closed()
         result: str = self.model.token_to_piece(token)
         return result
 
     @property
     def metadata(self) -> dict[str, str]:
         """Return model metadata as a dictionary (cached)."""
+        self._check_closed()
         if self._metadata_cache is None:
             result = {}
             count = self.model.meta_count()
@@ -828,6 +876,33 @@ class Llama:
         tokens = self.tokenize(prompt, add_special=self.config.add_bos)
         return prompt, tokens, len(tokens)
 
+    def _token_to_text_incremental(self, tokens: Iterator[int]) -> Iterator[str]:
+        """Convert token stream to text with incremental UTF-8 decoding.
+
+        Handles multi-byte UTF-8 characters that may be split across token
+        boundaries by using an incremental decoder that accumulates incomplete
+        byte sequences.
+
+        Args:
+            tokens: Iterator of token IDs.
+
+        Yields:
+            Text pieces as UTF-8 decoding completes. Empty strings are filtered out.
+        """
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        for tok in tokens:
+            raw = self.detokenize_bytes(
+                [tok], remove_special=True, unparse_special=True
+            )
+            text_piece = decoder.decode(raw)
+            if text_piece:
+                yield text_piece
+
+        # Flush any remaining bytes in the decoder buffer
+        final_piece = decoder.decode(b"", final=True)
+        if final_piece:
+            yield final_piece
+
     def _generate_from_tokens(
         self,
         prompt_tokens: list[int],
@@ -910,10 +985,20 @@ class Llama:
         Unlike generate(..., stream=True) which buffers all tokens first,
         this yields each token immediately as it's generated in a background thread.
 
-        Warning:
-            This method spawns a background thread that accesses internal state.
-            Do NOT call close() or other methods on this instance from another
-            thread while streaming is in progress. The Llama class is not thread-safe.
+        **Thread Safety & Locking Behavior:**
+            - This method spawns a background thread that holds ``self._lock``
+              for the entire generation duration.
+            - Do NOT call other Llama methods (``generate``, ``create_chat_completion``,
+              ``close``) from another thread while streaming is in progress.
+              They will block until streaming completes.
+            - The Llama class is NOT thread-safe. For concurrent inference,
+              use ``LlamaPool`` with multiple instances instead.
+
+        **Performance Note:**
+            - In single-threaded Python code (typical use case), the lock has
+              negligible overhead (~microseconds) due to no contention.
+            - The background thread enables true incremental streaming with
+              low latency, perfect for SSE/WebSocket endpoints.
 
         Args:
             prompt: Input prompt string.
@@ -925,6 +1010,11 @@ class Llama:
 
         Yields:
             Text chunks as they're generated.
+
+        Example:
+            >>> llm = Llama("model.gguf")
+            >>> for chunk in llm.generate_stream("Hello"):
+            ...     print(chunk, end="", flush=True)
         """
         self._check_closed()
         if not isinstance(prompt, str) or not prompt.strip():
@@ -935,16 +1025,7 @@ class Llama:
             raise ValidationError(
                 f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
             )
-        if stop:
-            if len(stop) > _MAX_STOP_SEQUENCES:
-                raise ValidationError(
-                    f"too many stop sequences (max {_MAX_STOP_SEQUENCES})"
-                )
-            for item in stop:
-                if isinstance(item, str) and len(item) > _MAX_STOP_SEQUENCE_LENGTH:
-                    raise ValidationError(
-                        f"stop sequence too long (max {_MAX_STOP_SEQUENCE_LENGTH} chars)"
-                    )
+        self._validate_stop_sequences(stop)
 
         sampler_params = sampling or self.sampling
         if seed is not None:
@@ -958,7 +1039,7 @@ class Llama:
 
         # Validate tokenized prompt length to prevent OOM from high-compression prompts
         # Use multiplier from config, defaulting to 2x context size
-        max_multiplier = getattr(self.config, "max_prompt_multiplier", 2)
+        max_multiplier = _MAX_PROMPT_MULTIPLIER
         max_reasonable_tokens = self.n_ctx() * max_multiplier
         if len(prompt_tokens) > max_reasonable_tokens:
             raise ValidationError(
@@ -1015,11 +1096,8 @@ class Llama:
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
 
-        # Yield tokens as they arrive from the background thread.
-        # Use incremental UTF-8 decoder to handle multi-byte characters
-        # that may be split across token boundaries.
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        try:
+        # Helper generator to extract tokens from queue with error handling
+        def token_stream() -> Iterator[int]:
             while True:
                 try:
                     queue_item = token_queue.get(timeout=0.5)
@@ -1030,20 +1108,14 @@ class Llama:
                         ) from None
                     continue
                 if queue_item is None:
-                    # Flush any remaining bytes in the decoder
-                    final = decoder.decode(b"", final=True)
-                    if final:
-                        yield final
                     break  # Generation complete
                 if isinstance(queue_item, Exception):
                     raise queue_item  # Propagate exception from worker thread
-                # queue_item is a token (int) at this point
-                raw = self.detokenize_bytes(
-                    [queue_item], remove_special=True, unparse_special=True
-                )
-                text = decoder.decode(raw)
-                if text:
-                    yield text
+                yield queue_item  # Token (int)
+
+        # Yield text as tokens are decoded
+        try:
+            yield from self._token_to_text_incremental(token_stream())
         finally:
             # Signal background thread to stop, then wait for it
             cancel_event.set()
@@ -1098,16 +1170,7 @@ class Llama:
             raise ValidationError(
                 f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
             )
-        if stop:
-            if len(stop) > _MAX_STOP_SEQUENCES:
-                raise ValidationError(
-                    f"too many stop sequences (max {_MAX_STOP_SEQUENCES})"
-                )
-            for item in stop:
-                if isinstance(item, str) and len(item) > _MAX_STOP_SEQUENCE_LENGTH:
-                    raise ValidationError(
-                        f"stop sequence too long (max {_MAX_STOP_SEQUENCE_LENGTH} chars)"
-                    )
+        self._validate_stop_sequences(stop)
 
         sampler_params = sampling or self.sampling
         if seed is not None:
@@ -1120,7 +1183,7 @@ class Llama:
 
         # Validate tokenized prompt length to prevent OOM from high-compression prompts
         # Use multiplier from config, defaulting to 2x context size
-        max_multiplier = getattr(self.config, "max_prompt_multiplier", 2)
+        max_multiplier = _MAX_PROMPT_MULTIPLIER
         max_reasonable_tokens = self.n_ctx() * max_multiplier
         if len(prompt_tokens) > max_reasonable_tokens:
             raise ValidationError(
@@ -1198,21 +1261,8 @@ class Llama:
                 "token_probs": token_probs,
             }
 
-        def stream_chunks() -> Iterator[str]:
-            decoder = codecs.getincrementaldecoder("utf-8")("replace")
-            for tok in output_tokens:
-                raw = self.detokenize_bytes(
-                    [tok], remove_special=True, unparse_special=True
-                )
-                text_piece = decoder.decode(raw)
-                if text_piece:
-                    yield text_piece
-            final = decoder.decode(b"", final=True)
-            if final:
-                yield final
-
         if stream:
-            return stream_chunks()
+            return self._token_to_text_incremental(iter(output_tokens))
 
         text = self.detokenize(
             output_tokens, remove_special=True, unparse_special=False
@@ -1368,6 +1418,9 @@ class Llama:
             if response_format is None:
                 response_format = {"type": "json_object"}
 
+        # Validate stop sequences
+        self._validate_stop_sequences(stop)
+
         # Tokenize once via _prepare_chat
         _, prompt_tokens, _ = self._prepare_chat(effective_messages)
         sampler = self._build_sampler(None, **sampling_overrides)
@@ -1413,28 +1466,8 @@ class Llama:
         if stream:
 
             def stream_chunks() -> Iterator[dict[str, Any]]:
-                decoder = codecs.getincrementaldecoder("utf-8")("replace")
-                for tok in generated:
-                    raw = self.detokenize_bytes(
-                        [tok], remove_special=True, unparse_special=True
-                    )
-                    text_piece = decoder.decode(raw)
-                    if text_piece:
-                        yield {
-                            "id": cmpl_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": model_id,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {"content": text_piece},
-                                    "finish_reason": None,
-                                }
-                            ],
-                        }
-                final = decoder.decode(b"", final=True)
-                if final:
+                # Stream text pieces with incremental UTF-8 decoding
+                for text_piece in self._token_to_text_incremental(iter(generated)):
                     yield {
                         "id": cmpl_id,
                         "object": "chat.completion.chunk",
@@ -1443,11 +1476,12 @@ class Llama:
                         "choices": [
                             {
                                 "index": 0,
-                                "delta": {"content": final},
+                                "delta": {"content": text_piece},
                                 "finish_reason": None,
                             }
                         ],
                     }
+                # Final chunk with finish_reason
                 yield {
                     "id": cmpl_id,
                     "object": "chat.completion.chunk",
@@ -1500,11 +1534,13 @@ class Llama:
 
     def reset(self) -> None:
         """Reset context (recreates KV cache). Reapplies any loaded LoRA adapters."""
+        self._check_closed()
         self.ctx.reset()
         self._reapply_lora_adapters()
 
     def kv_cache_seq_rm(self, seq_id: int = 0, p0: int = -1, p1: int = -1) -> bool:
         """Remove tokens from KV cache for sequence. Returns True if successful."""
+        self._check_closed()
         result: bool = self.ctx.kv_cache_seq_rm(seq_id, p0, p1)
         return result
 
@@ -1529,21 +1565,25 @@ class Llama:
 
     def save_state(self, path: str) -> bool:
         """Save KV cache state to file."""
+        self._check_closed()
         result: bool = self.ctx.save_state(path)
         return result
 
     def load_state(self, path: str) -> int:
         """Load KV cache state from file. Returns token count."""
+        self._check_closed()
         result: int = self.ctx.load_state(path)
         return result
 
     def get_state(self) -> bytes:
         """Get KV cache state as bytes."""
+        self._check_closed()
         data: bytes = self.ctx.get_state_data()
         return data
 
     def set_state(self, data: bytes) -> int:
         """Set KV cache state from bytes. Returns bytes read."""
+        self._check_closed()
         result: int = self.ctx.set_state_data(data)
         return result
 
@@ -1553,6 +1593,7 @@ class Llama:
         The adapter is stored internally to prevent garbage collection.
         Returns adapter handle for use with remove_lora().
         """
+        self._check_closed()
         adapter = _llama.LoraAdapter(self.model, path)
         self._lora_adapters.append(adapter)
         self._lora_configs.append((path, scale))
@@ -1570,21 +1611,25 @@ class Llama:
 
     def clear_lora(self) -> None:
         """Remove all LoRA adapters."""
+        self._check_closed()
         self.ctx.clear_lora()
         self._lora_adapters.clear()
         self._lora_configs.clear()
 
     def perf(self) -> dict[str, Any]:
         """Get performance metrics (timing and token counts)."""
+        self._check_closed()
         return dict(self.ctx.perf())
 
     def perf_reset(self) -> None:
         """Reset performance counters."""
+        self._check_closed()
         self.ctx.perf_reset()
 
     @property
     def scores(self) -> list[float]:
         """Get raw logits from last decode. Returns empty list if unavailable."""
+        self._check_closed()
         try:
             return list(self.ctx.logits())
         except RuntimeError:

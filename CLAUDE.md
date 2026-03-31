@@ -259,10 +259,13 @@ ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
   - **Worker liveness check**: `token_queue.get(timeout=0.5)` with `thread.is_alive()` check — prevents permanent block if worker thread dies unexpectedly
   - **Multi-token stop sequence buffering**: tokens are buffered up to `max_stop_len` before yielding to prevent partial stop sequence tokens from reaching the consumer
   - **Flush invariant**: remaining buffered tokens at end-of-generation are always yielded (partial stop sequence prefixes are NOT treated as stops)
+  - **UTF-8 decoding**: Uses `_token_to_text_incremental()` helper for consistent handling of multi-byte characters split across token boundaries
 - **`generate(..., stream=True)`**: Buffered streaming
   - All tokens generated first, then yielded (higher latency)
   - Simpler implementation, no threading overhead
   - Suitable when latency not critical
+  - **UTF-8 decoding**: Uses shared `_token_to_text_incremental()` helper with guaranteed final flush
+- **All streaming paths**: Unified UTF-8 handling via `_token_to_text_incremental()` ensures consistent behavior across `generate_stream()`, `generate(stream=True)`, and `create_chat_completion(stream=True)`. Incremental decoder properly handles emoji, CJK, and other multi-byte UTF-8 characters that may span token boundaries.
 
 #### Memory Safety (Double-Free Prevention)
 - **C++ classes**: All destructors check `if (ptr_)` before free, then set `ptr_ = nullptr`
@@ -322,12 +325,15 @@ ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
 2. **Embeddings**: Validate `config.embeddings=True` before embedding operations
 3. **Token counting**: Use `add_special=True` when calculating max_tokens for chat
 4. **Tokenized prompt validation**: After tokenizing prompt, validate `len(prompt_tokens) <= n_ctx() * 2` to prevent OOM from high-compression text (e.g., `"a" * 10MB` could tokenize to massive token counts)
-5. **Stop sequences**: Use `generate_tokens_multi_stop()` when stop sequences present and details not needed
-6. **Grammar samplers are stateful**: Never cache or reuse them — `llama_sampler_accept` mutates internal state, so each generation must create a fresh sampler
-7. **Falsy-value defaults**: Use `if x is not None else fallback` (not `x or fallback`) when `0` or `0.0` is a valid value
-8. **BOS auto-detection**: `LlamaConfig.add_bos` defaults to `None` (auto-detected from model metadata via `llama_vocab_get_add_bos` after model load). The C++ generation functions have a guard `if (add_bos && front != bos)` as a safety net against double BOS
-9. **Negative value validation**: Always validate that token counts and similar integer values are non-negative before arithmetic operations
-10. **Training context awareness**: `UnifiedLLM` logs warning when `n_ctx > model.n_ctx_train()` — generation quality may degrade beyond training context
+5. **Stop sequences validation**: Always call `_validate_stop_sequences(stop)` on all entry points that accept stop sequences. This validates count (max 20) and length (max 500 chars per sequence). All generation entry points use this: `generate()`, `generate_stream()`, `create_chat_completion()`
+6. **Stop sequences implementation**: Use `generate_tokens_multi_stop()` when stop sequences present and details not needed (fast path)
+7. **Streaming UTF-8 decoding**: Use `_token_to_text_incremental(tokens)` for all streaming paths — handles multi-byte UTF-8 characters split across token boundaries with automatic final flush
+8. **Grammar samplers are stateful**: Never cache or reuse them — `llama_sampler_accept` mutates internal state, so each generation must create a fresh sampler
+9. **Falsy-value defaults**: Use `if x is not None else fallback` (not `x or fallback`) when `0` or `0.0` is a valid value
+10. **BOS auto-detection**: `LlamaConfig.add_bos` defaults to `None` (auto-detected from model metadata via `llama_vocab_get_add_bos` after model load). The C++ generation functions have a guard `if (add_bos && front != bos)` as a safety net against double BOS
+11. **Negative value validation**: Always validate that token counts and similar integer values are non-negative before arithmetic operations
+12. **Training context awareness**: `UnifiedLLM` logs warning when `n_ctx > model.n_ctx_train()` — generation quality may degrade beyond training context
+13. **Close checks**: All public methods that access `self.model` or `self.ctx` must call `_check_closed()` first to provide clear error messages instead of `AttributeError` on closed instances
 
 ### Model File Requirement
 
@@ -478,3 +484,48 @@ Key design decisions:
 - All validation overhead < 0.1% (O(1) checks on hot paths)
 - No changes to core generation algorithms
 - Backward compatible: no breaking changes to well-formed code
+
+## Recent Improvements (2026-03-31)
+
+### Code Review Fixes - Second Review Cycle
+
+**HIGH Priority** (2 issues fixed):
+- **Missing close guards**: Added `_check_closed()` to 27 public methods (token accessors, model info, state management, LoRA, performance metrics). Users now get clear `LlamaError` instead of confusing `AttributeError` when calling methods on closed instances
+- **Missing 'mistral' config**: Added `MODEL_CONFIGS["mistral"]` entry to fix `KeyError` when Mistral models detected via GGUF metadata
+
+**MEDIUM Priority** (5 issues fixed):
+- **Backend free race**: Added `g_resource_mutex` lock in `backend_free()` to prevent race between check and free
+- **Dead code cleanup**: Replaced `getattr(config, 'max_prompt_multiplier', 2)` with module constant `_MAX_PROMPT_MULTIPLIER` (slots dataclass can't have dynamic attributes)
+- **Queue init race**: Fixed lazy initialization in `LlamaPool._ensure_queue_initialized()` to be safe for free-threaded Python 3.13+
+- **Config key typos**: Fixed `MODEL_CONFIGS["glm4"]` → `"glm-4"` and `MODEL_CONFIGS["phi"]` → `"phi-4"`
+- **Cleanup registration race**: Removed unprotected first check in `_register_unified_cleanup()` for Python 3.13+ safety
+
+**LOW Priority** (2 improvements):
+- **Loop variable clarity**: Changed `for const int i : priming` → `for const llama_token tok : priming` in C++ for correct type and clarity
+- **Type safety**: Replaced `hasattr()` with `isinstance()` check in `UnifiedLLM.strip_thinking()`
+
+**Documentation**: `docs/CODE_REVIEW_FIXES_2026-03-31_v2.md`
+
+### Code Quality Refactoring
+
+**Improvement #1: Stop-Sequence Validation Helper**
+- Extracted duplicate validation logic from `generate_stream()` and `generate()`
+- Added `_validate_stop_sequences()` static method (single source of truth)
+- **Bug fix**: Added missing validation to `create_chat_completion()` (was completely unprotected)
+- Impact: 18 lines reduced, consistent validation across all APIs
+
+**Improvement #2: UTF-8 Streaming Helper**
+- Extracted duplicate UTF-8 decoding from 3 locations: `generate_stream()`, `generate(stream=True)`, `create_chat_completion(stream=True)`
+- Added `_token_to_text_incremental()` method with guaranteed final flush
+- **Bug fix**: Ensures `decoder.decode(b"", final=True)` always called (was inconsistent)
+- Impact: 32 lines reduced, consistent multi-byte UTF-8 handling (emoji, CJK)
+
+**Total Impact**:
+- 50 lines of duplication eliminated
+- 2 bugs fixed (missing validation + UTF-8 flush)
+- 130/130 tests passing (0 regressions)
+- All changes backward compatible
+
+**Documentation**: 
+- `docs/IMPROVEMENT_SUGGESTIONS_ANALYSIS.md` - Analysis of 5 suggestions (2 implemented, 3 rejected with rationale)
+- `docs/IMPROVEMENTS_2026-03-31_v2.md` - Implementation details with before/after code

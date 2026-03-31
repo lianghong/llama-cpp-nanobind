@@ -96,6 +96,13 @@ uv pip install -e .
 
 **Recent Updates**:
 
+**2026-03-31 Updates** - Code Quality & Robustness:
+- **Code Review Fixes**: 10 issues fixed (27 missing close guards, config key errors, race conditions in free-threaded Python 3.13+)
+- **Refactoring**: Extracted stop-sequence validation and UTF-8 streaming helpers (50 lines of duplication removed)
+- **Bug Fixes**: Added missing validation to `create_chat_completion()`, guaranteed UTF-8 final flush in all streaming paths
+- **Documentation**: Comprehensive analysis in `docs/CODE_REVIEW_FIXES_2026-03-31_v2.md` and `docs/IMPROVEMENTS_2026-03-31_v2.md`
+- All changes backward compatible; 130/130 tests passing
+
 **v0.3.6** (2026-03-31) - Validation & Safety:
 - DoS protection: Validates tokenized prompt length to prevent OOM from high-compression text
 - Data integrity: State load operations now roll back on failure, maintaining context consistency

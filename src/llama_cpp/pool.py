@@ -105,13 +105,13 @@ class LlamaPool:
         self._closed = False
 
         # Create worker instances
-        logging.info(f"Initializing LlamaPool with {pool_size} instances...")
+        logging.info("Initializing LlamaPool with %d instances...", pool_size)
         self.instances: list[Llama] = []
         for i in range(pool_size):
-            logging.debug(f"Loading instance {i + 1}/{pool_size}...")
+            logging.debug("Loading instance %d/%d...", i + 1, pool_size)
             instance = Llama(model_path, config=copy.copy(self.config))
             self.instances.append(instance)
-        logging.info(f"LlamaPool initialized with {pool_size} instances")
+        logging.info("LlamaPool initialized with %d instances", pool_size)
 
         # Warmup phase: run dummy inference to prime GPU caches
         if warmup:
@@ -121,9 +121,22 @@ class LlamaPool:
 
         # Queue of available instances - ensures each instance is used by
         # at most one request at a time (Llama is not thread-safe)
-        self._available: asyncio.Queue[Llama | object] = asyncio.Queue()
-        for instance in self.instances:
-            self._available.put_nowait(instance)
+        # Created lazily on first async use to avoid event loop binding issues
+        self._available: asyncio.Queue[Llama | object] | None = None
+        self._queue_initialized = False
+
+    def _ensure_queue_initialized(self) -> None:
+        """Lazily initialize asyncio.Queue on first async use.
+
+        This avoids creating the queue outside an event loop, which causes
+        'RuntimeError: no running event loop' in Python 3.10+.
+        """
+        if not self._queue_initialized:
+            # Set flag first to prevent race in free-threaded Python
+            self._queue_initialized = True
+            self._available = asyncio.Queue()
+            for instance in self.instances:
+                self._available.put_nowait(instance)
 
     def _warmup_instances(self) -> None:
         """Run dummy inference on each instance to pre-load GPU caches.
@@ -142,7 +155,7 @@ class LlamaPool:
 
         for i, instance in enumerate(self.instances):
             try:
-                logging.debug(f"Warming up instance {i + 1}/{self.pool_size}...")
+                logging.debug("Warming up instance %d/%d...", i + 1, self.pool_size)
                 # Run minimal inference to trigger GPU initialization
                 instance.generate(
                     warmup_prompt,
@@ -153,11 +166,11 @@ class LlamaPool:
                 instance.ctx.kv_cache_clear()
             except (RuntimeError, ValueError) as e:
                 # Expected errors from model inference - warmup is optional optimization
-                logging.warning(f"Warmup failed for instance {i + 1} (non-fatal): {e}")
+                logging.warning("Warmup failed for instance %d (non-fatal): %s", i + 1, e)
             except Exception as e:
                 # Unexpected errors during warmup
                 logging.warning(
-                    f"Unexpected error during warmup for instance {i + 1} (non-fatal): {e}"
+                    "Unexpected error during warmup for instance %d (non-fatal): %s", i + 1, e
                 )
 
     async def _checkout_instance(self, timeout: float | None = None) -> Llama:
@@ -171,6 +184,9 @@ class LlamaPool:
             RuntimeError: If pool is closed.
             TimeoutError: If timeout expires before an instance is available.
         """
+        self._ensure_queue_initialized()
+        assert self._available is not None  # Type narrowing after init
+
         if self._closed:
             raise RuntimeError("LlamaPool is closed")
         try:
@@ -191,6 +207,7 @@ class LlamaPool:
 
     def _return_instance(self, instance: Llama) -> None:
         """Return an instance to the pool after use."""
+        assert self._available is not None  # Must be initialized after checkout
         self._available.put_nowait(instance)
 
     async def generate(
@@ -393,25 +410,28 @@ class LlamaPool:
         if self._closed:
             return
         self._closed = True
-        # Warn if instances are checked out (in-flight requests will be disrupted)
-        in_flight = self.pool_size - self._available.qsize()
-        if in_flight > 0:
-            logging.warning(
-                "LlamaPool.close() called with %d in-flight request(s); "
-                "use close_graceful() to wait for them. "
-                "In-flight requests may encounter errors.",
-                in_flight,
-            )
-        # Drain real instances from the queue
-        while True:
-            try:
-                self._available.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-        # Inject sentinel to unblock any coroutines waiting on get().
-        # Each woken waiter re-injects it, so one sentinel propagates
-        # through all blocked waiters (poison-pill pattern).
-        self._available.put_nowait(_POOL_CLOSED)
+
+        # If queue was never initialized (pool never used), skip queue operations
+        if self._available is not None:
+            # Warn if instances are checked out (in-flight requests will be disrupted)
+            in_flight = self.pool_size - self._available.qsize()
+            if in_flight > 0:
+                logging.warning(
+                    "LlamaPool.close() called with %d in-flight request(s); "
+                    "use close_graceful() to wait for them. "
+                    "In-flight requests may encounter errors.",
+                    in_flight,
+                )
+            # Drain real instances from the queue
+            while True:
+                try:
+                    self._available.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            # Inject sentinel to unblock any coroutines waiting on get().
+            # Each woken waiter re-injects it, so one sentinel propagates
+            # through all blocked waiters (poison-pill pattern).
+            self._available.put_nowait(_POOL_CLOSED)
         logging.info("Closing LlamaPool with %d instances...", len(self.instances))
         for i, instance in enumerate(self.instances):
             logging.debug("Closing instance %d/%d...", i + 1, len(self.instances))
@@ -437,38 +457,41 @@ class LlamaPool:
         if self._closed:
             return
         self._closed = True
-        # Inject sentinel to reject new checkout attempts
-        self._available.put_nowait(_POOL_CLOSED)
 
-        # Wait for checked-out instances to be returned to the queue
-        returned = 0
-        try:
-            deadline = asyncio.get_running_loop().time() + timeout
-            while returned < self.pool_size:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    break
-                try:
-                    item = await asyncio.wait_for(
-                        self._available.get(), timeout=remaining
-                    )
-                    if item is _POOL_CLOSED:
-                        # Put it back for other waiters, don't count it
-                        self._available.put_nowait(_POOL_CLOSED)
-                        continue
-                    returned += 1
-                except TimeoutError:
-                    break
-        except Exception:
-            pass  # Best-effort drain; force-close below handles the rest
+        # If queue was never initialized (pool never used), skip graceful wait
+        if self._available is not None:
+            # Inject sentinel to reject new checkout attempts
+            self._available.put_nowait(_POOL_CLOSED)
 
-        if returned < self.pool_size:
-            logging.warning(
-                "Graceful shutdown timed out: %d/%d instances still checked out, "
-                "force-closing",
-                self.pool_size - returned,
-                self.pool_size,
-            )
+            # Wait for checked-out instances to be returned to the queue
+            returned = 0
+            try:
+                deadline = asyncio.get_running_loop().time() + timeout
+                while returned < self.pool_size:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        item = await asyncio.wait_for(
+                            self._available.get(), timeout=remaining
+                        )
+                        if item is _POOL_CLOSED:
+                            # Put it back for other waiters, don't count it
+                            self._available.put_nowait(_POOL_CLOSED)
+                            continue
+                        returned += 1
+                    except TimeoutError:
+                        break
+            except Exception:
+                pass  # Best-effort drain; force-close below handles the rest
+
+            if returned < self.pool_size:
+                logging.warning(
+                    "Graceful shutdown timed out: %d/%d instances still checked out, "
+                    "force-closing",
+                    self.pool_size - returned,
+                    self.pool_size,
+                )
 
         # Force-close all instances regardless of checkout state
         logging.info("Closing LlamaPool with %d instances...", len(self.instances))

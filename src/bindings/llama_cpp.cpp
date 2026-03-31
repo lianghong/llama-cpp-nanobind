@@ -38,31 +38,34 @@ struct ContextParams {
 };
 
 // Thread-safe backend initialization with reference counting
+// - g_backend_init_flag: std::call_once handles thread-safety internally (no mutex needed)
+// - g_resource_mutex: protects model_count and resource lifecycle (Model/Context close)
 std::once_flag g_backend_init_flag;
 std::atomic<int> g_model_count{0};
-std::mutex g_init_mutex;
-
-void init_backend() {
-  llama_backend_init();
-}
+std::mutex g_resource_mutex;  // For model lifecycle (close, model_count)
 
 class Model {
  public:
-  explicit Model(const std::string& path, const ModelParams& params)
-      : model_(llama_model_load_from_file(path.c_str(), params.raw)) {
-    std::scoped_lock<std::mutex> const lock(g_init_mutex);
-    std::call_once(g_backend_init_flag, init_backend);
+  explicit Model(const std::string& path, const ModelParams& params) {
+    // Initialize backend FIRST, before any model loading
+    // CUDA/Metal backends must be ready before llama_model_load_from_file
+    // std::call_once provides thread-safety; no extra lock needed
+    std::call_once(g_backend_init_flag, llama_backend_init);
 
+    model_ = llama_model_load_from_file(path.c_str(), params.raw);
     if (!model_) {
       throw std::runtime_error("failed to load model: " + path);
     }
-    ++g_model_count;
+    {
+      std::scoped_lock const lock(g_resource_mutex);
+      ++g_model_count;
+    }
   }
 
   ~Model() { close(); }
 
   void close() {
-    std::scoped_lock<std::mutex> const lock(g_init_mutex);
+    std::scoped_lock const lock(g_resource_mutex);
     if (model_) {
       llama_model_free(model_);
       model_ = nullptr;
@@ -491,7 +494,7 @@ class Context {
   ~Context() { close(); }
 
   void close() {
-    std::scoped_lock<std::mutex> const lock(g_init_mutex);
+    std::scoped_lock const lock(g_resource_mutex);
     if (single_batch_.token) {
       llama_batch_free(single_batch_);
       single_batch_ = {};
@@ -526,6 +529,7 @@ class Context {
     }
     if (ctx_) {
       llama_free(ctx_);
+      ctx_ = nullptr;  // Null immediately after free to prevent double-free
     }
     ctx_ = llama_init_from_model(model_->get(), params_.raw);
     if (!ctx_) {
@@ -819,6 +823,32 @@ inline llama_token SamplerChain::sample(Context& ctx, int32_t idx) {
   return llama_sampler_sample(sampler_, ctx.raw(), idx);
 }
 
+// Helper: Prime generation by adding BOS, accepting tokens into sampler, and decoding prompt.
+// Returns the primed token sequence (with BOS if added).
+// This is the common setup boilerplate for all generate_tokens_* functions.
+inline std::vector<llama_token> prime_generation(Context& ctx, SamplerChain& sampler,
+                                                 const std::vector<llama_token>& prompt,
+                                                 bool add_bos) {
+  std::vector<llama_token> priming = prompt;
+
+  // Add BOS if requested and not already present
+  if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
+    priming.insert(priming.begin(), ctx.model().bos());
+  }
+
+  // Accept all prompt tokens into sampler for penalty tracking
+  for (llama_token const t : priming) {
+    llama_sampler_accept(sampler.get(), t);
+  }
+
+  // Decode prompt to populate KV cache
+  if (!priming.empty()) {
+    ctx.decode(priming, /*return_logits=*/true);
+  }
+
+  return priming;
+}
+
 std::vector<llama_token> generate_tokens(Context& ctx, SamplerChain& sampler,
                                          const std::vector<llama_token>& prompt,
                                          int32_t max_new_tokens, bool add_bos,
@@ -827,19 +857,7 @@ std::vector<llama_token> generate_tokens(Context& ctx, SamplerChain& sampler,
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  std::vector<llama_token> priming = prompt;
-  if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
-    priming.insert(priming.begin(), ctx.model().bos());
-  }
-
-  // Accept prompt tokens into sampler for penalty tracking
-  for (llama_token const t : priming) {
-    llama_sampler_accept(sampler.get(), t);
-  }
-
-  if (!priming.empty()) {
-    ctx.decode(priming, /*return_logits=*/true);
-  }
+  prime_generation(ctx, sampler, prompt, add_bos);
 
   for (int i = 0; i < max_new_tokens; ++i) {
     // llama_sampler_sample (called by generate_next) already accepts the token
@@ -1045,26 +1063,15 @@ std::vector<TokenProb> generate_tokens_with_details(
     const std::vector<std::vector<llama_token>>& stop_sequences, int32_t top_logprobs,
     bool echo_prompt) {
   std::vector<TokenProb> results;
-  std::vector<llama_token> priming = prompt;
-  if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
-    priming.insert(priming.begin(), ctx.model().bos());
-  }
+  std::vector<llama_token> const priming = prime_generation(ctx, sampler, prompt, add_bos);
 
-  // Accept prompt tokens into sampler for penalty tracking
-  for (llama_token const t : priming) {
-    llama_sampler_accept(sampler.get(), t);
-  }
-
-  // process prompt
-  if (!priming.empty()) {
-    ctx.decode(priming, /*return_logits=*/true);
-    if (echo_prompt) {
-      for (const int i : priming) {
-        TokenProb tp;
-        tp.token = i;
-        tp.logprob = std::numeric_limits<float>::quiet_NaN();
-        results.push_back(std::move(tp));
-      }
+  // Echo prompt tokens if requested
+  if (echo_prompt && !priming.empty()) {
+    for (const llama_token tok : priming) {
+      TokenProb tp;
+      tp.token = tok;
+      tp.logprob = std::numeric_limits<float>::quiet_NaN();
+      results.push_back(std::move(tp));
     }
   }
 
@@ -1191,19 +1198,7 @@ std::vector<llama_token> generate_tokens_with_grammar(Context& ctx, SamplerChain
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  std::vector<llama_token> priming = prompt;
-  if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
-    priming.insert(priming.begin(), ctx.model().bos());
-  }
-
-  // Accept prompt tokens into sampler for penalty tracking
-  for (llama_token const t : priming) {
-    llama_sampler_accept(sampler.get(), t);
-  }
-
-  if (!priming.empty()) {
-    ctx.decode(priming, /*return_logits=*/true);
-  }
+  prime_generation(ctx, sampler, prompt, add_bos);
 
   const int32_t n_vocab = ctx.model().n_vocab();
   // Allocate once outside the loop to avoid per-token heap allocation
@@ -1275,19 +1270,7 @@ std::vector<llama_token> generate_tokens_multi_stop(
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  std::vector<llama_token> priming = prompt;
-  if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
-    priming.insert(priming.begin(), ctx.model().bos());
-  }
-
-  // Accept prompt tokens into sampler for penalty tracking
-  for (llama_token const t : priming) {
-    llama_sampler_accept(sampler.get(), t);
-  }
-
-  if (!priming.empty()) {
-    ctx.decode(priming, /*return_logits=*/true);
-  }
+  prime_generation(ctx, sampler, prompt, add_bos);
 
   for (int i = 0; i < max_new_tokens; ++i) {
     // llama_sampler_sample (called by generate_next) already accepts the token
@@ -1322,19 +1305,7 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  std::vector<llama_token> priming = prompt;
-  if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
-    priming.insert(priming.begin(), ctx.model().bos());
-  }
-
-  // Accept prompt tokens into sampler for penalty tracking
-  for (llama_token const t : priming) {
-    llama_sampler_accept(sampler.get(), t);
-  }
-
-  if (!priming.empty()) {
-    ctx.decode(priming, /*return_logits=*/true);
-  }
+  prime_generation(ctx, sampler, prompt, add_bos);
 
   const int32_t n_vocab = ctx.model().n_vocab();
   // Allocate once outside the loop to avoid per-token heap allocation
@@ -1427,18 +1398,7 @@ int32_t generate_tokens_streaming(Context& ctx, SamplerChain& sampler,
   }
   size_t n_yielded = 0;  // Number of tokens already yielded via callback
 
-  std::vector<llama_token> priming = prompt;
-  if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
-    priming.insert(priming.begin(), ctx.model().bos());
-  }
-
-  for (llama_token const t : priming) {
-    llama_sampler_accept(sampler.get(), t);
-  }
-
-  if (!priming.empty()) {
-    ctx.decode(priming, /*return_logits=*/true);
-  }
+  prime_generation(ctx, sampler, prompt, add_bos);
 
   // Helper: yield tokens that are safe (too far from the end to be part of
   // any stop sequence). Returns false if callback requested cancellation.
@@ -1479,6 +1439,11 @@ int32_t generate_tokens_streaming(Context& ctx, SamplerChain& sampler,
     if (matched) {
       // Remove stop tokens; buffering guarantees none were yielded
       output.erase(output.end() - static_cast<std::ptrdiff_t>(remove_n), output.end());
+      // Break without decoding stop tokens (intentional):
+      // - Stop tokens are NOT part of conversation history (correct for reset_kv_cache=False)
+      // - cur_pos_ remains at position before stop tokens (KV cache consistency)
+      // - Sampler has accepted stop tokens (for penalty tracking across generations)
+      // This is the expected behavior for session continuation.
       break;
     }
 
@@ -1821,6 +1786,7 @@ NB_MODULE(_llama, m) {
   m.def(
       "backend_free",
       []() {
+        std::scoped_lock const lock(g_resource_mutex);
         if (g_model_count.load() == 0) {
           llama_backend_free();
         }
