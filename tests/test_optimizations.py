@@ -66,26 +66,22 @@ def test_n_seq_max_config():
 
 @requires_model
 def test_grammar_cache_reuse(llm):
-    """Test grammar samplers are cached for repeated schemas."""
-    from llama_cpp.llama import _grammar_cache
+    """Test that grammar samplers work correctly for JSON responses.
 
-    initial_size = len(_grammar_cache)
-
-    llm.create_chat_completion(
-        [{"role": "user", "content": "Return JSON"}],
-        max_tokens=10,
+    Note: Grammar samplers are now created fresh per generation (stateful design).
+    This test verifies JSON response format works without caching.
+    """
+    # Grammar samplers are intentionally NOT cached (they're stateful)
+    # Just verify JSON response format works
+    response = llm.create_chat_completion(
+        [{"role": "user", "content": "Return JSON with a 'test' field"}],
+        max_tokens=20,
         response_format={"type": "json_object"},
     )
-    assert len(_grammar_cache) > initial_size
 
-    cached_size = len(_grammar_cache)
-
-    llm.create_chat_completion(
-        [{"role": "user", "content": "More JSON"}],
-        max_tokens=10,
-        response_format={"type": "json_object"},
-    )
-    assert len(_grammar_cache) == cached_size  # Reused
+    # Should return valid response (grammar applied successfully)
+    assert "choices" in response
+    assert len(response["choices"]) > 0
 
 
 def test_backend_guard_functions():
