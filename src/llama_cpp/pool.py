@@ -403,7 +403,7 @@ class LlamaPool:
                 in_flight,
             )
         # Drain real instances from the queue
-        while not self._available.empty():
+        while True:
             try:
                 self._available.get_nowait()
             except asyncio.QueueEmpty:

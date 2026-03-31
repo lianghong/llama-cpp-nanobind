@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 import contextlib
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import replace as dc_replace
 import gc
 import json
 import logging
@@ -927,8 +928,6 @@ class Llama:
 
         sampler_params = sampling or self.sampling
         if seed is not None:
-            from dataclasses import replace as dc_replace
-
             sampler_params = dc_replace(sampler_params, seed=seed)
         sampler = self._build_sampler(sampler_params)
 
@@ -1092,8 +1091,6 @@ class Llama:
 
         sampler_params = sampling or self.sampling
         if seed is not None:
-            from dataclasses import replace as dc_replace
-
             sampler_params = dc_replace(sampler_params, seed=seed)
         sampler = self._build_sampler(sampler_params)
         # Optionally clear KV cache (default True for fresh generation)
@@ -1248,19 +1245,29 @@ class Llama:
 
             return stream_chunks()
 
-        text = self.generate(
+        result = self.generate(
             prompt, max_tokens=max_tokens, stop=stop, echo=echo, stream=False, **kwargs
         )
         created = int(time.time())
-        # Get completion token count from KV cache position instead of re-tokenizing
-        if isinstance(text, str):
+
+        # Handle logprobs case - generate() returns dict with text and token details
+        if isinstance(result, dict):
+            # When logprobs is set, generate() returns a dict with "text" and "tokens"
+            text = result["text"]
+            completion_tokens = len(result.get("tokens", []))
+        elif isinstance(result, str):
+            # Normal case - string result
+            text = result
+            # Get completion token count from KV cache position instead of re-tokenizing
             kv_pos = self.kv_cache_seq_pos_max()
             if kv_pos >= 0 and kv_pos >= prompt_tok_count:
                 completion_tokens = kv_pos - prompt_tok_count + 1
             else:
                 completion_tokens = 0
         else:
-            completion_tokens = 0
+            # Iterator case should not reach here (stream=False)
+            raise TypeError(f"Unexpected generate() return type: {type(result)}")
+
         return {
             "id": f"cmpl-{_uuid7_hex()}",
             "object": "text_completion",

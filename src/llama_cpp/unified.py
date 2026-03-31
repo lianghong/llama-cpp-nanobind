@@ -324,6 +324,7 @@ def detect_model_family(model_path: str) -> ModelConfig:
         return MODEL_CONFIGS["qwen3-instruct-2507"]
 
     # Qwen3.5 Small (0.8B, 2B, 4B, 9B) — thinking disabled by default
+    # NOTE: Early return here prevents the generic loop below from matching 'qwen3.5'
     _QWEN35_SMALL_SIZES = {"0.8b", "2b", "4b", "9b"}
     if "qwen3.5" in filename_lower:
         for size in _QWEN35_SMALL_SIZES:
@@ -331,6 +332,7 @@ def detect_model_family(model_path: str) -> ModelConfig:
                 return MODEL_CONFIGS["qwen3.5-small"]
         return MODEL_CONFIGS["qwen3.5"]
 
+    # Generic fallback: match longest config key first (prevents 'qwen3' matching 'qwen3.5')
     for key in sorted(MODEL_CONFIGS.keys(), key=len, reverse=True):
         if key in filename_lower:
             return MODEL_CONFIGS[key]
@@ -497,7 +499,7 @@ class ChatTemplateBackend(Backend):
     ) -> str:
         messages = self._build_messages(prompt, system_prompt, thinking=thinking)
         # Use _prepare_chat to format and tokenize once
-        formatted, _, n_tokens = self.llm._prepare_chat(messages)
+        _, _, n_tokens = self.llm._prepare_chat(messages)
         max_tokens = self._calc_max_tokens_from_count(n_tokens, max_tokens)
 
         kwargs: dict[str, Any] = {
@@ -1030,7 +1032,7 @@ class UnifiedLLM:
         return self
 
     def __repr__(self) -> str:
-        if self.llm is None:
+        if getattr(self, "_closed", False):
             return "<UnifiedLLM (closed)>"
         model_name = os.path.basename(self.llm.config.model_path)
         return (
