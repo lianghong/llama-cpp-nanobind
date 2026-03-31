@@ -60,8 +60,10 @@ endif()
 find_package(Python 3.14 COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(nanobind CONFIG REQUIRED)
 
-# On macOS, add Homebrew llama.cpp to search paths
+# Configure system library search paths
+# Priority: user override > /usr/local > Homebrew (macOS) > system defaults
 if(APPLE)
+  # On macOS, check for Homebrew llama.cpp
   execute_process(
     COMMAND brew --prefix llama.cpp
     OUTPUT_VARIABLE BREW_LLAMA_PREFIX
@@ -73,7 +75,16 @@ if(APPLE)
     list(PREPEND CMAKE_PREFIX_PATH "${BREW_LLAMA_PREFIX}")
     message(STATUS "Added Homebrew llama.cpp to search paths: ${BREW_LLAMA_PREFIX}")
   endif()
+else()
+  # On Linux, explicitly prioritize /usr/local for system-installed llama.cpp
+  if(EXISTS "/usr/local/include/llama.h")
+    list(PREPEND CMAKE_PREFIX_PATH "/usr/local")
+    message(STATUS "Using system llama.cpp from /usr/local")
+  endif()
 endif()
+
+# User can override with: cmake -DCMAKE_PREFIX_PATH=/custom/path
+message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 
 # Find llama.cpp headers
 find_path(LLAMA_INCLUDE_DIR llama.h REQUIRED)
@@ -85,10 +96,25 @@ find_library(GGML_LIB ggml REQUIRED)
 find_library(GGML_BASE_LIB ggml-base REQUIRED)
 find_library(GGML_CPU_LIB ggml-cpu REQUIRED)
 
+message(STATUS "Found libllama: ${LLAMA_LIB}")
+message(STATUS "Found libggml: ${GGML_LIB}")
+message(STATUS "Found libggml-base: ${GGML_BASE_LIB}")
+message(STATUS "Found libggml-cpu: ${GGML_CPU_LIB}")
+
 # Optional GPU backend libraries
 find_library(GGML_CUDA_LIB ggml-cuda)
 find_library(GGML_METAL_LIB ggml-metal)
 find_library(GGML_BLAS_LIB ggml-blas)
+
+if(GGML_CUDA_LIB)
+  message(STATUS "Found libggml-cuda: ${GGML_CUDA_LIB}")
+endif()
+if(GGML_METAL_LIB)
+  message(STATUS "Found libggml-metal: ${GGML_METAL_LIB}")
+endif()
+if(GGML_BLAS_LIB)
+  message(STATUS "Found libggml-blas: ${GGML_BLAS_LIB}")
+endif()
 
 set(LLAMA_SHARED_LIBS ${LLAMA_LIB} ${GGML_LIB} ${GGML_BASE_LIB} ${GGML_CPU_LIB})
 foreach(_optlib GGML_CUDA_LIB GGML_METAL_LIB GGML_BLAS_LIB)
@@ -97,7 +123,7 @@ foreach(_optlib GGML_CUDA_LIB GGML_METAL_LIB GGML_BLAS_LIB)
   endif()
 endforeach()
 
-message(STATUS "llama.cpp libraries: ${LLAMA_SHARED_LIBS}")
+message(STATUS "Linking against: ${LLAMA_SHARED_LIBS}")
 
 set(BINDINGS_SOURCES
   src/bindings/llama_cpp.cpp)

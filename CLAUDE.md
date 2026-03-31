@@ -141,11 +141,53 @@ The project uses scikit-build-core with CMake. Key environment variables:
 # Custom build type
 CMAKE_BUILD_TYPE=RelWithDebInfo uv pip install -e .
 
-# Custom llama.cpp install prefix
+# Custom llama.cpp install prefix (overrides defaults)
 CMAKE_ARGS="-DCMAKE_PREFIX_PATH=/opt/llama" uv pip install -e .
 
 # Portable build (no -march=native)
 CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
+```
+
+### System Library Search Order
+
+The build system searches for llama.cpp in this priority order:
+
+1. **User override**: `CMAKE_PREFIX_PATH` environment variable
+2. **Linux**: `/usr/local` (explicitly checked for system installs)
+3. **macOS**: Homebrew llama.cpp location (auto-detected)
+4. **Fallback**: Standard CMake search paths (`/usr`, etc.)
+
+**Example:** Install llama.cpp to `/usr/local`:
+
+```bash
+# Build and install llama.cpp
+cd /path/to/llama.cpp
+mkdir build && cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_CUDA=ON
+make -j$(nproc)
+sudo make install
+
+# Verify installation
+ls /usr/local/include/llama.h       # Headers
+ls /usr/local/lib/libllama.so       # Shared library
+
+# Build Python bindings (automatically finds /usr/local)
+cd /path/to/llama-cpp-nanobind
+uv pip install -e .
+```
+
+**To verify which libraries are being used:**
+
+```bash
+# During build, CMake prints:
+# -- Using system llama.cpp from /usr/local
+# -- Found llama.h: /usr/local/include
+# -- Found libllama: /usr/local/lib/libllama.so
+# -- Found libggml: /usr/local/lib/libggml.so
+# ...
+
+# After install, check Python extension links:
+ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
 ```
 
 ## Architecture
@@ -153,9 +195,11 @@ CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 ### Component Structure
 
 1. **External Dependencies** (`models/`)
-   - llama.cpp must be installed on the system (headers + shared libraries)
-   - CMake discovers headers via `find_path()` and libraries via `find_library()`
-   - On macOS, Homebrew llama.cpp prefix is auto-added to `CMAKE_PREFIX_PATH`
+   - llama.cpp **must be installed on the system** (headers + shared libraries)
+   - **Linux**: Defaults to `/usr/local/include` and `/usr/local/lib`
+   - **macOS**: Auto-detects Homebrew install via `brew --prefix llama.cpp`
+   - CMake discovers paths via `find_path()` and `find_library()`
+   - **No bundled dependencies**: Project links against system-installed llama.cpp
    - `models/`: GGUF model files (not included)
 
 2. **C++ Bindings** (`src/bindings/llama_cpp.cpp`)
