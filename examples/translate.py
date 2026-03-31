@@ -13,12 +13,11 @@ Usage:
     python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --ctx 8192
     python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -t Japanese
     python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --thinking
-    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -o          # auto-named file
-    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -o out.txt  # specific file
+    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -o out.txt  # specific output path
+    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --no-save  # console only
 """
 
 import argparse
-from datetime import datetime
 from pathlib import Path
 import time
 
@@ -28,6 +27,33 @@ from llama_cpp.unified import UnifiedLLM
 
 DEFAULT_INPUT: Path = Path(__file__).parent / "example.md"
 """Default input file for translation."""
+
+# ISO 639-1 codes → full language names for use in prompts
+LANG_CODES: dict[str, str] = {
+    "ar": "Arabic",
+    "de": "German",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "hi": "Hindi",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "th": "Thai",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "vi": "Vietnamese",
+    "zh": "Simplified Chinese",
+    "zh-cn": "Simplified Chinese",
+    "zh-tw": "Traditional Chinese",
+}
+"""Map ISO 639-1 codes to full language names for prompt clarity."""
 
 SYSTEM_PROMPT_TEMPLATE: str = """\
 You are an expert {target_lang} translator producing publication-ready output.
@@ -113,7 +139,9 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
-    parser = argparse.ArgumentParser(description="Translate text files using UnifiedLLM")
+    parser = argparse.ArgumentParser(
+        description="Translate text files using UnifiedLLM"
+    )
     parser.add_argument("--model", required=True, help="Path to GGUF model")
     parser.add_argument(
         "-t",
@@ -148,10 +176,14 @@ def parse_args() -> argparse.Namespace:
         "-o",
         "--output",
         type=Path,
-        nargs="?",
-        const=True,
         default=None,
-        help="Save translation to file (optional path, auto-named if omitted)",
+        help="Output file path (default: <source_stem>.<lang><source_ext> "
+        "in source directory)",
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Do not save translation to file (console output only)",
     )
     return parser.parse_args()
 
@@ -163,6 +195,15 @@ def main() -> int:
         Exit code (0 for success, 1 for error).
     """
     args: argparse.Namespace = parse_args()
+
+    # Resolve language codes (e.g. "zh" → "Simplified Chinese")
+    lang_input: str = args.target_lang.strip()
+    lang_key = lang_input.lower()
+    if lang_key in LANG_CODES:
+        args.target_lang = LANG_CODES[lang_key]
+        args.lang_slug = lang_key  # keep short code for filenames
+    else:
+        args.lang_slug = lang_input.lower().replace(" ", "-")
 
     # Validate batch sizes
     n_batch: int = min(args.batch, args.ctx)
@@ -224,7 +265,8 @@ def main() -> int:
                 target_lang=args.target_lang,
             )
             user_prompt: str = USER_PROMPT_TEMPLATE.format(
-                target_lang=args.target_lang, text=input_text,
+                target_lang=args.target_lang,
+                text=input_text,
             )
             prompt_tokens: int = (
                 llm.n_tokens(user_prompt) + llm.n_tokens(system_prompt) + 50
@@ -273,13 +315,16 @@ def main() -> int:
             n_eval: int = perf.get("n_eval", 0)
             speed: float = n_eval / gen_time if gen_time > 0 else 0
 
-            # Save output if requested
-            if args.output is not None:
-                if args.output is True:
-                    timestamp: str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    output_file = Path(f"{Path(args.model).stem}_{timestamp}.txt")
-                else:
+            # Save output to file (default: alongside source file)
+            output_file: Path | None = None
+            if not args.no_save:
+                if args.output is not None:
                     output_file = args.output
+                else:
+                    output_file = (
+                        args.file.parent
+                        / f"{args.file.stem}.{args.lang_slug}{args.file.suffix}"
+                    )
                 output_file.write_text(result, encoding="utf-8")
 
             # Print metrics
@@ -292,7 +337,7 @@ def main() -> int:
                     f"Answer: {answer_tokens} tokens, "
                     f"Total: {thinking_tokens + answer_tokens} tokens"
                 )
-            if args.output is not None:
+            if output_file is not None:
                 print(f"Saved: {output_file}")
             print(f"Total time: {time.perf_counter() - start_time:.1f}s")
 

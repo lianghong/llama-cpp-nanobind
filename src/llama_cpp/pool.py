@@ -173,10 +173,16 @@ class LlamaPool:
         """
         if self._closed:
             raise RuntimeError("LlamaPool is closed")
-        if timeout is not None:
-            item = await asyncio.wait_for(self._available.get(), timeout=timeout)
-        else:
-            item = await self._available.get()
+        try:
+            if timeout is not None:
+                item = await asyncio.wait_for(self._available.get(), timeout=timeout)
+            else:
+                item = await self._available.get()
+        except TimeoutError:
+            # Re-check closed state before propagating timeout
+            if self._closed:
+                raise RuntimeError("LlamaPool is closed") from None
+            raise  # Legitimate timeout - pool busy
         if item is _POOL_CLOSED:
             # Re-inject sentinel so the next blocked waiter also wakes up
             self._available.put_nowait(_POOL_CLOSED)

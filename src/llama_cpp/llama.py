@@ -325,12 +325,17 @@ class Llama:
 
         # Apply verbose setting with class-level synchronization
         # WARNING: This affects logging globally, not per-instance.
-        # In multi-instance apps, the last instance's verbose setting wins.
-        if not cfg.verbose:
-            with Llama._log_lock:
+        # Logging can be re-enabled by creating instance with verbose=True after disable.
+        with Llama._log_lock:
+            if not cfg.verbose:
+                # Disable logging globally if not already disabled
                 if Llama._global_verbose is not False:
                     disable_logging()
                     Llama._global_verbose = False
+            elif cfg.verbose and Llama._global_verbose is False:
+                # Re-enable logging after previous disable
+                reset_logging()  # Reset to default llama.cpp logging
+                Llama._global_verbose = True
 
         # Apply seed to default sampling if specified
         if cfg.seed >= 0 and self.sampling.seed is None:
@@ -411,6 +416,21 @@ class Llama:
     # and the atexit handler _cleanup_all() handles explicit shutdown. Using __del__
     # can cause segfaults during interpreter shutdown when accessing partially
     # destroyed Python objects. Use context manager or explicit close() instead.
+
+    @classmethod
+    def reset_verbose(cls) -> None:
+        """Reset the global verbose state to allow re-configuration.
+
+        This is a convenience method to reset logging state without creating
+        a new instance. Useful for testing or manual logging control.
+
+        Example:
+            >>> Llama.reset_verbose()  # Reset to default state
+            >>> llm = Llama(model_path, config=LlamaConfig(..., verbose=True))
+        """
+        with cls._log_lock:
+            reset_logging()
+            cls._global_verbose = None
 
     def _check_closed(self) -> None:
         """Raise error if instance has been closed."""
@@ -907,13 +927,26 @@ class Llama:
 
         sampler_params = sampling or self.sampling
         if seed is not None:
-            sampler_params = SamplingParams(**{**asdict(sampler_params), "seed": seed})
+            from dataclasses import replace as dc_replace
+
+            sampler_params = dc_replace(sampler_params, seed=seed)
         sampler = self._build_sampler(sampler_params)
 
         if reset_kv_cache:
             self.ctx.kv_cache_clear()
 
         prompt_tokens = self.tokenize(prompt, add_special=self.config.add_bos)
+
+        # Validate tokenized prompt length to prevent OOM from high-compression prompts
+        # Use multiplier from config, defaulting to 2x context size
+        max_multiplier = getattr(self.config, "max_prompt_multiplier", 2)
+        max_reasonable_tokens = self.n_ctx() * max_multiplier
+        if len(prompt_tokens) > max_reasonable_tokens:
+            raise ValidationError(
+                f"tokenized prompt ({len(prompt_tokens)} tokens) exceeds "
+                f"reasonable limit ({max_reasonable_tokens}). "
+                "Reduce prompt length or increase n_ctx."
+            )
 
         stop_sequences: list[list[int]] = []
         if stop:
@@ -996,6 +1029,12 @@ class Llama:
             # Signal background thread to stop, then wait for it
             cancel_event.set()
             thread.join(timeout=5.0)
+            if thread.is_alive():
+                logging.warning(
+                    "generate_stream worker thread did not stop within 5s; "
+                    "C++ generation may still be running. Avoid using this Llama "
+                    "instance until thread completes to prevent data races."
+                )
 
     def generate(
         self,
@@ -1053,12 +1092,25 @@ class Llama:
 
         sampler_params = sampling or self.sampling
         if seed is not None:
-            sampler_params = SamplingParams(**{**asdict(sampler_params), "seed": seed})
+            from dataclasses import replace as dc_replace
+
+            sampler_params = dc_replace(sampler_params, seed=seed)
         sampler = self._build_sampler(sampler_params)
         # Optionally clear KV cache (default True for fresh generation)
         if reset_kv_cache:
             self.ctx.kv_cache_clear()
         prompt_tokens = self.tokenize(prompt, add_special=self.config.add_bos)
+
+        # Validate tokenized prompt length to prevent OOM from high-compression prompts
+        # Use multiplier from config, defaulting to 2x context size
+        max_multiplier = getattr(self.config, "max_prompt_multiplier", 2)
+        max_reasonable_tokens = self.n_ctx() * max_multiplier
+        if len(prompt_tokens) > max_reasonable_tokens:
+            raise ValidationError(
+                f"tokenized prompt ({len(prompt_tokens)} tokens) exceeds "
+                f"reasonable limit ({max_reasonable_tokens}). "
+                "Reduce prompt length or increase n_ctx."
+            )
 
         # prepare stop sequences
         stop_sequences: list[list[int]] = []
@@ -1676,12 +1728,23 @@ def set_log_level(level: str | int) -> None:
 
 
 def disable_logging() -> None:
-    """Silence llama.cpp logging completely."""
+    """Silence llama.cpp logging completely.
+
+    This affects logging globally across all Llama instances (llama.cpp limitation).
+
+    Note: This is a wrapper around _llama.disable_logging() (imported from C++ bindings).
+    Logging can be re-enabled by creating a new Llama instance with verbose=True.
+    """
     _llama.disable_logging()
 
 
 def reset_logging() -> None:
-    """Restore default llama.cpp logging callback."""
+    """Restore default llama.cpp logging callback.
+
+    This re-enables logging after disable_logging() was called.
+    Called automatically when creating a Llama instance with verbose=True
+    after logging was previously disabled.
+    """
     _llama.reset_logging()
 
 

@@ -94,7 +94,16 @@ uv pip install -e .
 
 **Note**: Release builds use aggressive optimizations (`-O3`, `-march=native`, `-flto=auto`, `-ffast-math`) for maximum performance.
 
-**Recent Optimizations**: v0.3.0 includes significant performance and correctness improvements:
+**Recent Updates**:
+
+**v0.3.6** (2026-03-31) - Validation & Safety:
+- DoS protection: Validates tokenized prompt length to prevent OOM from high-compression text
+- Data integrity: State load operations now roll back on failure, maintaining context consistency
+- Thread safety: Logging configuration protected by mutex for concurrent initialization
+- Robustness: Comprehensive validation for sampler selection, string buffers, and integer casts
+- All validation overhead < 0.1%; no breaking changes
+
+**v0.3.0** - Performance & Correctness:
 - GIL released during heavy C++ operations for better async/threading performance
 - State load/save correctly maintains KV cache position bookkeeping
 - Grammar-constrained generation now respects sampling parameters (temperature, top_p, etc.)

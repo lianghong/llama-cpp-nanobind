@@ -20,6 +20,7 @@ from datetime import datetime
 from enum import auto
 from enum import Enum
 import gc
+import logging
 import os
 import re
 import threading
@@ -451,6 +452,8 @@ class Backend(ABC):
         Raises:
             ValueError: If requested is invalid or prompt exceeds context.
         """
+        if token_count < 0:
+            raise ValueError(f"invalid token count: {token_count}")
         if requested is not None and requested <= 0:
             raise ValueError(f"max_tokens must be positive, got {requested}")
         available = self.n_ctx - token_count - 10
@@ -902,6 +905,18 @@ class UnifiedLLM:
         )
 
         self.llm = Llama(model_path, config=llama_config, sampling=sampling)
+
+        # Warn if n_ctx exceeds model's training context
+        model_train_ctx = self.llm.model.n_ctx_train()
+        if n_ctx > model_train_ctx:
+            logging.warning(
+                "Requested n_ctx=%d exceeds model training context %d. "
+                "Generation quality may degrade beyond %d tokens.",
+                n_ctx,
+                model_train_ctx,
+                model_train_ctx,
+            )
+
         try:
             backend_cls = self.BACKEND_MAP[self.model_config.family]
             self.backend: Backend = backend_cls(self.llm, self.model_config, n_ctx)

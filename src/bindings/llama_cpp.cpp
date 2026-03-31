@@ -50,7 +50,7 @@ class Model {
  public:
   explicit Model(const std::string& path, const ModelParams& params)
       : model_(llama_model_load_from_file(path.c_str(), params.raw)) {
-    std::lock_guard<std::mutex> const lock(g_init_mutex);
+    std::scoped_lock<std::mutex> const lock(g_init_mutex);
     std::call_once(g_backend_init_flag, init_backend);
 
     if (!model_) {
@@ -62,7 +62,7 @@ class Model {
   ~Model() { close(); }
 
   void close() {
-    std::lock_guard<std::mutex> const lock(g_init_mutex);
+    std::scoped_lock<std::mutex> const lock(g_init_mutex);
     if (model_) {
       llama_model_free(model_);
       model_ = nullptr;
@@ -150,7 +150,12 @@ class Model {
       return "";  // Empty description
     }
     std::string buf(static_cast<size_t>(needed) + 1, '\0');
-    llama_model_desc(model_, buf.data(), static_cast<int32_t>(buf.size()));
+    int32_t const written = llama_model_desc(model_, buf.data(), static_cast<int32_t>(buf.size()));
+    if (written != needed) {
+      throw std::runtime_error("buffer size mismatch in llama_model_desc");
+    }
+    // Ensure null termination
+    buf[written] = '\0';
     buf.resize(static_cast<size_t>(needed));
     return buf;
   }
@@ -186,7 +191,12 @@ class Model {
     int32_t const len = llama_model_meta_val_str(model_, key.c_str(), nullptr, 0);
     if (len < 0) return "";
     std::string buf(static_cast<size_t>(len) + 1, '\0');
-    llama_model_meta_val_str(model_, key.c_str(), buf.data(), static_cast<int32_t>(buf.size()));
+    int32_t const written =
+        llama_model_meta_val_str(model_, key.c_str(), buf.data(), static_cast<int32_t>(buf.size()));
+    if (written != len) {
+      throw std::runtime_error("buffer size mismatch in llama_model_meta_val_str");
+    }
+    buf[written] = '\0';
     buf.resize(static_cast<size_t>(len));
     return buf;
   }
@@ -196,7 +206,12 @@ class Model {
     int32_t const len = llama_model_meta_key_by_index(model_, i, nullptr, 0);
     if (len < 0) return "";
     std::string buf(static_cast<size_t>(len) + 1, '\0');
-    llama_model_meta_key_by_index(model_, i, buf.data(), static_cast<int32_t>(buf.size()));
+    int32_t const written =
+        llama_model_meta_key_by_index(model_, i, buf.data(), static_cast<int32_t>(buf.size()));
+    if (written != len) {
+      throw std::runtime_error("buffer size mismatch in llama_model_meta_key_by_index");
+    }
+    buf[written] = '\0';
     buf.resize(static_cast<size_t>(len));
     return buf;
   }
@@ -206,7 +221,12 @@ class Model {
     int32_t const len = llama_model_meta_val_str_by_index(model_, i, nullptr, 0);
     if (len < 0) return "";
     std::string buf(static_cast<size_t>(len) + 1, '\0');
-    llama_model_meta_val_str_by_index(model_, i, buf.data(), static_cast<int32_t>(buf.size()));
+    int32_t const written =
+        llama_model_meta_val_str_by_index(model_, i, buf.data(), static_cast<int32_t>(buf.size()));
+    if (written != len) {
+      throw std::runtime_error("buffer size mismatch in llama_model_meta_val_str_by_index");
+    }
+    buf[written] = '\0';
     buf.resize(static_cast<size_t>(len));
     return buf;
   }
@@ -246,6 +266,10 @@ class Model {
       throw std::runtime_error("too many tokens for detokenization");
     }
     int32_t const n_tokens = static_cast<int32_t>(tokens.size());
+    // Validate cast didn't truncate
+    if (static_cast<size_t>(n_tokens) != tokens.size()) {
+      throw std::runtime_error("integer overflow in token count");
+    }
     int32_t needed = llama_detokenize(vocab(), tokens.data(), n_tokens, nullptr, 0, remove_special,
                                       unparse_special);
     if (needed < 0) {
@@ -467,7 +491,7 @@ class Context {
   ~Context() { close(); }
 
   void close() {
-    std::lock_guard<std::mutex> const lock(g_init_mutex);
+    std::scoped_lock<std::mutex> const lock(g_init_mutex);
     if (single_batch_.token) {
       llama_batch_free(single_batch_);
       single_batch_ = {};
@@ -568,7 +592,7 @@ class Context {
       throw std::runtime_error("context has been closed");
     }
     const int32_t n_vocab = model_->n_vocab();
-    float* ptr = llama_get_logits(const_cast<llama_context*>(ctx_));
+    const float* ptr = llama_get_logits(const_cast<llama_context*>(ctx_));
     if (!ptr) {
       throw std::runtime_error("logits unavailable; ensure decode was called with logits enabled");
     }
@@ -580,7 +604,7 @@ class Context {
     if (!model_) {
       throw std::runtime_error("context has been closed");
     }
-    float* ptr = llama_get_embeddings(const_cast<llama_context*>(ctx_));
+    const float* ptr = llama_get_embeddings(const_cast<llama_context*>(ctx_));
     if (!ptr) {
       throw std::runtime_error(
           "embeddings unavailable; ensure pooling_type is "
@@ -621,7 +645,7 @@ class Context {
     }
     // Update cur_pos_ from KV cache to maintain correct position bookkeeping
     cur_pos_ = kv_cache_seq_pos_max(0) + 1;
-    if (cur_pos_ < 0) cur_pos_ = 0;
+    cur_pos_ = std::max(cur_pos_, 0);
     return n_token_count;
   }
 
@@ -651,14 +675,23 @@ class Context {
     const auto* ptr = reinterpret_cast<const uint8_t*>(data.data());
     size_t const len = data.size();
     size_t result = 0;
+    int32_t const old_pos = cur_pos_;  // Save for rollback on failure
     {
       nb::gil_scoped_release const release;
       result = llama_state_set_data(ctx_, ptr, len);
-      // Update cur_pos_ from KV cache to maintain correct position bookkeeping
-      cur_pos_ = kv_cache_seq_pos_max(0) + 1;
-      if (cur_pos_ < 0) cur_pos_ = 0;
+      if (result == 0 || result > len) {
+        // Failure - restore old position
+        cur_pos_ = old_pos;
+      } else {
+        // Success - update cur_pos_ from KV cache to maintain correct position bookkeeping
+        cur_pos_ = kv_cache_seq_pos_max(0) + 1;
+        cur_pos_ = std::max(cur_pos_, 0);
+      }
     }
     // GIL re-acquired — `data` (nb::bytes) guaranteed alive until function returns
+    if (result == 0 || result > len) {
+      throw std::runtime_error("failed to load state data");
+    }
     return result;
   }
 
@@ -825,6 +858,7 @@ std::vector<llama_token> generate_tokens(Context& ctx, SamplerChain& sampler,
 
 // Logging control -----------------------------------------------------------
 std::atomic<ggml_log_level> g_min_log_level{GGML_LOG_LEVEL_INFO};
+std::mutex g_log_mutex;  // Protects llama_log_set() calls
 
 void log_filter_bridge(ggml_log_level level, const char* text, void* /*user*/) {
   if (level < g_min_log_level.load(std::memory_order_relaxed)) return;
@@ -833,15 +867,18 @@ void log_filter_bridge(ggml_log_level level, const char* text, void* /*user*/) {
 }
 
 void set_log_level(int min_level) {
+  std::scoped_lock<std::mutex> const lock(g_log_mutex);
   g_min_log_level.store(static_cast<ggml_log_level>(min_level), std::memory_order_relaxed);
   llama_log_set(log_filter_bridge, nullptr);
 }
 
 void disable_logging() {
+  std::scoped_lock<std::mutex> const lock(g_log_mutex);
   llama_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
 }
 
 void reset_logging() {
+  std::scoped_lock<std::mutex> const lock(g_log_mutex);
   llama_log_set(nullptr, nullptr);
 }
 
@@ -977,9 +1014,9 @@ inline double logsumexp(const float* logits, int32_t n_vocab) {
   }
   double sum = 0.0;
   for (int32_t i = 0; i < n_vocab; ++i) {
-    sum += std::exp(double(logits[i] - max_l));
+    sum += std::exp(static_cast<double>(logits[i] - max_l));
   }
-  return std::log(sum) + double(max_l);
+  return std::log(sum) + static_cast<double>(max_l);
 }
 
 inline std::vector<std::pair<llama_token, float>> compute_top_logprobs(const float* logits,
@@ -1064,19 +1101,23 @@ std::vector<TokenProb> generate_tokens_with_details(
       }
       double sum = 0.0;
       for (size_t j = 0; j < cur_p.size; ++j) {
-        sum += std::exp(double(cur_p.data[j].logit - max_l));
+        sum += std::exp(static_cast<double>(cur_p.data[j].logit - max_l));
       }
-      lse = std::log(sum) + double(max_l);
+      lse = std::log(sum) + static_cast<double>(max_l);
     }
 
     // Use token selected by the apply above — do NOT call generate_next
     // (llama_sampler_sample) which would re-apply the sampler chain,
     // advancing the dist sampler's RNG and potentially selecting a
     // different token than what cur_p reflects.
-    llama_token token = LLAMA_TOKEN_NULL;
-    if (cur_p.size > 0 && cur_p.selected >= 0 && static_cast<size_t>(cur_p.selected) < cur_p.size) {
-      token = cur_p.data[cur_p.selected].id;
+    // Validate selected index before ANY use
+    if (cur_p.size == 0 || cur_p.selected < 0 ||
+        static_cast<size_t>(cur_p.selected) >= cur_p.size) {
+      throw std::runtime_error(
+          "sampler failed to select valid token (empty candidate set after filtering?)");
     }
+    llama_token const token = cur_p.data[cur_p.selected].id;
+
     // Accept into sampler for penalty tracking
     if (token >= 0) {
       llama_sampler_accept(sampler.get(), token);
@@ -1093,7 +1134,7 @@ std::vector<TokenProb> generate_tokens_with_details(
 
     TokenProb tp;
     tp.token = token;
-    tp.logprob = static_cast<float>(double(token_logit) - lse);
+    tp.logprob = static_cast<float>(static_cast<double>(token_logit) - lse);
     if (top_logprobs > 0) {
       std::vector<std::pair<llama_token, float>> top_lp;
       std::vector<size_t> idx(cur_p.size);
