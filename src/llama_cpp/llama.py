@@ -447,23 +447,43 @@ class Llama:
         with self._lock:
             if self._closed:
                 return
-            self._closed = True
 
-            # Remove from instance tracking
+            # Remove from instance tracking first
             if hasattr(self, "_ref"):
                 _instances.discard(self._ref)
             if hasattr(self, "_lora_adapters"):
                 self._lora_adapters.clear()
+
+            # Track exceptions during cleanup
+            close_errors: list[Exception] = []
+
             # Explicitly free context before model (C++ dependency)
+            # Use try/finally to ensure cleanup even on exception
             if getattr(self, "ctx", None) is not None:
-                self.ctx.close()
-                self.ctx = None
+                try:
+                    self.ctx.close()
+                except Exception as e:
+                    close_errors.append(e)
+                finally:
+                    self.ctx = None
+
             if getattr(self, "model", None) is not None:
-                self.model.close()
-                self.model = None
+                try:
+                    self.model.close()
+                except Exception as e:
+                    close_errors.append(e)
+                finally:
+                    self.model = None
+
+            # Mark as closed AFTER attempting all cleanup
+            self._closed = True
 
         # Force GC outside lock to avoid potential deadlocks from finalizers
         gc.collect()
+
+        # Raise first exception if any cleanup failed
+        if close_errors:
+            raise LlamaError(f"Errors during close: {close_errors[0]}") from close_errors[0]
 
     # Compatibility helpers -------------------------------------------------
     def tokenize(
