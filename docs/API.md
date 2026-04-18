@@ -277,7 +277,7 @@ response = llm.generate("Hello")
 
 Enum of supported model families:
 
-- `AYA`, `GEMMA`, `GLM4`, `GRANITE`, `MINICPM`, `PHI`, `MISTRAL`, `QWEN3`, `QWEN3_5`, `GPT_OSS`, `TRANSLATEGEMMA`
+- `GEMMA`, `GEMMA4`, `GLM4`, `GRANITE`, `MINICPM`, `PHI`, `MISTRAL`, `QWEN3`, `QWEN3_5`, `GPT_OSS`
 
 ### ModelConfig
 
@@ -322,8 +322,8 @@ Auto-detects model family from file path. Raises `ValueError` if unknown.
 
 | Family | Detection Pattern | Key Features |
 | --- | --- | --- |
-| `AYA` | `aya` in path | Cohere multilingual (70+ languages), low temperature (0.3) |
-| `GEMMA` | `gemma` in path | Google Gemma, 128K context |
+| `GEMMA` | `gemma` in path (not `gemma-4`) | Google Gemma 2/3, 128K context |
+| `GEMMA4` | `gemma-4` / `gemma4` in path | Google Gemma 4. E2B/E4B → 128K; `26b`/`31b`/`a4b` markers → 256K. Thinking via `<\|think\|>` in system prompt |
 | `GLM4` | `glm-4` in path | Zhipu GLM-4; `glm-4.7` variant adds thinking mode (202K context) |
 | `GRANITE` | `granite` in path | IBM Granite, greedy decoding (temp=0.0) |
 | `MINICPM` | `minicpm` in path | MiniCPM, ChatML format |
@@ -332,7 +332,6 @@ Auto-detects model family from file path. Raises `ValueError` if unknown.
 | `QWEN3` | `qwen3` in path | Alibaba Qwen3 with `/think`/`/no_think` toggle |
 | `QWEN3_5` | `qwen3.5` in path | Qwen3.5 hybrid attention, 262K context, thinking default-on (no `/think` suffix) |
 | `GPT_OSS` | `gpt-oss` in path | GPT-OSS with dual-channel (analysis/final) output |
-| `TRANSLATEGEMMA` | `translategemma` in path | Google TranslateGemma, 55 languages |
 
 ## JSON Mode
 

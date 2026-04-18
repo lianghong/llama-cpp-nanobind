@@ -1548,18 +1548,22 @@ class Llama:
         self, seq_id_src: int, seq_id_dst: int, p0: int = -1, p1: int = -1
     ) -> None:
         """Copy KV cache from one sequence to another."""
+        self._check_closed()
         self.ctx.kv_cache_seq_cp(seq_id_src, seq_id_dst, p0, p1)
 
     def kv_cache_seq_keep(self, seq_id: int) -> None:
         """Remove all tokens not belonging to the specified sequence."""
+        self._check_closed()
         self.ctx.kv_cache_seq_keep(seq_id)
 
     def kv_cache_seq_add(self, seq_id: int, p0: int, p1: int, delta: int) -> None:
         """Add delta to positions in range [p0, p1] for sequence."""
+        self._check_closed()
         self.ctx.kv_cache_seq_add(seq_id, p0, p1, delta)
 
     def kv_cache_seq_pos_max(self, seq_id: int = 0) -> int:
         """Return max position in KV cache for sequence. -1 if empty."""
+        self._check_closed()
         result: int = self.ctx.kv_cache_seq_pos_max(seq_id)
         return result
 

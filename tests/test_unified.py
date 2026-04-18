@@ -32,9 +32,29 @@ def test_detect_model_family_phi():
     assert config.family == ModelFamily.PHI
 
 
-def test_detect_model_family_aya():
-    config = detect_model_family("models/tiny-aya-global-q8_0.gguf")
-    assert config.family == ModelFamily.AYA
+def test_detect_model_family_gemma4_small():
+    """Gemma 4 E2B / E4B routes to the 128K 'gemma-4' config."""
+    config = detect_model_family("models/gemma-4-e4b-it-Q8_0.gguf")
+    assert config.family == ModelFamily.GEMMA4
+    assert config.max_ctx == 131072
+    assert config.supports_thinking is True
+
+
+def test_detect_model_family_gemma4_large():
+    """Gemma 4 26B-A4B / 31B routes to the 256K 'gemma-4-large' config."""
+    config_26 = detect_model_family("models/gemma-4-26b-a4b-it-Q4_K_XL.gguf")
+    assert config_26.family == ModelFamily.GEMMA4
+    assert config_26.max_ctx == 262144
+
+    config_31 = detect_model_family("models/gemma-4-31b-it-Q4_K_XL.gguf")
+    assert config_31.family == ModelFamily.GEMMA4
+    assert config_31.max_ctx == 262144
+
+
+def test_detect_model_family_gemma_not_gemma4():
+    """Legacy 'gemma' filenames (e.g. Gemma 2) must NOT match Gemma 4."""
+    config = detect_model_family("models/gemma-2-9b-it-Q6_K.gguf")
+    assert config.family == ModelFamily.GEMMA
 
 
 def test_detect_model_family_glm47():
@@ -59,8 +79,9 @@ def test_detect_model_family_unknown():
 def test_model_configs_exist():
     """Verify all expected model families have configs."""
     expected = [
-        "aya",
         "gemma",
+        "gemma-4",
+        "gemma-4-large",
         "glm-4",
         "glm-4.7",
         "granite",
@@ -74,20 +95,26 @@ def test_model_configs_exist():
         "qwen3.5",
         "qwen3.5-small",
         "gpt-oss",
-        "translategemma",
     ]
     for key in expected:
         assert key in MODEL_CONFIGS
 
 
-def test_aya_config_values():
-    """Verify Aya config has correct stop sequences and params."""
-    config = MODEL_CONFIGS["aya"]
-    assert config.temperature == 0.3
-    assert config.top_p == 0.95
-    assert "<|END_OF_TURN_TOKEN|>" in config.stop_sequences
-    assert "<|END_RESPONSE|>" in config.stop_sequences
-    assert config.supports_thinking is False
+def test_gemma4_config_values():
+    """Verify Gemma 4 configs follow Unsloth spec."""
+    small = MODEL_CONFIGS["gemma-4"]
+    assert small.supports_thinking is True
+    assert small.temperature == 1.0
+    assert small.top_p == 0.95
+    assert small.top_k == 64
+    assert small.repeat_penalty == 1.0  # Unsloth: keep disabled
+    assert small.max_ctx == 131072
+    assert "<turn|>" in small.stop_sequences
+
+    large = MODEL_CONFIGS["gemma-4-large"]
+    assert large.supports_thinking is True
+    assert large.max_ctx == 262144
+    assert large.repeat_penalty == 1.0
 
 
 def test_glm47_config_values():

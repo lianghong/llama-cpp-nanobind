@@ -1,8 +1,8 @@
 """Unified LLM wrapper supporting multiple model families.
 
 This module provides a unified interface for working with different LLM families
-(Qwen3, Gemma, Mistral, GPT-OSS, Phi, etc.) with automatic model detection and
-family-specific optimizations.
+(Qwen3, Gemma, Gemma 4, Mistral, GPT-OSS, Phi, GLM4, MiniCPM, Granite) with
+automatic model detection and family-specific optimizations.
 
 Example:
     >>> from llama_cpp.unified import UnifiedLLM
@@ -68,8 +68,8 @@ class ModelFamily(Enum):
     Each family has specific chat templates, sampling defaults, and capabilities.
     """
 
-    AYA = auto()
     GEMMA = auto()
+    GEMMA4 = auto()
     GLM4 = auto()
     GRANITE = auto()
     MINICPM = auto()
@@ -78,7 +78,6 @@ class ModelFamily(Enum):
     QWEN3 = auto()
     QWEN3_5 = auto()
     GPT_OSS = auto()
-    TRANSLATEGEMMA = auto()
 
 
 @dataclass(slots=True)
@@ -122,14 +121,6 @@ class ModelConfig:
 
 # Maps config key -> ModelConfig.  Used for auto-detection by filename.
 MODEL_CONFIGS: dict[str, ModelConfig] = {
-    "aya": ModelConfig(
-        ModelFamily.AYA,
-        temperature=0.3,
-        top_p=0.95,
-        top_k=50,
-        max_ctx=8192,
-        stop_sequences=["<|END_OF_TURN_TOKEN|>", "<|END_RESPONSE|>"],
-    ),
     "gemma": ModelConfig(
         ModelFamily.GEMMA,
         chat_format="gemma",
@@ -138,6 +129,32 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         top_k=64,
         min_p=0.0,
         max_ctx=128000,
+    ),
+    # Gemma 4 E2B / E4B — dense + PLE, 128K context, thinking via <|think|> in system prompt
+    "gemma-4": ModelConfig(
+        ModelFamily.GEMMA4,
+        chat_format="gemma",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=64,
+        min_p=0.0,
+        max_ctx=131072,
+        supports_thinking=True,
+        repeat_penalty=1.0,  # Unsloth: keep disabled unless looping
+        stop_sequences=["<turn|>", "<end_of_turn>"],
+    ),
+    # Gemma 4 26B-A4B (MoE) / 31B (dense) — 256K context
+    "gemma-4-large": ModelConfig(
+        ModelFamily.GEMMA4,
+        chat_format="gemma",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=64,
+        min_p=0.0,
+        max_ctx=262144,
+        supports_thinking=True,
+        repeat_penalty=1.0,
+        stop_sequences=["<turn|>", "<end_of_turn>"],
     ),
     "glm-4": ModelConfig(
         ModelFamily.GLM4,
@@ -279,15 +296,6 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         supports_thinking=True,
         repeat_penalty=1.0,
     ),
-    "translategemma": ModelConfig(
-        ModelFamily.TRANSLATEGEMMA,
-        chat_format="gemma",
-        temperature=1.0,
-        top_p=0.95,
-        top_k=64,
-        min_p=0.0,
-        max_ctx=128000,
-    ),
 }
 
 # Reverse mapping: ModelFamily enum -> default config key.
@@ -298,6 +306,14 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
 _FAMILY_DEFAULT_KEY: dict[ModelFamily, str] = {}
 for _key, _cfg in MODEL_CONFIGS.items():
     _FAMILY_DEFAULT_KEY.setdefault(_cfg.family, _key)
+
+
+_GEMMA4_LARGE_MARKERS: tuple[str, ...] = ("26b", "31b", "a4b")
+
+
+def _is_gemma4_large(name_lower: str) -> bool:
+    """Return True for Gemma 4 26B-A4B or 31B (256K context variants)."""
+    return any(marker in name_lower for marker in _GEMMA4_LARGE_MARKERS)
 
 
 def detect_from_metadata(model: "Llama") -> ModelConfig | None:
@@ -337,8 +353,11 @@ def detect_from_metadata(model: "Llama") -> ModelConfig | None:
                 return MODEL_CONFIGS["qwen3"]
 
         elif "gemma" in arch:
-            if "translate" in name_lower:
-                return MODEL_CONFIGS["translategemma"]
+            # Gemma 4 detection — arch stays "gemma*" but name carries the version
+            if "gemma-4" in name_lower or "gemma4" in name_lower:
+                if _is_gemma4_large(name_lower):
+                    return MODEL_CONFIGS["gemma-4-large"]
+                return MODEL_CONFIGS["gemma-4"]
             return MODEL_CONFIGS["gemma"]
 
         elif "ministral" in arch or "ministral" in name_lower:
@@ -407,6 +426,13 @@ def detect_model_family(model_path: str) -> ModelConfig:
             if f"-{size}" in filename_lower:
                 return MODEL_CONFIGS["qwen3.5-small"]
         return MODEL_CONFIGS["qwen3.5"]
+
+    # Gemma 4 variants — routed by size marker (26B-A4B / 31B → large, else E2B/E4B)
+    # NOTE: Early return prevents 'gemma' from matching Gemma 4 filenames in the generic loop
+    if "gemma-4" in filename_lower or "gemma4" in filename_lower:
+        if _is_gemma4_large(filename_lower):
+            return MODEL_CONFIGS["gemma-4-large"]
+        return MODEL_CONFIGS["gemma-4"]
 
     # Generic fallback: match longest config key first (prevents 'qwen3' matching 'qwen3.5')
     for key in sorted(MODEL_CONFIGS.keys(), key=len, reverse=True):
@@ -557,8 +583,13 @@ class ChatTemplateBackend(Backend):
     _THINK_BRACKET_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
         r"\[THINK\](.*?)\[/THINK\](.*)", re.DOTALL | re.IGNORECASE
     )
+    # Gemma 4: <|channel>thought[content]<channel|>  (Unsloth spec)
+    _GEMMA4_THINK_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"<\|channel>(.*?)<channel\|>(.*)", re.DOTALL
+    )
     _CONTROL_TOKENS: ClassVar[re.Pattern[str]] = re.compile(
-        r"<\|im_end\|>|<\|im_start\|>\w*\n?|<\|im_sep\|>|<end_of_turn>|<start_of_turn>\w*\n?",
+        r"<\|im_end\|>|<\|im_start\|>\w*\n?|<\|im_sep\|>|<end_of_turn>|<start_of_turn>\w*\n?"
+        r"|<turn\|>|<\|think\|>",
         re.DOTALL,
     )
     # Thinking tag constants
@@ -677,6 +708,16 @@ class ChatTemplateBackend(Backend):
             List of message dicts with role and content.
         """
         messages: list[dict[str, str]] = []
+
+        # Gemma 4 activates thinking by prepending <|think|> to the system prompt
+        # (Unsloth spec: https://unsloth.ai/docs/models/gemma-4)
+        if (
+            self.config.family == ModelFamily.GEMMA4
+            and self.config.supports_thinking
+            and thinking
+        ):
+            system_prompt = f"<|think|>{system_prompt}" if system_prompt else "<|think|>"
+
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
@@ -700,9 +741,12 @@ class ChatTemplateBackend(Backend):
         text = re.sub(
             r"\[THINK\].*?\[/THINK\]\s*", "", text, flags=re.DOTALL | re.IGNORECASE
         )
+        # Gemma 4 thinking block
+        text = re.sub(r"<\|channel>.*?<channel\|>\s*", "", text, flags=re.DOTALL)
         # Handle unclosed thinking tags (truncated output)
         text = re.sub(r"<think(?:ing)?>.*", "", text, flags=re.DOTALL)
         text = re.sub(r"\[THINK\].*", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<\|channel>.*", "", text, flags=re.DOTALL)
         text = re.sub(r"^/(?:no_)?think\n?", "", text)
         if "/response" in text:
             text = text.split("/response", 1)[1]
@@ -730,6 +774,9 @@ class ChatTemplateBackend(Backend):
         if match:
             return match.group(1).strip(), match.group(2).strip()
         match = self._THINK_BRACKET_PATTERN.search(text)
+        if match:
+            return match.group(1).strip(), match.group(2).strip()
+        match = self._GEMMA4_THINK_PATTERN.search(text)
         if match:
             return match.group(1).strip(), match.group(2).strip()
         for tag in self._THINKING_TAG_VARIANTS:
@@ -900,8 +947,8 @@ class UnifiedLLM:
     """
 
     BACKEND_MAP: ClassVar[dict[ModelFamily, type[Backend]]] = {
-        ModelFamily.AYA: ChatTemplateBackend,
         ModelFamily.GEMMA: ChatTemplateBackend,
+        ModelFamily.GEMMA4: ChatTemplateBackend,
         ModelFamily.GLM4: ChatTemplateBackend,
         ModelFamily.GRANITE: ChatTemplateBackend,
         ModelFamily.MINICPM: ChatTemplateBackend,
@@ -910,7 +957,6 @@ class UnifiedLLM:
         ModelFamily.PHI: PhiBackend,
         ModelFamily.MISTRAL: ChatTemplateBackend,
         ModelFamily.GPT_OSS: GPTOSSBackend,
-        ModelFamily.TRANSLATEGEMMA: ChatTemplateBackend,
     }
 
     def __init__(
@@ -1121,6 +1167,8 @@ class UnifiedLLM:
     def __repr__(self) -> str:
         if getattr(self, "_closed", False):
             return "<UnifiedLLM (closed)>"
+        if getattr(self, "llm", None) is None:
+            return "<UnifiedLLM (uninitialized)>"
         model_name = os.path.basename(self.llm.config.model_path)
         return (
             f"<UnifiedLLM model={model_name!r} "

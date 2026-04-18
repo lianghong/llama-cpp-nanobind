@@ -426,20 +426,19 @@ On macOS, `brew install llama.cpp` provides headers and libraries that CMake aut
 
 ## Model Support
 
-UnifiedLLM auto-detects model families by filename patterns:
-- Aya (Cohere's multilingual model, Tiny Aya variants, 70+ languages)
-- Qwen3 (with thinking/non-thinking mode detection)
-- Qwen3.5 (hybrid attention, 262K context / 1M via YaRN, thinking default-on for large models, disabled for 0.8B-9B)
-- Gemma
-- TranslateGemma (Google's 55-language translation model, 128K context)
-- Mistral
+UnifiedLLM auto-detects model families by filename patterns (with GGUF metadata refinement after load):
+- Qwen3 (with thinking/non-thinking mode detection, Instruct-2507 / Thinking-2507 variants)
+- Qwen3.5 (hybrid attention, 262K context / 1M via YaRN, thinking default-on for large models, disabled for 0.8B–9B)
+- Gemma (Gemma 2 / Gemma 3)
+- Gemma 4 (E2B/E4B → 128K ctx; 26B-A4B/31B → 256K ctx; thinking via `<|think|>` system-prompt prefix per Unsloth spec)
+- Mistral / Ministral (reasoning vs. instruct variants)
 - GPT-OSS
-- Phi
+- Phi-4
 - GLM4 (with GLM-4.7 thinking mode support, REAP compression variants)
 - Granite
 - MiniCPM
 
-See `src/llama_cpp/unified.py` for family detection logic and `examples/translategemma_example.py` for translation usage.
+See `src/llama_cpp/unified.py` for family detection logic.
 
 ## Translation Example (`examples/translate.py`)
 

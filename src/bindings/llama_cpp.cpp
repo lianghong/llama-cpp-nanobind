@@ -1006,6 +1006,9 @@ inline int32_t Context::set_adapters_lora(const nb::list& py_adapters, const nb:
   if (n != nb::len(py_scales)) {
     throw std::invalid_argument("adapters and scales must have same length");
   }
+  if (n > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+    throw std::invalid_argument("too many LoRA adapters");
+  }
   if (n == 0) {
     return llama_set_adapters_lora(ctx_, nullptr, 0, nullptr);
   }
@@ -1015,7 +1018,7 @@ inline int32_t Context::set_adapters_lora(const nb::list& py_adapters, const nb:
     adapters[i] = nb::cast<LoraAdapter&>(py_adapters[i]).get();
     scales[i] = nb::cast<float>(py_scales[i]);
   }
-  return llama_set_adapters_lora(ctx_, adapters.data(), n, scales.data());
+  return llama_set_adapters_lora(ctx_, adapters.data(), static_cast<int32_t>(n), scales.data());
 }
 
 struct TokenProb {
@@ -1040,17 +1043,22 @@ inline double logsumexp(const float* logits, int32_t n_vocab) {
 inline std::vector<std::pair<llama_token, float>> compute_top_logprobs(const float* logits,
                                                                        int32_t n_vocab,
                                                                        int32_t top_n, double lse) {
-  if (top_n <= 0) return {};
+  if (top_n <= 0 || n_vocab <= 0) return {};
   std::vector<llama_token> idx(static_cast<size_t>(n_vocab));
   std::iota(idx.begin(), idx.end(), 0);
   if (top_n < n_vocab) {
     std::partial_sort(idx.begin(), idx.begin() + top_n, idx.end(),
-                      [&](llama_token a, llama_token b) { return logits[a] > logits[b]; });
+                      [&](llama_token a, llama_token b) {
+                        if (a < 0 || a >= n_vocab) return false;
+                        if (b < 0 || b >= n_vocab) return true;
+                        return logits[a] > logits[b];
+                      });
     idx.resize(static_cast<size_t>(top_n));
   }
   std::vector<std::pair<llama_token, float>> out;
   out.reserve(idx.size());
   for (auto t : idx) {
+    if (t < 0 || t >= n_vocab) continue;
     float const lp = static_cast<float>(double(logits[t]) - lse);
     out.emplace_back(t, lp);
   }

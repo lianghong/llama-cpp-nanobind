@@ -75,8 +75,6 @@ def detect_family(model_path: str | Path) -> str:
         return "gemma"
     if "phi" in arch or "phi" in name:
         return "phi"
-    if "command-r" in arch or "aya" in name:
-        return "command-r"
     return "unknown"
 
 
@@ -89,7 +87,6 @@ _STOP_STRINGS = {
     "granite": ["<|end_of_text|>"],
     "gemma": ["<end_of_turn>", "<|im_end|>", "<|im_start|>"],
     "phi": ["<|end|>", "<|endoftext|>"],
-    "command-r": ["<|END_OF_TURN_TOKEN|>"],
 }
 
 

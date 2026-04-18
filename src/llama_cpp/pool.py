@@ -23,6 +23,7 @@ Example:
 import asyncio
 import copy
 import logging
+import threading
 from typing import Any, cast
 
 from .llama import Llama
@@ -124,6 +125,7 @@ class LlamaPool:
         # Created lazily on first async use to avoid event loop binding issues
         self._available: asyncio.Queue[Llama | object] | None = None
         self._queue_initialized = False
+        self._queue_init_lock = threading.Lock()
 
     def _ensure_queue_initialized(self) -> None:
         """Lazily initialize asyncio.Queue on first async use.
@@ -131,12 +133,16 @@ class LlamaPool:
         This avoids creating the queue outside an event loop, which causes
         'RuntimeError: no running event loop' in Python 3.10+.
         """
-        if not self._queue_initialized:
-            # Set flag first to prevent race in free-threaded Python
-            self._queue_initialized = True
-            self._available = asyncio.Queue()
+        if self._queue_initialized:
+            return
+        with self._queue_init_lock:
+            if self._queue_initialized:
+                return
+            queue: asyncio.Queue[Llama | object] = asyncio.Queue()
             for instance in self.instances:
-                self._available.put_nowait(instance)
+                queue.put_nowait(instance)
+            self._available = queue
+            self._queue_initialized = True
 
     def _warmup_instances(self) -> None:
         """Run dummy inference on each instance to pre-load GPU caches.
