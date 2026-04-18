@@ -1,5 +1,6 @@
 """Shared pytest fixtures for llama-cpp-nanobind tests."""
 
+import gc
 import os
 
 from llama_cpp import disable_logging
@@ -16,6 +17,22 @@ MODEL_PATH = os.environ.get(
 requires_model = pytest.mark.skipif(
     not os.path.exists(MODEL_PATH), reason="test model not found"
 )
+
+
+@pytest.fixture(autouse=True)
+def cleanup_between_tests():
+    """Force cleanup between tests to prevent resource exhaustion.
+
+    Runs after each test to ensure garbage collection of closed instances,
+    releasing file descriptors and VRAM allocations.
+    """
+    yield
+    # Multiple GC passes to ensure complete cleanup
+    gc.collect()
+    gc.collect()
+    # Give CUDA time to actually free VRAM (async operation)
+    import time
+    time.sleep(0.15)
 
 
 @pytest.fixture
@@ -47,3 +64,9 @@ def llm_embed():
     instance = Llama(model_path=MODEL_PATH, config=config)
     yield instance
     instance.close()
+
+
+@pytest.fixture
+def pool_config():
+    """LlamaConfig optimized for pool tests (reduced VRAM usage)."""
+    return LlamaConfig(model_path=MODEL_PATH, n_ctx=2048)

@@ -100,26 +100,26 @@ def test_pool_manual_close(model_path):
 
 
 @pytest.mark.asyncio
-async def test_pool_repr(model_path):
+async def test_pool_repr(model_path, pool_config):
     """Test pool string representation."""
-    pool = LlamaPool(model_path, pool_size=3)
+    pool = LlamaPool(model_path, pool_size=2, config=pool_config)
     repr_str = repr(pool)
 
     assert "LlamaPool" in repr_str
     assert model_path in repr_str
-    assert "pool_size=3" in repr_str
-    assert "active=3" in repr_str
+    assert "pool_size=2" in repr_str
+    assert "active=2" in repr_str
 
     pool.close()
 
 
 @pytest.mark.asyncio
-async def test_pool_with_sampling_params(model_path):
+async def test_pool_with_sampling_params(model_path, pool_config):
     """Test pool with custom sampling parameters."""
     from llama_cpp import SamplingParams
 
     sampling = SamplingParams(temperature=0.7, top_k=40)
-    async with LlamaPool(model_path, pool_size=2) as pool:
+    async with LlamaPool(model_path, pool_size=2, config=pool_config) as pool:
         result = await pool.generate("Test prompt", max_tokens=8, sampling=sampling)
         assert isinstance(result, str)
         assert len(result) > 0
@@ -135,11 +135,11 @@ async def test_pool_with_stop_sequences(model_path):
 
 
 @pytest.mark.asyncio
-async def test_pool_load_balancing(model_path):
+async def test_pool_load_balancing(model_path, pool_config):
     """Test that pool distributes requests across instances."""
     # This test verifies round-robin behavior by checking instance assignment
     # (implementation detail test)
-    async with LlamaPool(model_path, pool_size=3) as pool:
+    async with LlamaPool(model_path, pool_size=2, config=pool_config) as pool:
         # Submit requests and verify they're distributed
         # We can't directly observe which instance handled each request,
         # but we can verify all complete successfully
@@ -151,9 +151,9 @@ async def test_pool_load_balancing(model_path):
 
 
 @pytest.mark.asyncio
-async def test_pool_warmup(model_path):
+async def test_pool_warmup(model_path, pool_config):
     """Test pool with warmup enabled works correctly."""
-    async with LlamaPool(model_path, pool_size=2, warmup=True) as pool:
+    async with LlamaPool(model_path, pool_size=2, warmup=True, config=pool_config) as pool:
         result = await pool.generate("Test", max_tokens=4)
         assert isinstance(result, str)
         assert len(result) > 0
