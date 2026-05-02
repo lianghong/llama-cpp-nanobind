@@ -177,7 +177,17 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         stop_sequences=["<|endoftext|>", "<|user|>", "<|observation|>"],
     ),
     "granite": ModelConfig(
-        ModelFamily.GRANITE, temperature=0.0, top_p=1.0, top_k=1, max_ctx=128000
+        ModelFamily.GRANITE,
+        temperature=0.7,
+        top_p=0.9,
+        top_k=40,
+        min_p=0.0,
+        max_ctx=131072,
+        supports_thinking=True,
+        repeat_penalty=1.05,
+        stop_sequences=["<|end_of_text|>", "<|endoftext|>"],
+        think_temperature=0.6,
+        think_top_p=0.95,
     ),
     "minicpm": ModelConfig(
         ModelFamily.MINICPM,
@@ -375,6 +385,10 @@ def detect_from_metadata(model: "Llama") -> ModelConfig | None:
             if "glm-4.7" in name_lower or "glm4.7" in name_lower:
                 return MODEL_CONFIGS["glm-4.7"]
             return MODEL_CONFIGS["glm-4"]
+
+        elif "granite" in arch or "granite" in name_lower:
+            # Granite 3.x, 4.x (incl. granitehybrid, granitemoe)
+            return MODEL_CONFIGS["granite"]
 
         elif "llama" in arch:
             # Generic llama architecture - could be llama2, llama3, etc.

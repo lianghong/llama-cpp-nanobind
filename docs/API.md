@@ -325,7 +325,7 @@ Auto-detects model family from file path. Raises `ValueError` if unknown.
 | `GEMMA` | `gemma` in path (not `gemma-4`) | Google Gemma 2/3, 128K context |
 | `GEMMA4` | `gemma-4` / `gemma4` in path | Google Gemma 4. E2B/E4B → 128K; `26b`/`31b`/`a4b` markers → 256K. Thinking via `<\|think\|>` in system prompt |
 | `GLM4` | `glm-4` in path | Zhipu GLM-4; `glm-4.7` variant adds thinking mode (202K context) |
-| `GRANITE` | `granite` in path | IBM Granite, greedy decoding (temp=0.0) |
+| `GRANITE` | `granite` in path or arch `granite*` (incl. `granitehybrid`, `granitemoe`) | IBM Granite 3.x/4.x; thinking mode on; 131K ctx; `temp=0.7`, `top_p=0.9`, `top_k=40`; stops on `<\|end_of_text\|>` / `<\|endoftext\|>` |
 | `MINICPM` | `minicpm` in path | MiniCPM, ChatML format |
 | `MISTRAL` | `ministral` in path | Mistral (reasoning and instruct variants) |
 | `PHI` | `phi-4` in path | Microsoft Phi-4, custom `<\|im_sep\|>` template |

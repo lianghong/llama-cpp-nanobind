@@ -463,6 +463,32 @@ class Llama:
                     f"stop sequence too long (max {_MAX_STOP_SEQUENCE_LENGTH} chars)"
                 )
 
+    def _tokenize_stop_sequences(
+        self, stop: Sequence[str | int] | None
+    ) -> list[list[int]]:
+        """Convert user-supplied stops (strings or token IDs) to token-id lists."""
+        if not stop:
+            return []
+        stop_sequences: list[list[int]] = []
+        for item in stop:
+            if isinstance(item, str):
+                tks = self.tokenize(item, add_special=False, parse_special=False)
+                if tks:
+                    stop_sequences.append([int(t) for t in tks])
+            else:
+                stop_sequences.append([int(item)])
+        return stop_sequences
+
+    def _validate_prompt_token_count(self, n_tokens: int) -> None:
+        """Reject tokenized prompts that would exceed _MAX_PROMPT_MULTIPLIER * n_ctx."""
+        max_reasonable_tokens = self.n_ctx() * _MAX_PROMPT_MULTIPLIER
+        if n_tokens > max_reasonable_tokens:
+            raise ValidationError(
+                f"tokenized prompt ({n_tokens} tokens) exceeds "
+                f"reasonable limit ({max_reasonable_tokens}). "
+                "Reduce prompt length or increase n_ctx."
+            )
+
     def close(self) -> None:
         """Release model and context resources."""
         if getattr(self, "_closed", True):
@@ -1036,27 +1062,9 @@ class Llama:
             self.ctx.kv_cache_clear()
 
         prompt_tokens = self.tokenize(prompt, add_special=self.config.add_bos)
+        self._validate_prompt_token_count(len(prompt_tokens))
 
-        # Validate tokenized prompt length to prevent OOM from high-compression prompts
-        # Use multiplier from config, defaulting to 2x context size
-        max_multiplier = _MAX_PROMPT_MULTIPLIER
-        max_reasonable_tokens = self.n_ctx() * max_multiplier
-        if len(prompt_tokens) > max_reasonable_tokens:
-            raise ValidationError(
-                f"tokenized prompt ({len(prompt_tokens)} tokens) exceeds "
-                f"reasonable limit ({max_reasonable_tokens}). "
-                "Reduce prompt length or increase n_ctx."
-            )
-
-        stop_sequences: list[list[int]] = []
-        if stop:
-            for item in stop:
-                if isinstance(item, str):
-                    tks = self.tokenize(item, add_special=False, parse_special=False)
-                    if tks:
-                        stop_sequences.append([int(t) for t in tks])
-                else:
-                    stop_sequences.append([int(item)])
+        stop_sequences = self._tokenize_stop_sequences(stop)
 
         eos = self.model.eos()
 
@@ -1180,28 +1188,9 @@ class Llama:
         if reset_kv_cache:
             self.ctx.kv_cache_clear()
         prompt_tokens = self.tokenize(prompt, add_special=self.config.add_bos)
+        self._validate_prompt_token_count(len(prompt_tokens))
 
-        # Validate tokenized prompt length to prevent OOM from high-compression prompts
-        # Use multiplier from config, defaulting to 2x context size
-        max_multiplier = _MAX_PROMPT_MULTIPLIER
-        max_reasonable_tokens = self.n_ctx() * max_multiplier
-        if len(prompt_tokens) > max_reasonable_tokens:
-            raise ValidationError(
-                f"tokenized prompt ({len(prompt_tokens)} tokens) exceeds "
-                f"reasonable limit ({max_reasonable_tokens}). "
-                "Reduce prompt length or increase n_ctx."
-            )
-
-        # prepare stop sequences
-        stop_sequences: list[list[int]] = []
-        if stop:
-            for item in stop:
-                if isinstance(item, str):
-                    tks = self.tokenize(item, add_special=False, parse_special=False)
-                    if tks:
-                        stop_sequences.append([int(t) for t in tks])
-                else:
-                    stop_sequences.append([int(item)])
+        stop_sequences = self._tokenize_stop_sequences(stop)
 
         eos = self.model.eos()
 
@@ -1425,15 +1414,7 @@ class Llama:
         _, prompt_tokens, _ = self._prepare_chat(effective_messages)
         sampler = self._build_sampler(None, **sampling_overrides)
 
-        stop_sequences: list[list[int]] = []
-        if stop:
-            for item in stop:
-                if isinstance(item, str):
-                    tks = self.tokenize(item, add_special=False, parse_special=False)
-                    if tks:
-                        stop_sequences.append([int(t) for t in tks])
-                else:
-                    stop_sequences.append([int(item)])
+        stop_sequences = self._tokenize_stop_sequences(stop)
 
         # Determine grammar from response_format or explicit grammar
         use_grammar = None

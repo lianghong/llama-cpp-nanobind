@@ -25,6 +25,25 @@ uv pip install -e .[dev]
 uv pip install -e .[test]
 ```
 
+### Wheel Build Script
+
+```bash
+# Native build (default)
+./scripts/build_wheel.sh
+
+# Portable (no -march=native)
+./scripts/build_wheel.sh --portable
+
+# Clean slate + install into .venv
+./scripts/build_wheel.sh --clean --install
+
+# Opt-in to -ffast-math
+./scripts/build_wheel.sh --fast-math
+```
+
+Env overrides: `PYTHON`, `LLAMA_PREFIX` (default `/usr/local`), `CMAKE_BUILD_TYPE`, `JOBS`.
+The script does **not** set `CMAKE_PREFIX_PATH` — scikit-build-core needs to inject its own value so `find_package(nanobind)` resolves to the build-isolation env. For non-`/usr/local` llama.cpp installs, set `LLAMA_PREFIX=/custom/path` and the script will append it to `CMAKE_PREFIX_PATH`.
+
 ### Testing
 
 ```bash
@@ -227,7 +246,7 @@ ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
 - **KV Cache Position**: `cur_pos_` tracks context position, updated by:
   - `load_state()`, `set_state_data()`: Sync from KV cache after load
   - `kv_cache_seq_rm()`, `kv_cache_seq_keep()`, `kv_cache_seq_add()`: Update when modifying sequence 0
-- **State Save/Load**: Uses `nb::bytes` buffer protocol for zero-copy transfer between Python and C++ (no per-element conversion); GIL managed manually — released during heavy llama.cpp calls, held for Python object construction
+- **State Save/Load**: Uses `nb::bytes` buffer protocol for zero-copy transfer between Python and C++ (no per-element conversion). `get_state_data()` writes directly into the Python bytes buffer via `PyBytes_FromStringAndSize` + `_PyBytes_Resize` — avoids the intermediate `std::vector<uint8_t>` → `nb::bytes` copy (saves hundreds of MB of transient memory on large KV states). GIL managed manually: released during heavy llama.cpp calls, held for Python object construction/resizing.
 - **LoRA Adapters**: Tracked in `_lora_configs` list, reapplied via `_reapply_lora_adapters()` after `reset()`
 
 #### Sampling Pipeline
@@ -269,7 +288,7 @@ ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
 
 #### Memory Safety (Double-Free Prevention)
 - **C++ classes**: All destructors check `if (ptr_)` before free, then set `ptr_ = nullptr`
-- **Thread-safe close**: `Model::close()` and `Context::close()` hold `g_init_mutex` to prevent races between GC/`__del__` and explicit `close()`
+- **Thread-safe close**: `Model::close()`, `Context::close()`, and `Context::reset()` all hold `g_resource_mutex` to serialize the free of `ctx_`/`model_` — prevents double-free races between GC/`__del__`, explicit `close()`, and mid-flight context resets
 - **Thread-safe logging**: Logging configuration functions (`set_log_level`, `disable_logging`, `reset_logging`) hold `g_log_mutex` to prevent concurrent `llama_log_set()` calls during multi-threaded initialization
 - **Backend ref-counting**: `g_model_count` atomic prevents backend double-free
 - **Nanobind `keep_alive`**: Context, SamplerChain, LoraAdapter keep Model alive via `nb::keep_alive<1, 2>()`
@@ -311,7 +330,7 @@ ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
 4. **Reuse buffers** (like `single_batch_`) instead of per-call allocation
 5. **Use RAII for temporary resources**: `Context::decode` uses `BatchGuard` struct for `llama_batch` cleanup instead of try/catch
 6. **Respect sampler chain** after grammar constraints
-7. **Hold `g_init_mutex` for resource freeing, `g_log_mutex` for logging**: `close()` methods hold `g_init_mutex` to prevent races with GC; logging functions hold `g_log_mutex` to prevent concurrent `llama_log_set()` calls
+7. **Hold `g_resource_mutex` for resource freeing, `g_log_mutex` for logging**: `close()` methods hold `g_resource_mutex` to prevent races with GC; logging functions hold `g_log_mutex` to prevent concurrent `llama_log_set()` calls
 8. **Validate token range before indexing logits**: sampler can return `LLAMA_TOKEN_NULL` (-1); always check `token >= 0 && token < n_vocab` before `logits[token]`
 9. **Validate sampler selection**: After `llama_sampler_apply()`, always check `cur_p.selected >= 0 && cur_p.selected < cur_p.size` before accessing `cur_p.data[cur_p.selected]` — grammar constraints can create empty candidate sets
 10. **Validate integer casts**: After casting `size_t` to `int32_t`, verify cast didn't truncate: `static_cast<size_t>(result) == original_size`
@@ -326,14 +345,16 @@ ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
 3. **Token counting**: Use `add_special=True` when calculating max_tokens for chat
 4. **Tokenized prompt validation**: After tokenizing prompt, validate `len(prompt_tokens) <= n_ctx() * 2` to prevent OOM from high-compression text (e.g., `"a" * 10MB` could tokenize to massive token counts)
 5. **Stop sequences validation**: Always call `_validate_stop_sequences(stop)` on all entry points that accept stop sequences. This validates count (max 20) and length (max 500 chars per sequence). All generation entry points use this: `generate()`, `generate_stream()`, `create_chat_completion()`
-6. **Stop sequences implementation**: Use `generate_tokens_multi_stop()` when stop sequences present and details not needed (fast path)
-7. **Streaming UTF-8 decoding**: Use `_token_to_text_incremental(tokens)` for all streaming paths — handles multi-byte UTF-8 characters split across token boundaries with automatic final flush
-8. **Grammar samplers are stateful**: Never cache or reuse them — `llama_sampler_accept` mutates internal state, so each generation must create a fresh sampler
-9. **Falsy-value defaults**: Use `if x is not None else fallback` (not `x or fallback`) when `0` or `0.0` is a valid value
-10. **BOS auto-detection**: `LlamaConfig.add_bos` defaults to `None` (auto-detected from model metadata via `llama_vocab_get_add_bos` after model load). The C++ generation functions have a guard `if (add_bos && front != bos)` as a safety net against double BOS
-11. **Negative value validation**: Always validate that token counts and similar integer values are non-negative before arithmetic operations
-12. **Training context awareness**: `UnifiedLLM` logs warning when `n_ctx > model.n_ctx_train()` — generation quality may degrade beyond training context
-13. **Close checks**: All public methods that access `self.model` or `self.ctx` must call `_check_closed()` first to provide clear error messages instead of `AttributeError` on closed instances
+6. **Stop sequence tokenization**: Use the `_tokenize_stop_sequences(stop)` helper rather than inlining the loop — single source of truth for the `str | int` → `list[list[int]]` conversion across `generate()`, `generate_stream()`, and `create_chat_completion()`
+7. **Prompt-count validation**: Use `_validate_prompt_token_count(len(prompt_tokens))` helper after tokenization — enforces the `2 × n_ctx` DoS guard consistently across all entry points
+8. **Stop sequences implementation**: Use `generate_tokens_multi_stop()` when stop sequences present and details not needed (fast path)
+9. **Streaming UTF-8 decoding**: Use `_token_to_text_incremental(tokens)` for all streaming paths — handles multi-byte UTF-8 characters split across token boundaries with automatic final flush
+10. **Grammar samplers are stateful**: Never cache or reuse them — `llama_sampler_accept` mutates internal state, so each generation must create a fresh sampler
+11. **Falsy-value defaults**: Use `if x is not None else fallback` (not `x or fallback`) when `0` or `0.0` is a valid value
+12. **BOS auto-detection**: `LlamaConfig.add_bos` defaults to `None` (auto-detected from model metadata via `llama_vocab_get_add_bos` after model load). The C++ generation functions have a guard `if (add_bos && front != bos)` as a safety net against double BOS
+13. **Negative value validation**: Always validate that token counts and similar integer values are non-negative before arithmetic operations
+14. **Training context awareness**: `UnifiedLLM` logs warning when `n_ctx > model.n_ctx_train()` — generation quality may degrade beyond training context
+15. **Close checks**: All public methods that access `self.model` or `self.ctx` must call `_check_closed()` first to provide clear error messages instead of `AttributeError` on closed instances
 
 ### Model File Requirement
 
@@ -344,7 +365,9 @@ Update `conftest.py` if using different model paths.
 ## Performance Considerations
 
 ### Build Optimizations (Release)
-- `-O3 -march=native -mtune=native -flto=auto -ffast-math -funroll-loops`
+- `-O3 -march=native -mtune=native -flto=auto -funroll-loops -fno-plt`
+- `-ffast-math` is **off by default** (alters softmax/sampling numerics, can set FTZ/DAZ process-wide). Opt in with `-DLLAMA_FAST_MATH=ON` or `scripts/build_wheel.sh --fast-math`.
+- Compiler resolution via `find_program(NAMES gcc-15 gcc)` / `g++-15 g++` on Linux, `clang` / `clang++` on macOS — works regardless of where `gcc-15` is installed.
 - LTO enabled if supported
 
 ### Runtime Optimizations
@@ -435,7 +458,7 @@ UnifiedLLM auto-detects model families by filename patterns (with GGUF metadata 
 - GPT-OSS
 - Phi-4
 - GLM4 (with GLM-4.7 thinking mode support, REAP compression variants)
-- Granite
+- Granite (including Granite 4.x `granitehybrid` / `granitemoe` via metadata arch detection; thinking mode enabled, `<|end_of_text|>`/`<|endoftext|>` stops, 131K ctx, `temperature=0.7`/`top_p=0.9`/`top_k=40` defaults)
 - MiniCPM
 
 See `src/llama_cpp/unified.py` for family detection logic.

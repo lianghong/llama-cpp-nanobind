@@ -524,6 +524,8 @@ class Context {
   }
 
   void reset() {
+    // Hold resource mutex to serialize with close() — both free ctx_.
+    std::scoped_lock const lock(g_resource_mutex);
     if (!model_) {
       throw std::runtime_error("context has been closed");
     }
@@ -653,22 +655,38 @@ class Context {
     return n_token_count;
   }
 
-  // Returns state as Python bytes via zero-copy path (no intermediate list).
-  // GIL is managed manually: released during heavy C++ work, held for Python
-  // object creation.
+  // Returns state as Python bytes. Writes directly into the Python bytes
+  // buffer to avoid the extra heap allocation + memcpy that a
+  // `std::vector<uint8_t>` -> `nb::bytes` copy would incur. For large KV
+  // states this can save hundreds of MB of intermediate memory.
   nb::bytes get_state_data() {
     check_ctx();
-    size_t size = 0;
+    size_t const size = llama_state_get_size(ctx_);
+    // Allocate an uninitialized Python bytes object (GIL held here).
+    PyObject* py_obj = PyBytes_FromStringAndSize(nullptr, static_cast<Py_ssize_t>(size));
+    if (!py_obj) {
+      throw std::runtime_error("failed to allocate Python bytes buffer for state");
+    }
+    char* buf = PyBytes_AsString(py_obj);
+    if (!buf) {
+      Py_DECREF(py_obj);
+      throw std::runtime_error("failed to access Python bytes buffer");
+    }
     size_t written = 0;
-    std::vector<uint8_t> buf;
     {
       nb::gil_scoped_release const release;
-      size = llama_state_get_size(ctx_);
-      buf.resize(size);
-      written = llama_state_get_data(ctx_, buf.data(), size);
+      written = llama_state_get_data(ctx_, reinterpret_cast<uint8_t*>(buf), size);
     }
-    // GIL held here — safe to construct Python bytes object
-    return nb::bytes(buf.data(), written);
+    // Shrink the bytes object if the serializer wrote fewer bytes than the
+    // reserved size. _PyBytes_Resize requires GIL (which we hold here).
+    if (written < size) {
+      if (_PyBytes_Resize(&py_obj, static_cast<Py_ssize_t>(written)) != 0) {
+        // py_obj is set to nullptr on failure.
+        throw std::runtime_error("failed to resize Python bytes buffer");
+      }
+    }
+    // nb::steal consumes the reference we already hold.
+    return nb::steal<nb::bytes>(py_obj);
   }
 
   // Accepts Python bytes directly (pointer access, no per-element conversion).
@@ -1040,31 +1058,6 @@ inline double logsumexp(const float* logits, int32_t n_vocab) {
   return std::log(sum) + static_cast<double>(max_l);
 }
 
-inline std::vector<std::pair<llama_token, float>> compute_top_logprobs(const float* logits,
-                                                                       int32_t n_vocab,
-                                                                       int32_t top_n, double lse) {
-  if (top_n <= 0 || n_vocab <= 0) return {};
-  std::vector<llama_token> idx(static_cast<size_t>(n_vocab));
-  std::iota(idx.begin(), idx.end(), 0);
-  if (top_n < n_vocab) {
-    std::partial_sort(idx.begin(), idx.begin() + top_n, idx.end(),
-                      [&](llama_token a, llama_token b) {
-                        if (a < 0 || a >= n_vocab) return false;
-                        if (b < 0 || b >= n_vocab) return true;
-                        return logits[a] > logits[b];
-                      });
-    idx.resize(static_cast<size_t>(top_n));
-  }
-  std::vector<std::pair<llama_token, float>> out;
-  out.reserve(idx.size());
-  for (auto t : idx) {
-    if (t < 0 || t >= n_vocab) continue;
-    float const lp = static_cast<float>(double(logits[t]) - lse);
-    out.emplace_back(t, lp);
-  }
-  return out;
-}
-
 std::vector<TokenProb> generate_tokens_with_details(
     Context& ctx, SamplerChain& sampler, const std::vector<llama_token>& prompt,
     int32_t max_new_tokens, bool add_bos, llama_token eos_token,
@@ -1100,7 +1093,9 @@ std::vector<TokenProb> generate_tokens_with_details(
       throw std::runtime_error("logits unavailable before sampling");
     }
 
-    // Build candidates and apply sampler to get adjusted probabilities
+    // Build candidates and apply sampler to get adjusted probabilities.
+    // Rebuild fully each iteration: samplers (top_k, top_p, ...) reorder
+    // the candidates array in place via cur_p.data.
     for (int32_t j = 0; j < n_vocab; ++j) {
       candidates[static_cast<size_t>(j)] = {j, logits[j], 0.0F};
     }

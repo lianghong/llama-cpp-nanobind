@@ -27,7 +27,7 @@ High-performance nanobind bindings for `llama.cpp`, packaged as a wheel-ready Py
 - llama.cpp headers and libraries (see setup below)
 
 **Linux:**
-- GCC/G++ 15 at `/usr/local/bin/gcc-15` and `/usr/local/bin/g++-15`
+- GCC/G++ 15 (CMake uses `find_program(NAMES gcc-15 gcc)`, so `/usr/bin/gcc-15`, `/usr/local/bin/gcc-15`, or any `gcc-15` on `PATH` works; falls back to `gcc`/`g++` if `-15` is unavailable)
 - CUDA-capable GPU
 
 **macOS:**
@@ -92,9 +92,29 @@ uv pip install -e .
 
 `scikit-build-core` drives the build; it links against system-installed llama.cpp libraries found via CMake's `find_library()`.
 
-**Note**: Release builds use aggressive optimizations (`-O3`, `-march=native`, `-flto=auto`, `-ffast-math`) for maximum performance.
+### Wheel build helper
+
+```bash
+./scripts/build_wheel.sh             # native build (uses -march=native)
+./scripts/build_wheel.sh --portable  # redistributable (no -march=native)
+./scripts/build_wheel.sh --clean --install   # clean slate, install into .venv
+./scripts/build_wheel.sh --fast-math # opt-in to -ffast-math
+```
+
+The script composes `CMAKE_ARGS` for you and respects `LLAMA_PREFIX`, `CMAKE_BUILD_TYPE`, `JOBS`, and pre-existing `CMAKE_ARGS` env vars. It does *not* override `CMAKE_PREFIX_PATH` — scikit-build-core needs to inject its own path so `find_package(nanobind)` resolves inside the isolated build env.
+
+**Note**: Release builds use `-O3`, `-march=native`, `-flto=auto`, `-funroll-loops` by default. `-ffast-math` is **off by default** (it alters softmax/sampling numerics and can set FTZ/DAZ process-wide); enable explicitly via `-DLLAMA_FAST_MATH=ON` or the `--fast-math` flag above.
 
 **Recent Updates**:
+
+**2026-05-02** - Optimizations & safety:
+- **C++ bindings**: `Context::reset()` now holds `g_resource_mutex` (closes a double-free race with `close()`); `get_state_data()` writes directly into a Python bytes buffer via `PyBytes_FromStringAndSize` + `_PyBytes_Resize`, eliminating an intermediate `std::vector<uint8_t>` copy (saves hundreds of MB of transient memory on large KV states); dead `compute_top_logprobs` helper removed.
+- **Build**: compiler path resolution switched from hardcoded `/usr/local/bin/gcc-15` to `find_program(NAMES gcc-15 gcc)` / `g++-15 g++`; `-ffast-math` gated behind new `LLAMA_FAST_MATH` CMake option (default OFF).
+- **Python**: extracted `_tokenize_stop_sequences()` and `_validate_prompt_token_count()` helpers in `Llama` (removes duplication across `generate`, `generate_stream`, and `create_chat_completion`).
+- **UnifiedLLM**: Granite 4.x support — added arch-based detection (`granitehybrid`/`granitemoe`) in `detect_from_metadata`; updated default Granite config with thinking mode, proper stop sequences, and tunable sampling defaults.
+- **Build script**: added `scripts/build_wheel.sh` with `--portable`/`--clean`/`--install`/`--fast-math` flags.
+
+
 
 **2026-03-31 Updates** - Code Quality & Robustness:
 - **Code Review Fixes**: 10 issues fixed (27 missing close guards, config key errors, race conditions in free-threaded Python 3.13+)

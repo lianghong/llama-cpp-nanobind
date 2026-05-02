@@ -2,20 +2,32 @@ cmake_minimum_required(VERSION 3.26)
 
 # Enforce specific compilers before project():
 # - macOS: Apple Clang (Homebrew LLVM has libc++ ABI mismatches)
-# - Linux: GCC 15
+# - Linux: prefer gcc-15/g++-15 wherever they live; fall back to gcc/g++
 if(APPLE)
   if(NOT DEFINED CMAKE_C_COMPILER)
-    set(CMAKE_C_COMPILER /usr/bin/clang)
+    find_program(_LLAMA_CC NAMES clang PATHS /usr/bin NO_DEFAULT_PATH)
+    if(_LLAMA_CC)
+      set(CMAKE_C_COMPILER "${_LLAMA_CC}")
+    endif()
   endif()
   if(NOT DEFINED CMAKE_CXX_COMPILER)
-    set(CMAKE_CXX_COMPILER /usr/bin/clang++)
+    find_program(_LLAMA_CXX NAMES clang++ PATHS /usr/bin NO_DEFAULT_PATH)
+    if(_LLAMA_CXX)
+      set(CMAKE_CXX_COMPILER "${_LLAMA_CXX}")
+    endif()
   endif()
 else()
   if(NOT DEFINED CMAKE_C_COMPILER)
-    set(CMAKE_C_COMPILER /usr/local/bin/gcc-15)
+    find_program(_LLAMA_CC NAMES gcc-15 gcc)
+    if(_LLAMA_CC)
+      set(CMAKE_C_COMPILER "${_LLAMA_CC}")
+    endif()
   endif()
   if(NOT DEFINED CMAKE_CXX_COMPILER)
-    set(CMAKE_CXX_COMPILER /usr/local/bin/g++-15)
+    find_program(_LLAMA_CXX NAMES g++-15 g++)
+    if(_LLAMA_CXX)
+      set(CMAKE_CXX_COMPILER "${_LLAMA_CXX}")
+    endif()
   endif()
 endif()
 
@@ -29,6 +41,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Build options
 option(LLAMA_PORTABLE "Build portable wheel without -march=native" OFF)
+# -ffast-math enables -funsafe-math-optimizations and can set FTZ/DAZ
+# process-wide, altering softmax/sampling numerics. Off by default for
+# an inference library; opt-in for users who prefer throughput over fidelity.
+option(LLAMA_FAST_MATH "Enable -ffast-math (may alter numerics)" OFF)
 
 # Enable IPO/LTO if supported
 include(CheckIPOSupported)
@@ -163,7 +179,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     endif()
     
     # Additional optimization flags
-    if(HAS_FFAST_MATH)
+    if(LLAMA_FAST_MATH AND HAS_FFAST_MATH)
       list(APPEND OPT_FLAGS -ffast-math)
     endif()
     if(HAS_FUNROLL_LOOPS)
