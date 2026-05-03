@@ -107,6 +107,18 @@ The script composes `CMAKE_ARGS` for you and respects `LLAMA_PREFIX`, `CMAKE_BUI
 
 **Recent Updates**:
 
+**v0.4.0** (2026-05-03) - Multi-cycle review fixes + Unsloth-aligned presets:
+- **C++ correctness**: `set_state_data` safe no-copy use of nb::bytes buffer protocol (lifetime invariant documented); `prime_generation` single-pass BOS prepend; `LoraAdapter` validates parent model in `set_adapters_lora` (raises `ValueError` instead of segfault); `std::cmp_*` for signed/unsigned comparisons; const-correct logits pointers; `Model::read_c_string` template extracted for the four snprintf-style llama.cpp APIs.
+- **Streaming concurrency**: `generate_stream` acquires `self._lock` in the main thread before spawning the worker; worker detokenizes inline and pushes `bytes` to the consumer (no cross-thread `Model` access); on join timeout raises `LlamaError` and holds the lock to prevent data races with a zombie worker.
+- **Session hygiene**: `generate()` / `create_chat_completion()` suppress BOS when `reset_kv_cache=False`; `_validate_prompt_token_count` now covers chat completion; unknown `**sampling_overrides` raise `ValidationError` at the boundary; `Llama.__call__` uses accurate completion-token counting (no lossy detokenize→retokenize); `generate_async(stream=True)` actually streams incrementally via `asyncio.Queue` bridge.
+- **Pool safety**: cross-loop reuse raises a clear `RuntimeError`; `close()` / `close_graceful()` serialized via `_close_lock`; no busy-loop on lone sentinel.
+- **UnifiedLLM**: partial-init safety (`__init__` sets `_closed`/`llm`/`backend` before anything can raise); `close()` nulls `backend.llm` before dropping the backend.
+- **Unsloth alignment**: Qwen 3.5 thinking defaults updated (`temperature=1.0`, `top_p=0.95`, `top_k=20`, `presence_penalty=1.5`, `repeat_penalty=1.0`); new `qwen3.5-coding` preset (`temperature=0.6`, `presence_penalty=0.0`); `UnifiedLLM.sanitize_history()` strips prior-turn thought blocks (Gemma 4 `<|channel>...<channel|>`, Qwen `<think>...</think>`, bracket `[THINK]...[/THINK]`).
+- **Code quality**: `_classify_qwen35_variant` helper; `LlamaConfig.add_bos` no longer mutated at load time (effective value lives on `Llama._effective_add_bos`); `Backend.strip_thinking` promoted to a protected interface; `_parse_tool_calls` enforces a 1 MB cap before `json.loads`; dead `logsumexp` helper removed.
+- **New tests**: `test_sanitize_history` (8), `test_pool_close` (7), `test_validation` (5), `test_partial_init` (3); `test_auto_detect_bos` asserts non-mutation.
+- **Operational notes**: Qwen 3.5 (`UD-Q2_K_XL` minimum, Ollama incompatibility, `--cache-type-k bf16 --cache-type-v bf16` hint); Gemma 4 (avoid CUDA 13.2 runtime per upstream; recommended quants `Q8_0` for E2B/E4B, `UD-Q4_K_XL` for 26B-A4B / 31B).
+- **Full details**: `docs/CHANGELOG-v0.4.0.md`.
+
 **2026-05-02** - Optimizations & safety:
 - **C++ bindings**: `Context::reset()` now holds `g_resource_mutex` (closes a double-free race with `close()`); `get_state_data()` writes directly into a Python bytes buffer via `PyBytes_FromStringAndSize` + `_PyBytes_Resize`, eliminating an intermediate `std::vector<uint8_t>` copy (saves hundreds of MB of transient memory on large KV states); dead `compute_top_logprobs` helper removed.
 - **Build**: compiler path resolution switched from hardcoded `/usr/local/bin/gcc-15` to `find_program(NAMES gcc-15 gcc)` / `g++-15 g++`; `-ffast-math` gated behind new `LLAMA_FAST_MATH` CMake option (default OFF).

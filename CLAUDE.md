@@ -492,6 +492,59 @@ Key design decisions:
 - **`--temperature` CLI arg**: Overrides the model's default temperature after construction via `llm.model_config.temperature`
 - **VRAM check**: Estimates GPU memory usage before loading and warns if insufficient
 
+## Recent Improvements (v0.4.0, 2026-05-03)
+
+### C++ correctness
+- **`set_state_data`**: safe no-copy use of `nb::bytes` buffer protocol; lifetime invariant (calling frame's strong ref survives GIL release) is now documented in-code.
+- **`prime_generation`**: single-pass BOS prepend (was O(n) via `insert(begin(), …)`).
+- **`LoraAdapter`** tracks its parent `Model`; `set_adapters_lora` rejects mismatched adapters with `ValueError` instead of segfaulting.
+- Designated initializers for `llama_token_data[_array]`; `std::cmp_*` for signed/unsigned index comparisons; const-correct logits pointers; redundant null-writes removed.
+- Extracted `Model::read_c_string` template for the four two-call snprintf-style llama.cpp APIs (`desc`, `meta_val_str`, `meta_key_by_index`, `meta_val_by_index`).
+
+### Streaming concurrency hardening
+- **`generate_stream`**: `self._lock` is now acquired in the main thread **before** the worker is spawned (closes a concurrency hole). Worker detokenizes inline and pushes `bytes` to the consumer queue so the consumer never calls `Model` methods concurrently with the worker.
+- **Join timeout**: on worker join timeout `generate_stream` raises `LlamaError` and **keeps the lock held** to prevent a zombie worker from racing against a reused instance.
+
+### Session hygiene
+- `generate()` / `create_chat_completion()` **suppress BOS when `reset_kv_cache=False`**, so session continuations don't insert a stray BOS mid-sequence.
+- `_validate_prompt_token_count` now covers `create_chat_completion` (previously only `generate` / `generate_stream`).
+- Unknown `**sampling_overrides` raise `ValidationError` at the API boundary instead of being silently dropped.
+- `Llama.__call__` replaces the lossy `detokenize → retokenize` roundtrip with `_generate_with_token_count` for accurate `completion_tokens` counting.
+- `generate_async(stream=True)` actually streams — bridged to `generate_stream` via `asyncio.Queue` so chunks arrive incrementally rather than being buffered.
+
+### `LlamaPool`
+- Records the binding event loop on first use; cross-loop reuse raises a clear `RuntimeError`.
+- `close()` / `close_graceful()` serialized via `_close_lock` (concurrent close is now idempotent).
+- `close_graceful` no longer busy-loops on a lone sentinel in the queue.
+
+### `UnifiedLLM`
+- **Partial-init safety**: `__init__` sets `_closed`, `llm`, and `backend` before any operation that can raise, so `close()` is safe after a halfway-failed construction.
+- `close()` nulls `backend.llm` before dropping the backend.
+- New `sanitize_history(messages)` strips `<|channel>...<channel|>` (Gemma 4), `<think>...</think>` (Qwen), and `[THINK]...[/THINK]` blocks from historical `assistant` messages — required by Gemma 4 per upstream, beneficial for Qwen 3 / 3.5 thinking models.
+
+### Unsloth-aligned sampling presets
+- **Qwen 3.5** thinking defaults: `temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repeat_penalty=1.0` (the Qwen-3 era `think_*` override block was dropped).
+- **`qwen3.5-coding` preset**: `temperature=0.6`, `presence_penalty=0.0` for precise coding / WebDev workloads.
+
+### Code quality
+- `_classify_qwen35_variant` helper removes duplicated size-list logic between `detect_from_metadata` and `detect_model_family`.
+- `LlamaConfig.add_bos` is **no longer mutated at load time** — effective value lives on `Llama._effective_add_bos`, so the same `LlamaConfig` can be shared across multiple model loads.
+- `Backend.strip_thinking` is now a proper protected interface method; `ChatTemplateBackend` overrides it instead of `UnifiedLLM` reaching through to a private `_parse_thinking`.
+- `_parse_tool_calls` enforces a 1 MB cap before `json.loads` (defense-in-depth).
+- Dead `logsumexp` helper removed; `build-tidy/` added to `.gitignore`.
+
+### Tests
+- `test_sanitize_history` (8): Gemma 4 channel block, Qwen think tags, bracket-style, passthrough, role preservation, extra keys, non-string content, no-mutation guarantee.
+- `test_pool_close` (7): sentinel wake-up for `close` / `close_graceful`, checkout-after-close, concurrent-close idempotency, reinjection survival, no busy-loop on lone sentinel, cross-loop detection.
+- `test_validation` (5): unknown / misspelled / multi-key sampling overrides.
+- `test_partial_init` (3): `close()` safe after failed `__init__` via unknown-family, unknown-type, and manual `__new__` paths.
+- `test_auto_detect_bos` updated: asserts the config is NOT mutated; checks `_effective_add_bos` instead.
+
+### Version
+- `pyproject.toml`, `CMakeLists.txt`, and `src/llama_cpp/_about.py` all bumped to `0.4.0`. Wheel filename: `llama_cpp_nanobind-0.4.0-cp314-cp314-linux_x86_64.whl`.
+
+**Full details**: `docs/CHANGELOG-v0.4.0.md`.
+
 ## Recent Improvements (v0.3.6)
 
 ### Validation & Safety Enhancements
