@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 import contextlib
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import fields as _dc_fields
 from dataclasses import replace as dc_replace
 import gc
 import json
@@ -15,7 +16,7 @@ import os
 import queue
 import threading
 import time
-from typing import Any, cast
+from typing import Any
 import uuid
 import weakref
 
@@ -25,7 +26,7 @@ from . import _llama  # type: ignore[attr-defined]  # C++ extension module
 
 def _uuid7_hex() -> str:
     """Generate a UUID7 hex string (Python 3.14+)."""
-    return str(uuid.uuid7().hex)  # type: ignore[attr-defined]
+    return str(uuid.uuid7().hex)
 
 
 # ---------------------------------------------------------------------------
@@ -298,14 +299,19 @@ class Llama:
           instance. This prevents crashes but provides no parallelism benefit.
         - For true parallel inference, use LlamaPool with multiple independent instances.
         - verbose=False affects logging globally across all instances (llama.cpp limitation).
-          The setting from the most recently created instance applies to all instances.
-          In multi-threaded initialization, use external synchronization to ensure
-          consistent logging configuration, or set verbose consistently across all instances.
+          Construction is internally serialized via a class-level lock
+          (``Llama._log_lock``); the verbose setting of the most recently
+          constructed instance wins. No external synchronization is required.
     """
 
     # Class-level lock for global state changes (logging)
     _log_lock = threading.Lock()
     _global_verbose: bool | None = None  # Track if verbose has been set globally
+    # Max time generate_stream will wait for its worker thread to exit after
+    # cancellation. If the worker is still inside a C++ call after this
+    # timeout, we consider the instance permanently unsafe; see
+    # generate_stream's finally block.
+    _STREAM_JOIN_TIMEOUT: float = 5.0
 
     def __init__(
         self,
@@ -380,9 +386,13 @@ class Llama:
         except RuntimeError as e:
             raise ModelLoadError(f"Failed to load model: {cfg.model_path}") from e
 
-        # Auto-detect add_bos from model preference if not explicitly set
-        if cfg.add_bos is None:
-            cfg.add_bos = bool(self.model.get_add_bos())
+        # Resolve add_bos once, after the model is loaded, into an internal
+        # attribute. The user-supplied config is not mutated, so the same
+        # LlamaConfig instance can be safely shared across Llama(...) calls
+        # for different models.
+        self._effective_add_bos: bool = (
+            bool(self.model.get_add_bos()) if cfg.add_bos is None else bool(cfg.add_bos)
+        )
 
         try:
             self.ctx = _llama.Context(self.model, ctx_params)
@@ -463,6 +473,26 @@ class Llama:
                     f"stop sequence too long (max {_MAX_STOP_SEQUENCE_LENGTH} chars)"
                 )
 
+    @staticmethod
+    def _validate_sampling_overrides(overrides: dict[str, Any]) -> None:
+        """Reject unknown kwargs at public entry points.
+
+        Without this, an unknown override (e.g. a typo or a kwarg meant for a
+        different API, like OpenAI's `logprobs`) would propagate to
+        `SamplingParams(**...)` inside `_build_sampler` and surface as a
+        generic ``TypeError: got an unexpected keyword argument`` with no
+        indication that the user's public call is the source.
+        """
+        if not overrides:
+            return
+        valid = {f.name for f in _dc_fields(SamplingParams)}
+        unknown = set(overrides) - valid
+        if unknown:
+            raise ValidationError(
+                f"unknown sampling override(s): {sorted(unknown)!r}. "
+                f"Valid keys: {sorted(valid)!r}"
+            )
+
     def _tokenize_stop_sequences(
         self, stop: Sequence[str | int] | None
     ) -> list[list[int]]:
@@ -491,7 +521,10 @@ class Llama:
 
     def close(self) -> None:
         """Release model and context resources."""
-        if getattr(self, "_closed", True):
+        # _closed is set in __init__ before any operation that can fail, so
+        # direct access is safe and makes init-time bugs visible instead of
+        # swallowing them as a no-op close.
+        if self._closed:
             return
 
         # Serialize shutdown with active generation/async paths
@@ -550,7 +583,9 @@ class Llama:
         return list(
             self.model.tokenize(
                 text,
-                add_special=self.config.add_bos if add_special is None else add_special,
+                add_special=(
+                    self._effective_add_bos if add_special is None else add_special
+                ),
                 parse_special=(
                     self.config.parse_special
                     if parse_special is None
@@ -845,6 +880,8 @@ class Llama:
     ) -> _llama.SamplerChain:
         params_obj = sampling or self.sampling
         # Allow llama-cpp-python style kw overrides (temperature, top_p, etc.)
+        # Filter only None (not 0, 0.0, or False) so that explicit zero-valued
+        # overrides like temperature=0.0 or top_k=0 are respected.
         if overrides:
             params_obj = SamplingParams(
                 **{
@@ -888,18 +925,24 @@ class Llama:
             return "\n".join(parts)
 
     def _prepare_chat(
-        self, messages: Sequence[dict[str, Any]]
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        add_bos: bool | None = None,
     ) -> tuple[str, list[int], int]:
         """Prepare chat for generation: format and tokenize once.
 
         Args:
             messages: List of message dicts with 'role' and 'content'.
+            add_bos: Override BOS behavior. If None, uses the resolved
+                effective add_bos (model preference or explicit config).
 
         Returns:
             Tuple of (formatted_prompt, prompt_tokens, token_count).
         """
         prompt = self._format_chat_messages(messages)
-        tokens = self.tokenize(prompt, add_special=self.config.add_bos)
+        effective_bos = self._effective_add_bos if add_bos is None else add_bos
+        tokens = self.tokenize(prompt, add_special=effective_bos)
         return prompt, tokens, len(tokens)
 
     def _token_to_text_incremental(self, tokens: Iterator[int]) -> Iterator[str]:
@@ -938,6 +981,7 @@ class Llama:
         stop_sequences: list[list[int]] | None = None,
         grammar: Any | None = None,
         reset_kv_cache: bool = True,
+        add_bos: bool | None = None,
     ) -> list[int]:
         """Internal generation from pre-tokenized input.
 
@@ -948,6 +992,8 @@ class Llama:
             stop_sequences: Optional multi-token stop sequences.
             grammar: Optional GrammarSampler for constrained generation.
             reset_kv_cache: Whether to clear KV cache before generation.
+            add_bos: Override BOS behavior. If None, derived from config and
+                reset_kv_cache (no BOS inserted mid-session).
 
         Returns:
             List of generated token IDs.
@@ -957,6 +1003,9 @@ class Llama:
 
         eos = self.model.eos()
         stop_seqs = stop_sequences or []
+        effective_add_bos = (
+            self._effective_add_bos and reset_kv_cache if add_bos is None else add_bos
+        )
 
         if grammar is not None:
             return list(
@@ -966,7 +1015,7 @@ class Llama:
                     grammar,
                     prompt_tokens,
                     int(max_tokens),
-                    bool(self.config.add_bos),
+                    effective_add_bos,
                     eos,
                     stop_seqs,
                 )
@@ -978,7 +1027,7 @@ class Llama:
                     sampler,
                     prompt_tokens,
                     int(max_tokens),
-                    bool(self.config.add_bos),
+                    effective_add_bos,
                     eos,
                     stop_seqs,
                 )
@@ -990,7 +1039,7 @@ class Llama:
                     sampler,
                     prompt_tokens,
                     int(max_tokens),
-                    bool(self.config.add_bos),
+                    effective_add_bos,
                     eos,
                     [],
                 )
@@ -1061,51 +1110,75 @@ class Llama:
         if reset_kv_cache:
             self.ctx.kv_cache_clear()
 
-        prompt_tokens = self.tokenize(prompt, add_special=self.config.add_bos)
+        effective_add_bos = self._effective_add_bos and reset_kv_cache
+        prompt_tokens = self.tokenize(prompt, add_special=effective_add_bos)
         self._validate_prompt_token_count(len(prompt_tokens))
 
         stop_sequences = self._tokenize_stop_sequences(stop)
 
         eos = self.model.eos()
 
-        # Use queue for true streaming from background thread
-        token_queue: queue.Queue[int | None | Exception] = queue.Queue()
+        # Queue carries already-detokenized raw bytes from the worker thread,
+        # never raw token IDs. This keeps all llama.cpp calls on the same Model
+        # inside a single thread (Llama is not thread-safe); the main thread
+        # only does UTF-8 decoding on bytes it pulled from the queue.
+        token_queue: queue.Queue[bytes | None | Exception] = queue.Queue()
         cancel_event = threading.Event()
 
         def worker() -> None:
-            """Background thread that generates tokens and puts them in queue.
+            """Background thread that generates tokens, detokenizes to bytes,
+            and pushes raw bytes onto the queue.
 
-            Holds self._lock for the duration of generation to prevent
-            concurrent access from async methods (_generate_locked, etc.).
+            self._lock is already held by the caller before this thread was
+            spawned; we do NOT re-acquire it here. Holding the lock across
+            thread.start() + iteration is what guarantees no other Llama
+            method can enter while streaming is in progress.
             """
             try:
 
                 def on_token(token: int) -> bool:
                     if cancel_event.is_set():
                         return False  # Stop generation
-                    token_queue.put(token)
+                    try:
+                        raw = bytes(
+                            self.model.detokenize_bytes(
+                                [token], remove_special=True, unparse_special=True
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        token_queue.put(exc)
+                        return False
+                    token_queue.put(raw)
                     return True
 
-                with self._lock:
-                    _llama.generate_tokens_streaming(
-                        self.ctx,
-                        sampler,
-                        prompt_tokens,
-                        int(max_tokens),
-                        bool(self.config.add_bos),
-                        eos,
-                        stop_sequences,
-                        on_token,
-                    )
+                _llama.generate_tokens_streaming(
+                    self.ctx,
+                    sampler,
+                    prompt_tokens,
+                    int(max_tokens),
+                    effective_add_bos,
+                    eos,
+                    stop_sequences,
+                    on_token,
+                )
                 token_queue.put(None)  # Sentinel: generation complete
             except Exception as e:
                 token_queue.put(e)  # Propagate exception to main thread
 
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
+        # Acquire the lock BEFORE spawning the worker, so that any concurrent
+        # Llama call is blocked the moment generate_stream is invoked (not
+        # just once the worker thread schedules the `with self._lock:` body).
+        # Release it in the finally below — after the generator completes,
+        # raises, or is closed by the caller.
+        self._lock.acquire()
+        thread: threading.Thread | None = None
+        try:
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
 
-        # Helper generator to extract tokens from queue with error handling
-        def token_stream() -> Iterator[int]:
+            # Incremental UTF-8 decode of bytes from the queue. The worker has
+            # already done all Model.detokenize_bytes calls; here we only decode.
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
             while True:
                 try:
                     queue_item = token_queue.get(timeout=0.5)
@@ -1119,20 +1192,39 @@ class Llama:
                     break  # Generation complete
                 if isinstance(queue_item, Exception):
                     raise queue_item  # Propagate exception from worker thread
-                yield queue_item  # Token (int)
-
-        # Yield text as tokens are decoded
-        try:
-            yield from self._token_to_text_incremental(token_stream())
+                piece = decoder.decode(queue_item)
+                if piece:
+                    yield piece
+            # Flush any remaining bytes buffered in the decoder
+            final_piece = decoder.decode(b"", final=True)
+            if final_piece:
+                yield final_piece
         finally:
-            # Signal background thread to stop, then wait for it
+            # Signal background thread to stop and wait for it to finish.
+            # If it's still alive after the timeout, the underlying C++ call
+            # has NOT returned — the Llama is now unsafe to reuse, because
+            # another caller would race on ctx/model. We keep self._lock held
+            # in that case so subsequent method calls block (loud hang) rather
+            # than silently corrupt state. Process restart is the correct
+            # recovery.
             cancel_event.set()
-            thread.join(timeout=5.0)
-            if thread.is_alive():
-                logging.warning(
-                    "generate_stream worker thread did not stop within 5s; "
-                    "C++ generation may still be running. Avoid using this Llama "
-                    "instance until thread completes to prevent data races."
+            worker_zombie = False
+            if thread is not None:
+                thread.join(timeout=self._STREAM_JOIN_TIMEOUT)
+                worker_zombie = thread.is_alive()
+            if not worker_zombie:
+                self._lock.release()
+            else:
+                # Intentionally leave self._lock held and raise so the caller
+                # learns of the problem. Do NOT release — another call
+                # entering generation concurrently with a zombie worker would
+                # race on the same ctx/model.
+                raise LlamaError(
+                    "generate_stream worker thread did not stop within "
+                    f"{self._STREAM_JOIN_TIMEOUT}s; the C++ generation call "
+                    "has not returned. This Llama instance is now unusable "
+                    "(lock intentionally held to prevent data races). Restart "
+                    "the process to recover."
                 )
 
     def generate(
@@ -1187,31 +1279,36 @@ class Llama:
         # Optionally clear KV cache (default True for fresh generation)
         if reset_kv_cache:
             self.ctx.kv_cache_clear()
-        prompt_tokens = self.tokenize(prompt, add_special=self.config.add_bos)
+        # BOS is only added for a fresh context. In session continuation the KV
+        # cache already contains a BOS from the prior turn, so re-inserting one
+        # would pollute the sequence mid-stream.
+        effective_add_bos = self._effective_add_bos and reset_kv_cache
+        prompt_tokens = self.tokenize(prompt, add_special=effective_add_bos)
         self._validate_prompt_token_count(len(prompt_tokens))
 
         stop_sequences = self._tokenize_stop_sequences(stop)
 
         eos = self.model.eos()
 
-        # Only use expensive details path when actually needed (echo or logprobs)
-        need_details = echo or logprobs is not None
-
         if stream and logprobs is not None:
             raise ValueError(
                 "Streaming with logprobs is not supported; set stream=False or logprobs=None"
             )
 
-        if need_details:
+        # Only use expensive details path when logprobs is actually requested.
+        # echo alone is handled cheaply by prepending prompt tokens after
+        # generation.
+        token_probs = None
+        if logprobs is not None:
             token_probs = _llama.generate_tokens_with_details(
                 self.ctx,
                 sampler,
                 prompt_tokens,
                 int(max_tokens),
-                bool(self.config.add_bos),
+                effective_add_bos,
                 eos,
                 stop_sequences,
-                int(logprobs or 0),
+                int(logprobs),
                 bool(echo),
             )
             output_tokens = [tp.token for tp in token_probs]
@@ -1222,11 +1319,13 @@ class Llama:
                 sampler,
                 prompt_tokens,
                 int(max_tokens),
-                bool(self.config.add_bos),
+                effective_add_bos,
                 eos,
                 stop_sequences,
             )
             output_tokens = list(generated)
+            if echo:
+                output_tokens = list(prompt_tokens) + output_tokens
         else:
             # No stop sequences - use simplest path
             generated = _llama.generate_tokens(
@@ -1234,11 +1333,13 @@ class Llama:
                 sampler,
                 prompt_tokens,
                 int(max_tokens),
-                bool(self.config.add_bos),
+                effective_add_bos,
                 eos,
                 [],
             )
             output_tokens = list(generated)
+            if echo:
+                output_tokens = list(prompt_tokens) + output_tokens
 
         if logprobs is not None:
             text = self.detokenize(
@@ -1258,6 +1359,81 @@ class Llama:
         )
         return text
 
+    def _generate_with_token_count(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+    ) -> tuple[str, int]:
+        """Generate text and return (text, n_generated_tokens).
+
+        Used by ``__call__`` to avoid the detokenize → re-tokenize round-trip
+        (which isn't lossless for merged/special tokens and wastes CPU).
+        Mirrors the non-logprobs path of :meth:`generate`.
+        """
+        self._check_closed()
+        if not isinstance(prompt, str):
+            raise ValidationError("prompt must be a string")
+        if not prompt.strip():
+            raise ValidationError("prompt cannot be empty")
+        if not isinstance(max_tokens, int) or max_tokens < 1:
+            raise ValidationError("max_tokens must be a positive integer")
+        if len(prompt) > _MAX_PROMPT_LENGTH:
+            raise ValidationError(
+                f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
+            )
+        self._validate_stop_sequences(stop)
+
+        sampler_params = sampling or self.sampling
+        if seed is not None:
+            sampler_params = dc_replace(sampler_params, seed=seed)
+        sampler = self._build_sampler(sampler_params)
+        if reset_kv_cache:
+            self.ctx.kv_cache_clear()
+        effective_add_bos = self._effective_add_bos and reset_kv_cache
+        prompt_tokens = self.tokenize(prompt, add_special=effective_add_bos)
+        self._validate_prompt_token_count(len(prompt_tokens))
+
+        stop_sequences = self._tokenize_stop_sequences(stop)
+        eos = self.model.eos()
+
+        if stop_sequences:
+            generated = list(
+                _llama.generate_tokens_multi_stop(
+                    self.ctx,
+                    sampler,
+                    prompt_tokens,
+                    int(max_tokens),
+                    effective_add_bos,
+                    eos,
+                    stop_sequences,
+                )
+            )
+        else:
+            generated = list(
+                _llama.generate_tokens(
+                    self.ctx,
+                    sampler,
+                    prompt_tokens,
+                    int(max_tokens),
+                    effective_add_bos,
+                    eos,
+                    [],
+                )
+            )
+
+        n_generated = len(generated)
+        output_tokens = list(prompt_tokens) + generated if echo else generated
+        text = self.detokenize(
+            output_tokens, remove_special=True, unparse_special=False
+        )
+        return text, n_generated
+
     # llama-cpp-python compatibility - __call__ returns OpenAI-style dict
     def __call__(
         self,
@@ -1273,7 +1449,7 @@ class Llama:
 
         Note: Streaming yields chunks after full generation (not true streaming).
         """
-        prompt_tokens = self.tokenize(prompt, add_special=self.config.add_bos)
+        prompt_tokens = self.tokenize(prompt, add_special=self._effective_add_bos)
         prompt_tok_count = len(prompt_tokens)
 
         if stream:
@@ -1304,28 +1480,40 @@ class Llama:
 
             return stream_chunks()
 
-        result = self.generate(
-            prompt, max_tokens=max_tokens, stop=stop, echo=echo, stream=False, **kwargs
-        )
-        created = int(time.time())
-
-        # Handle logprobs case - generate() returns dict with text and token details
-        if isinstance(result, dict):
-            # When logprobs is set, generate() returns a dict with "text" and "tokens"
+        logprobs = kwargs.get("logprobs")
+        if logprobs is not None:
+            # Logprobs path: generate() returns a dict with {text, tokens, ...}
+            # — token count is exact.
+            result = self.generate(
+                prompt,
+                max_tokens=max_tokens,
+                stop=stop,
+                echo=echo,
+                stream=False,
+                **kwargs,
+            )
+            if not isinstance(result, dict):
+                raise TypeError(f"Unexpected generate() return type: {type(result)}")
             text = result["text"]
             completion_tokens = len(result.get("tokens", []))
-        elif isinstance(result, str):
-            # Normal case - string result
-            text = result
-            # Get completion token count from KV cache position instead of re-tokenizing
-            kv_pos = self.kv_cache_seq_pos_max()
-            if kv_pos >= 0 and kv_pos >= prompt_tok_count:
-                completion_tokens = kv_pos - prompt_tok_count + 1
-            else:
-                completion_tokens = 0
         else:
-            # Iterator case should not reach here (stream=False)
-            raise TypeError(f"Unexpected generate() return type: {type(result)}")
+            # Non-logprobs path: call the internal token-level helper so we get
+            # the exact generated token count without a lossy detokenize →
+            # tokenize round-trip (which can miss special/merged tokens and
+            # wastes CPU). Only pass kwargs the helper accepts.
+            helper_kwargs = {
+                k: kwargs[k]
+                for k in ("sampling", "seed", "reset_kv_cache")
+                if k in kwargs
+            }
+            text, completion_tokens = self._generate_with_token_count(
+                prompt,
+                max_tokens=max_tokens,
+                stop=stop,
+                echo=echo,
+                **helper_kwargs,
+            )
+        created = int(time.time())
 
         return {
             "id": f"cmpl-{_uuid7_hex()}",
@@ -1344,19 +1532,19 @@ class Llama:
 
     def create_completion(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
         """Create completion (delegates to __call__ for consistency)."""
-        stream = kwargs.get("stream", False)
         result = self(prompt, **kwargs)
-        # Handle streaming case explicitly based on stream parameter
-        if stream:
-            chunks: list[dict[str, Any]] = list(result)  # type: ignore[arg-type]
-            text = "".join(c["choices"][0]["text"] for c in chunks)
-            return {
-                "id": chunks[0]["id"] if chunks else f"cmpl-{_uuid7_hex()}",
-                "object": "text_completion",
-                "created": chunks[0]["created"] if chunks else int(time.time()),
-                "choices": [{"text": text, "index": 0, "finish_reason": "stop"}],
-            }
-        return cast(dict[str, Any], result)
+        # Type-check the result directly rather than re-reading kwargs: __call__
+        # returns a dict for non-stream and an iterator for stream.
+        if isinstance(result, dict):
+            return result
+        chunks: list[dict[str, Any]] = list(result)
+        text = "".join(c["choices"][0]["text"] for c in chunks)
+        return {
+            "id": chunks[0]["id"] if chunks else f"cmpl-{_uuid7_hex()}",
+            "object": "text_completion",
+            "created": chunks[0]["created"] if chunks else int(time.time()),
+            "choices": [{"text": text, "index": 0, "finish_reason": "stop"}],
+        }
 
     # OpenAI-style / llama-cpp-python compatible chat API
     def create_chat_completion(
@@ -1409,9 +1597,22 @@ class Llama:
 
         # Validate stop sequences
         self._validate_stop_sequences(stop)
+        # Validate sampling overrides at the public boundary so that a typo
+        # (e.g. "tempeature=0.8") or a foreign kwarg (e.g. OpenAI-only
+        # "logprobs") surfaces as a clear ValidationError here, not as a
+        # confusing TypeError deep in SamplingParams.__init__.
+        self._validate_sampling_overrides(sampling_overrides)
 
+        # BOS only for fresh contexts: mid-session continuations already have
+        # BOS in the KV cache.
+        effective_add_bos = self._effective_add_bos and reset_kv_cache
         # Tokenize once via _prepare_chat
-        _, prompt_tokens, _ = self._prepare_chat(effective_messages)
+        _, prompt_tokens, n_prompt_tokens = self._prepare_chat(
+            effective_messages, add_bos=effective_add_bos
+        )
+        # Same DoS guard as generate() / generate_stream(): reject high-
+        # compression prompts that tokenize to > 2×n_ctx.
+        self._validate_prompt_token_count(n_prompt_tokens)
         sampler = self._build_sampler(None, **sampling_overrides)
 
         stop_sequences = self._tokenize_stop_sequences(stop)
@@ -1438,6 +1639,7 @@ class Llama:
             stop_sequences=stop_sequences,
             grammar=use_grammar,
             reset_kv_cache=reset_kv_cache,
+            add_bos=effective_add_bos,
         )
 
         created = int(time.time())
@@ -1668,21 +1870,54 @@ class Llama:
         For true parallelism, use multiple Llama instances.
         """
         if stream:
+            if logprobs is not None:
+                raise ValueError(
+                    "Streaming with logprobs is not supported; "
+                    "set stream=False or logprobs=None"
+                )
+            # True incremental async streaming: bridge the sync generate_stream
+            # generator (which runs its own background worker thread for C++
+            # generation) into async via a queue. Each chunk is yielded as
+            # soon as the worker produces it, matching the README's streaming
+            # contract. This replaces the old behavior of eagerly buffering
+            # the entire generator under self._lock before yielding.
+            loop = asyncio.get_running_loop()
+            out_queue: asyncio.Queue[str | None | BaseException] = asyncio.Queue()
+
+            def run_stream() -> None:
+                try:
+                    for chunk in self.generate_stream(
+                        prompt,
+                        max_tokens=max_tokens,
+                        sampling=sampling,
+                        stop=stop,
+                        seed=seed,
+                    ):
+                        asyncio.run_coroutine_threadsafe(out_queue.put(chunk), loop)
+                    asyncio.run_coroutine_threadsafe(out_queue.put(None), loop)
+                except BaseException as exc:  # noqa: BLE001
+                    asyncio.run_coroutine_threadsafe(out_queue.put(exc), loop)
 
             async def async_stream() -> AsyncIterator[str]:
-                chunks = await asyncio.to_thread(
-                    self._generate_locked,
-                    prompt,
-                    max_tokens=max_tokens,
-                    sampling=sampling,
-                    stop=stop,
-                    echo=echo,
-                    logprobs=logprobs,
-                    stream=True,
-                    seed=seed,
-                )
-                for chunk in chunks:
-                    yield chunk
+                # Start the pump thread (it holds self._lock for the duration
+                # of generate_stream — no other Llama call will run until
+                # this stream completes or is cancelled).
+                pump = loop.run_in_executor(None, run_stream)
+                try:
+                    while True:
+                        item = await out_queue.get()
+                        if item is None:
+                            break
+                        if isinstance(item, BaseException):
+                            raise item
+                        yield item
+                finally:
+                    # Await the pump task so exceptions surface and the
+                    # lock-release path in generate_stream runs. Swallow any
+                    # exception here because the main yield loop already
+                    # re-raised the meaningful error from the queue.
+                    with contextlib.suppress(BaseException):
+                        await pump
 
             return async_stream()
 
@@ -1834,10 +2069,24 @@ def _format_tools_prompt(tools: list[dict[str, Any]]) -> str:
     )
 
 
+_TOOL_CALL_JSON_MAX_CHARS = 1_000_000  # 1MB hard cap on model-emitted JSON
+
+
 def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
     """Parse function calls from model output."""
     text = text.strip()
-    tool_calls = []
+    tool_calls: list[dict[str, Any]] = []
+
+    # Defense-in-depth: model output is bounded by max_tokens upstream, but
+    # a runaway generation could still produce megabytes of JSON. Cap the
+    # parse input so json.loads can't burn unbounded CPU/memory.
+    if len(text) > _TOOL_CALL_JSON_MAX_CHARS:
+        logging.debug(
+            "Tool-call JSON rejected: %d chars exceeds %d-char cap",
+            len(text),
+            _TOOL_CALL_JSON_MAX_CHARS,
+        )
+        return tool_calls
 
     # Try to parse as JSON
     try:

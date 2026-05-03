@@ -20,6 +20,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace nb = nanobind;
@@ -46,20 +47,13 @@ std::mutex g_resource_mutex;  // For model lifecycle (close, model_count)
 
 class Model {
  public:
-  explicit Model(const std::string& path, const ModelParams& params) {
-    // Initialize backend FIRST, before any model loading
-    // CUDA/Metal backends must be ready before llama_model_load_from_file
-    // std::call_once provides thread-safety; no extra lock needed
-    std::call_once(g_backend_init_flag, llama_backend_init);
-
-    model_ = llama_model_load_from_file(path.c_str(), params.raw);
+  explicit Model(const std::string& path, const ModelParams& params)
+      : model_(load_with_backend_init(path, params)) {
     if (!model_) {
       throw std::runtime_error("failed to load model: " + path);
     }
-    {
-      std::scoped_lock const lock(g_resource_mutex);
-      ++g_model_count;
-    }
+    std::scoped_lock const lock(g_resource_mutex);
+    ++g_model_count;
   }
 
   ~Model() { close(); }
@@ -147,20 +141,9 @@ class Model {
 
   std::string desc() const {
     check_model();
-    // Query required size first to avoid buffer overflow
-    int32_t const needed = llama_model_desc(model_, nullptr, 0);
-    if (needed <= 0) {
-      return "";  // Empty description
-    }
-    std::string buf(static_cast<size_t>(needed) + 1, '\0');
-    int32_t const written = llama_model_desc(model_, buf.data(), static_cast<int32_t>(buf.size()));
-    if (written != needed) {
-      throw std::runtime_error("buffer size mismatch in llama_model_desc");
-    }
-    // Ensure null termination
-    buf[written] = '\0';
-    buf.resize(static_cast<size_t>(needed));
-    return buf;
+    return read_c_string("llama_model_desc", [this](char* buf, size_t size) {
+      return llama_model_desc(model_, buf, static_cast<int32_t>(size));
+    });
   }
 
   llama_token bos() const { return llama_vocab_bos(vocab()); }
@@ -190,48 +173,23 @@ class Model {
 
   std::string meta_val_str(const std::string& key) const {
     check_model();
-    // First call to get required length
-    int32_t const len = llama_model_meta_val_str(model_, key.c_str(), nullptr, 0);
-    if (len < 0) return "";
-    std::string buf(static_cast<size_t>(len) + 1, '\0');
-    int32_t const written =
-        llama_model_meta_val_str(model_, key.c_str(), buf.data(), static_cast<int32_t>(buf.size()));
-    if (written != len) {
-      throw std::runtime_error("buffer size mismatch in llama_model_meta_val_str");
-    }
-    buf[written] = '\0';
-    buf.resize(static_cast<size_t>(len));
-    return buf;
+    return read_c_string("llama_model_meta_val_str", [&](char* buf, size_t size) {
+      return llama_model_meta_val_str(model_, key.c_str(), buf, static_cast<int32_t>(size));
+    });
   }
 
   std::string meta_key_by_index(int32_t i) const {
     check_model();
-    int32_t const len = llama_model_meta_key_by_index(model_, i, nullptr, 0);
-    if (len < 0) return "";
-    std::string buf(static_cast<size_t>(len) + 1, '\0');
-    int32_t const written =
-        llama_model_meta_key_by_index(model_, i, buf.data(), static_cast<int32_t>(buf.size()));
-    if (written != len) {
-      throw std::runtime_error("buffer size mismatch in llama_model_meta_key_by_index");
-    }
-    buf[written] = '\0';
-    buf.resize(static_cast<size_t>(len));
-    return buf;
+    return read_c_string("llama_model_meta_key_by_index", [&](char* buf, size_t size) {
+      return llama_model_meta_key_by_index(model_, i, buf, static_cast<int32_t>(size));
+    });
   }
 
   std::string meta_val_by_index(int32_t i) const {
     check_model();
-    int32_t const len = llama_model_meta_val_str_by_index(model_, i, nullptr, 0);
-    if (len < 0) return "";
-    std::string buf(static_cast<size_t>(len) + 1, '\0');
-    int32_t const written =
-        llama_model_meta_val_str_by_index(model_, i, buf.data(), static_cast<int32_t>(buf.size()));
-    if (written != len) {
-      throw std::runtime_error("buffer size mismatch in llama_model_meta_val_str_by_index");
-    }
-    buf[written] = '\0';
-    buf.resize(static_cast<size_t>(len));
-    return buf;
+    return read_c_string("llama_model_meta_val_str_by_index", [&](char* buf, size_t size) {
+      return llama_model_meta_val_str_by_index(model_, i, buf, static_cast<int32_t>(size));
+    });
   }
 
   std::vector<llama_token> tokenize(const std::string& text, bool add_special,
@@ -273,6 +231,9 @@ class Model {
     if (static_cast<size_t>(n_tokens) != tokens.size()) {
       throw std::runtime_error("integer overflow in token count");
     }
+    // Two-call protocol: first call with size=0 returns -required_bytes
+    // (or 0 for empty output). Unlike llama_model_desc, the returned count
+    // is the exact byte count, not null-terminated, so no +1 is needed.
     int32_t needed = llama_detokenize(vocab(), tokens.data(), n_tokens, nullptr, 0, remove_special,
                                       unparse_special);
     if (needed < 0) {
@@ -325,6 +286,40 @@ class Model {
 
  private:
   llama_model* model_ = nullptr;
+
+  // Helper that initializes the llama backend (once, globally) and loads the
+  // model. CUDA/Metal backends must be ready before llama_model_load_from_file,
+  // so the call_once lives here and runs as part of member initialization.
+  static llama_model* load_with_backend_init(const std::string& path, const ModelParams& params) {
+    std::call_once(g_backend_init_flag, llama_backend_init);
+    return llama_model_load_from_file(path.c_str(), params.raw);
+  }
+
+  // Read a C-string out of a llama.cpp API that uses the two-call snprintf
+  // protocol: fn(buf=nullptr, size=0) returns the required byte count
+  // (excluding the NUL terminator), then fn(buf, size) fills the buffer.
+  //
+  // Used by desc() / meta_val_str() / meta_key_by_index() / meta_val_by_index()
+  // to avoid repeating the boilerplate four times.
+  // Taken by value: we call the functor twice (size query + fill), which
+  // requires a stable callable — no forwarding.
+  template <typename Fn>
+  static std::string read_c_string(const char* api_name, Fn fn) {
+    int32_t const needed = fn(nullptr, 0);
+    if (needed <= 0) {
+      return "";
+    }
+    // Allocate needed+1 so the implementation has room for its own NUL
+    // terminator; resize back to `needed` afterward (std::string keeps its
+    // own internal terminator).
+    std::string buf(static_cast<size_t>(needed) + 1, '\0');
+    int32_t const written = fn(buf.data(), buf.size());
+    if (written != needed) {
+      throw std::runtime_error(std::string("buffer size mismatch in ") + api_name);
+    }
+    buf.resize(static_cast<size_t>(needed));
+    return buf;
+  }
 
   void check_model() const {
     if (!model_) {
@@ -692,17 +687,40 @@ class Context {
   // Accepts Python bytes directly (pointer access, no per-element conversion).
   // GIL is managed manually: pointer extracted while held, released for heavy
   // C++ work.
+  //
+  // Failure semantics: if llama_state_set_data fails, the Python-side cur_pos_
+  // counter is reset to its prior value, but the underlying llama KV cache may
+  // have been partially overwritten by the time the failure was detected and
+  // is therefore in an indeterminate state. Callers should treat the context
+  // as invalid on failure and call reset() (or discard the instance) before
+  // further use. Snapshotting the full KV state for true rollback is not done
+  // here because it would double peak memory on every load.
   size_t set_state_data(const nb::bytes& data) {
     check_ctx();
-    const auto* ptr = reinterpret_cast<const uint8_t*>(data.data());
+    // Use the nb::bytes buffer directly — no copy. Lifetime argument:
+    //   * `data` is a `const nb::bytes&` bound to the caller's Python bytes
+    //     object. That object is kept alive by a strong reference on the
+    //     calling Python frame's stack.
+    //   * Dropping that reference requires executing Python bytecode, which
+    //     requires the GIL.
+    //   * Our thread is paused inside this C call for the duration of the
+    //     GIL-released block — the calling frame cannot pop, so its
+    //     reference cannot be released.
+    //   * Another thread that takes the GIL could execute unrelated Python
+    //     code, but cannot observe or mutate this particular reference.
+    // Therefore the pointer stays valid for the whole scope. Copying the
+    // buffer (~KV state size, often multi-GB) would double peak memory for
+    // no safety gain.
+    const auto* ptr = static_cast<const uint8_t*>(data.data());
     size_t const len = data.size();
     size_t result = 0;
-    int32_t const old_pos = cur_pos_;  // Save for rollback on failure
+    int32_t const old_pos = cur_pos_;  // Best-effort restore on failure
     {
       nb::gil_scoped_release const release;
       result = llama_state_set_data(ctx_, ptr, len);
       if (result == 0 || result > len) {
-        // Failure - restore old position
+        // Failure - restore Python-side position. Note: the llama KV cache
+        // itself may be partially overwritten; this only resets bookkeeping.
         cur_pos_ = old_pos;
       } else {
         // Success - update cur_pos_ from KV cache to maintain correct position bookkeeping
@@ -710,9 +728,10 @@ class Context {
         cur_pos_ = std::max(cur_pos_, 0);
       }
     }
-    // GIL re-acquired — `data` (nb::bytes) guaranteed alive until function returns
     if (result == 0 || result > len) {
-      throw std::runtime_error("failed to load state data");
+      throw std::runtime_error(
+          "failed to load state data (KV cache may be in an indeterminate "
+          "state; call reset() before reuse)");
     }
     return result;
   }
@@ -847,12 +866,16 @@ inline llama_token SamplerChain::sample(Context& ctx, int32_t idx) {
 inline std::vector<llama_token> prime_generation(Context& ctx, SamplerChain& sampler,
                                                  const std::vector<llama_token>& prompt,
                                                  bool add_bos) {
-  std::vector<llama_token> priming = prompt;
-
-  // Add BOS if requested and not already present
-  if (add_bos && (priming.empty() || priming.front() != ctx.model().bos())) {
-    priming.insert(priming.begin(), ctx.model().bos());
+  // Build priming with BOS prepended in a single pass — avoids the O(n)
+  // memmove that std::vector::insert(begin(), ...) would cost for large
+  // prompts.
+  const bool need_bos = add_bos && (prompt.empty() || prompt.front() != ctx.model().bos());
+  std::vector<llama_token> priming;
+  priming.reserve(prompt.size() + (need_bos ? 1 : 0));
+  if (need_bos) {
+    priming.push_back(ctx.model().bos());
   }
+  priming.insert(priming.end(), prompt.begin(), prompt.end());
 
   // Accept all prompt tokens into sampler for penalty tracking
   for (llama_token const t : priming) {
@@ -996,7 +1019,7 @@ class GrammarSampler {
 class LoraAdapter {
  public:
   LoraAdapter(Model& model, const std::string& path)
-      : adapter_(llama_adapter_lora_init(model.get(), path.c_str())) {
+      : parent_(&model), adapter_(llama_adapter_lora_init(model.get(), path.c_str())) {
     if (!adapter_) {
       throw std::runtime_error("failed to load LoRA adapter: " + path);
     }
@@ -1012,8 +1035,10 @@ class LoraAdapter {
   LoraAdapter& operator=(LoraAdapter&&) = delete;
 
   llama_adapter_lora* get() const { return adapter_; }
+  const Model* parent() const { return parent_; }
 
  private:
+  const Model* parent_ = nullptr;  // Non-owning: Model outlives adapter via nb::keep_alive
   llama_adapter_lora* adapter_ = nullptr;
 };
 
@@ -1033,7 +1058,12 @@ inline int32_t Context::set_adapters_lora(const nb::list& py_adapters, const nb:
   std::vector<llama_adapter_lora*> adapters(n);
   std::vector<float> scales(n);
   for (size_t i = 0; i < n; i++) {
-    adapters[i] = nb::cast<LoraAdapter&>(py_adapters[i]).get();
+    auto& adapter = nb::cast<LoraAdapter&>(py_adapters[i]);
+    if (adapter.parent() != model_) {
+      throw std::invalid_argument(
+          "LoRA adapter was loaded for a different model; cannot apply to this context");
+    }
+    adapters[i] = adapter.get();
     scales[i] = nb::cast<float>(py_scales[i]);
   }
   return llama_set_adapters_lora(ctx_, adapters.data(), static_cast<int32_t>(n), scales.data());
@@ -1044,19 +1074,6 @@ struct TokenProb {
   float logprob{};
   std::vector<std::pair<llama_token, float>> top_logprobs;
 };
-
-// softmax helpers
-inline double logsumexp(const float* logits, int32_t n_vocab) {
-  float max_l = -std::numeric_limits<float>::infinity();
-  for (int32_t i = 0; i < n_vocab; ++i) {
-    max_l = std::max(max_l, logits[i]);
-  }
-  double sum = 0.0;
-  for (int32_t i = 0; i < n_vocab; ++i) {
-    sum += std::exp(static_cast<double>(logits[i] - max_l));
-  }
-  return std::log(sum) + static_cast<double>(max_l);
-}
 
 std::vector<TokenProb> generate_tokens_with_details(
     Context& ctx, SamplerChain& sampler, const std::vector<llama_token>& prompt,
@@ -1097,9 +1114,12 @@ std::vector<TokenProb> generate_tokens_with_details(
     // Rebuild fully each iteration: samplers (top_k, top_p, ...) reorder
     // the candidates array in place via cur_p.data.
     for (int32_t j = 0; j < n_vocab; ++j) {
-      candidates[static_cast<size_t>(j)] = {j, logits[j], 0.0F};
+      candidates[static_cast<size_t>(j)] = {.id = j, .logit = logits[j], .p = 0.0F};
     }
-    llama_token_data_array cur_p = {candidates.data(), static_cast<size_t>(n_vocab), -1, false};
+    llama_token_data_array cur_p = {.data = candidates.data(),
+                                    .size = static_cast<size_t>(n_vocab),
+                                    .selected = -1,
+                                    .sorted = false};
     llama_sampler_apply(sampler.get(), &cur_p);
 
     // Compute logprobs from sampler-adjusted logits
@@ -1120,9 +1140,10 @@ std::vector<TokenProb> generate_tokens_with_details(
     // (llama_sampler_sample) which would re-apply the sampler chain,
     // advancing the dist sampler's RNG and potentially selecting a
     // different token than what cur_p reflects.
-    // Validate selected index before ANY use
+    // Validate selected index before ANY use. cur_p.selected is int64_t;
+    // std::cmp_greater_equal compares signed/unsigned without UB.
     if (cur_p.size == 0 || cur_p.selected < 0 ||
-        static_cast<size_t>(cur_p.selected) >= cur_p.size) {
+        std::cmp_greater_equal(cur_p.selected, cur_p.size)) {
       throw std::runtime_error(
           "sampler failed to select valid token (empty candidate set after filtering?)");
     }
@@ -1208,16 +1229,19 @@ std::vector<llama_token> generate_tokens_with_grammar(Context& ctx, SamplerChain
   std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
 
   for (int i = 0; i < max_new_tokens; ++i) {
-    float* logits = llama_get_logits(ctx.raw());
+    const float* logits = llama_get_logits(ctx.raw());
     if (!logits) {
       throw std::runtime_error("logits unavailable");
     }
 
     // Build token data array for grammar sampling
     for (int32_t j = 0; j < n_vocab; ++j) {
-      candidates[static_cast<size_t>(j)] = {j, logits[j], 0.0F};
+      candidates[static_cast<size_t>(j)] = {.id = j, .logit = logits[j], .p = 0.0F};
     }
-    llama_token_data_array cur_p = {candidates.data(), static_cast<size_t>(n_vocab), -1, false};
+    llama_token_data_array cur_p = {.data = candidates.data(),
+                                    .size = static_cast<size_t>(n_vocab),
+                                    .selected = -1,
+                                    .sorted = false};
 
     // Apply grammar constraint first (masks invalid tokens)
     llama_sampler_apply(grammar.get(), &cur_p);
@@ -1228,7 +1252,7 @@ std::vector<llama_token> generate_tokens_with_grammar(Context& ctx, SamplerChain
 
     // Select token from the sampled distribution
     llama_token token = LLAMA_TOKEN_NULL;
-    if (cur_p.size > 0 && cur_p.selected >= 0 && static_cast<size_t>(cur_p.selected) < cur_p.size) {
+    if (cur_p.size > 0 && cur_p.selected >= 0 && std::cmp_less(cur_p.selected, cur_p.size)) {
       token = cur_p.data[cur_p.selected].id;
     } else if (cur_p.size > 0) {
       // Fallback: pick highest probability after sampling
@@ -1315,15 +1339,18 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
   std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
 
   for (int i = 0; i < max_new_tokens; ++i) {
-    float* logits = llama_get_logits(ctx.raw());
+    const float* logits = llama_get_logits(ctx.raw());
     if (!logits) {
       throw std::runtime_error("logits unavailable");
     }
 
     for (int32_t j = 0; j < n_vocab; ++j) {
-      candidates[static_cast<size_t>(j)] = {j, logits[j], 0.0F};
+      candidates[static_cast<size_t>(j)] = {.id = j, .logit = logits[j], .p = 0.0F};
     }
-    llama_token_data_array cur_p = {candidates.data(), static_cast<size_t>(n_vocab), -1, false};
+    llama_token_data_array cur_p = {.data = candidates.data(),
+                                    .size = static_cast<size_t>(n_vocab),
+                                    .selected = -1,
+                                    .sorted = false};
 
     // Apply grammar constraint first (masks invalid tokens)
     llama_sampler_apply(grammar.get(), &cur_p);
@@ -1334,7 +1361,7 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
 
     // Select token from the sampled distribution
     llama_token token = LLAMA_TOKEN_NULL;
-    if (cur_p.size > 0 && cur_p.selected >= 0 && static_cast<size_t>(cur_p.selected) < cur_p.size) {
+    if (cur_p.size > 0 && cur_p.selected >= 0 && std::cmp_less(cur_p.selected, cur_p.size)) {
       token = cur_p.data[cur_p.selected].id;
     } else if (cur_p.size > 0) {
       // Fallback: pick highest probability after sampling

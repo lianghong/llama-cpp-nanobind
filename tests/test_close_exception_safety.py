@@ -4,8 +4,6 @@ Note: Direct mocking of nanobind C++ methods is not possible due to read-only at
 These tests verify the close() logic without artificial exception injection.
 """
 
-import pytest
-
 from llama_cpp import Llama, LlamaConfig
 
 

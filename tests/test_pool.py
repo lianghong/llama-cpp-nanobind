@@ -153,7 +153,9 @@ async def test_pool_load_balancing(model_path, pool_config):
 @pytest.mark.asyncio
 async def test_pool_warmup(model_path, pool_config):
     """Test pool with warmup enabled works correctly."""
-    async with LlamaPool(model_path, pool_size=2, warmup=True, config=pool_config) as pool:
+    async with LlamaPool(
+        model_path, pool_size=2, warmup=True, config=pool_config
+    ) as pool:
         result = await pool.generate("Test", max_tokens=4)
         assert isinstance(result, str)
         assert len(result) > 0

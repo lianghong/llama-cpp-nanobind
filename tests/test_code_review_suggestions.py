@@ -1,7 +1,5 @@
 """Test additional suggestions from code review."""
 
-import pytest
-
 from llama_cpp import Llama, LlamaConfig
 
 

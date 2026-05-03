@@ -265,6 +265,12 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         think_top_k=20,
         think_min_p=0.0,
     ),
+    # Qwen 3.5 (27B / 35B-A3B / 122B-A10B / 397B-A17B) — thinking on by default.
+    # Per Unsloth, thinking mode uses the same general-thinking sampling as
+    # the base config (temperature 1.0, top_p 0.95, top_k 20, min_p 0.0,
+    # presence_penalty 1.5, repeat_penalty disabled). Do NOT override with
+    # think_temperature=0.6 — that's a Qwen-3 (not 3.5) value and pushes
+    # thinking generation colder than upstream recommends.
     "qwen3.5": ModelConfig(
         ModelFamily.QWEN3_5,
         chat_format="chatml",
@@ -277,12 +283,8 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         presence_penalty=1.5,
         repeat_penalty=1.0,
         stop_sequences=["<|im_end|>", "<|endoftext|>"],
-        think_temperature=0.6,
-        think_top_p=0.95,
-        think_top_k=20,
-        think_min_p=0.0,
     ),
-    # Qwen3.5 Small (0.8B, 2B, 4B, 9B) — thinking disabled by default
+    # Qwen 3.5 Small (0.8B, 2B, 4B, 9B) — thinking disabled by default
     "qwen3.5-small": ModelConfig(
         ModelFamily.QWEN3_5,
         chat_format="chatml",
@@ -293,6 +295,22 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         min_p=0.0,
         max_ctx=262144,
         presence_penalty=1.5,
+        repeat_penalty=1.0,
+        stop_sequences=["<|im_end|>", "<|endoftext|>"],
+    ),
+    # Qwen 3.5 "Precise coding" preset — Unsloth's recommended settings for
+    # WebDev/Arena-style tasks: colder temp, presence_penalty off.
+    # Not auto-detected; opt in via UnifiedLLM(..., config_override="qwen3.5-coding").
+    "qwen3.5-coding": ModelConfig(
+        ModelFamily.QWEN3_5,
+        chat_format="chatml",
+        supports_thinking=True,
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        max_ctx=262144,
+        presence_penalty=0.0,
         repeat_penalty=1.0,
         stop_sequences=["<|im_end|>", "<|endoftext|>"],
     ),
@@ -326,7 +344,24 @@ def _is_gemma4_large(name_lower: str) -> bool:
     return any(marker in name_lower for marker in _GEMMA4_LARGE_MARKERS)
 
 
-def detect_from_metadata(model: "Llama") -> ModelConfig | None:
+# Qwen 3.5 sizes where thinking is disabled by default.
+_QWEN35_SMALL_SIZES: tuple[str, ...] = ("0.8b", "2b", "4b", "9b")
+
+
+def _classify_qwen35_variant(name_lower: str) -> ModelConfig:
+    """Pick the right Qwen 3.5 config for a name / filename.
+
+    Accepts either a metadata ``general.name`` (may contain spaces) or a
+    filename stem (dash-separated). Returns the small-variant config when a
+    known small size marker appears; otherwise the default Qwen 3.5 config.
+    """
+    for size in _QWEN35_SMALL_SIZES:
+        if f"-{size}" in name_lower or f" {size}" in name_lower:
+            return MODEL_CONFIGS["qwen3.5-small"]
+    return MODEL_CONFIGS["qwen3.5"]
+
+
+def detect_from_metadata(model: Llama) -> ModelConfig | None:
     """Detect model family using GGUF metadata (authoritative).
 
     Args:
@@ -344,12 +379,7 @@ def detect_from_metadata(model: "Llama") -> ModelConfig | None:
         # Architecture-based detection with name-based variant refinement
         if "qwen" in arch:
             if "qwen3.5" in name_lower or "qwen-3.5" in name_lower:
-                # Check if it's a small model (thinking disabled)
-                _QWEN35_SMALL_SIZES = {"0.8b", "2b", "4b", "9b"}
-                for size in _QWEN35_SMALL_SIZES:
-                    if f"-{size}" in name_lower or f" {size}" in name_lower:
-                        return MODEL_CONFIGS["qwen3.5-small"]
-                return MODEL_CONFIGS["qwen3.5"]
+                return _classify_qwen35_variant(name_lower)
             elif "2507" in name_lower:
                 if "thinking" in name_lower:
                     return MODEL_CONFIGS["qwen3-thinking-2507"]
@@ -395,7 +425,7 @@ def detect_from_metadata(model: "Llama") -> ModelConfig | None:
             # No specific config needed for now
             return None
 
-    except (RuntimeError, AttributeError):
+    except RuntimeError, AttributeError:
         # Metadata not available or model not loaded
         pass
 
@@ -432,14 +462,10 @@ def detect_model_family(model_path: str) -> ModelConfig:
             return MODEL_CONFIGS["qwen3-thinking-2507"]
         return MODEL_CONFIGS["qwen3-instruct-2507"]
 
-    # Qwen3.5 Small (0.8B, 2B, 4B, 9B) — thinking disabled by default
+    # Qwen 3.5 — size-based routing (thinking disabled on small variants).
     # NOTE: Early return here prevents the generic loop below from matching 'qwen3.5'
-    _QWEN35_SMALL_SIZES = {"0.8b", "2b", "4b", "9b"}
     if "qwen3.5" in filename_lower:
-        for size in _QWEN35_SMALL_SIZES:
-            if f"-{size}" in filename_lower:
-                return MODEL_CONFIGS["qwen3.5-small"]
-        return MODEL_CONFIGS["qwen3.5"]
+        return _classify_qwen35_variant(filename_lower)
 
     # Gemma 4 variants — routed by size marker (26B-A4B / 31B → large, else E2B/E4B)
     # NOTE: Early return prevents 'gemma' from matching Gemma 4 filenames in the generic loop
@@ -509,6 +535,15 @@ class Backend(ABC):
             Generated text response with thinking content removed if present.
         """
 
+    def strip_thinking(self, text: str) -> str:
+        """Remove thinking tags from generated text.
+
+        Default implementation returns the text unchanged. Backends that
+        produce interleaved thinking output (e.g. ChatTemplateBackend) should
+        override this to strip their reasoning markup.
+        """
+        return text
+
     @abstractmethod
     def generate_with_thinking(
         self,
@@ -551,7 +586,7 @@ class Backend(ABC):
             raise ValueError(f"max_tokens must be positive, got {requested}")
         # Count tokens with BOS to match actual generation
         tokens = self.llm.n_tokens(
-            formatted_text, add_special=bool(self.llm.config.add_bos)
+            formatted_text, add_special=self.llm._effective_add_bos
         )
         return self._calc_max_tokens_from_count(tokens, requested)
 
@@ -660,7 +695,7 @@ class ChatTemplateBackend(Backend):
 
         messages = self._build_messages(prompt, system_prompt, thinking=True)
         # Use _prepare_chat to format and tokenize once
-        formatted, _, n_tokens = self.llm._prepare_chat(messages)
+        _, _, n_tokens = self.llm._prepare_chat(messages)
         max_tokens = self._calc_max_tokens_from_count(n_tokens, max_tokens)
 
         temp = (
@@ -730,7 +765,9 @@ class ChatTemplateBackend(Backend):
             and self.config.supports_thinking
             and thinking
         ):
-            system_prompt = f"<|think|>{system_prompt}" if system_prompt else "<|think|>"
+            system_prompt = (
+                f"<|think|>{system_prompt}" if system_prompt else "<|think|>"
+            )
 
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -773,6 +810,11 @@ class ChatTemplateBackend(Backend):
                     break
         text = self._CONTROL_TOKENS.sub("", text)
         return text.strip()
+
+    def strip_thinking(self, text: str) -> str:
+        """Return only the answer portion of a thinking-aware response."""
+        _, answer = self._parse_thinking(text)
+        return answer
 
     def _parse_thinking(self, text: str) -> tuple[str, str]:
         """Parse thinking and answer from response.
@@ -998,6 +1040,19 @@ class UnifiedLLM:
         Raises:
             ValueError: If model family cannot be detected.
         """
+        # Initialize close-state FIRST, before any operation that can raise.
+        # If __init__ fails partway through, close() (including the atexit
+        # cleanup handler) needs to observe _closed=False to take the
+        # resource-release path rather than short-circuiting as "already
+        # closed" and leaking whatever was loaded so far.
+        self._closed: bool = False
+        # self.llm / self.backend are typed as non-None elsewhere; during
+        # __init__ they're transiently None until the model loads. Callers
+        # are shielded from that state by _check_closed(), which fires as
+        # soon as any public method runs.
+        self.llm: Llama = None  # type: ignore[assignment]
+        self.backend: Backend = None  # type: ignore[assignment]
+
         # Resolve model config from explicit family or auto-detect
         if family is not None:
             if isinstance(family, ModelFamily):
@@ -1069,12 +1124,11 @@ class UnifiedLLM:
 
         try:
             backend_cls = self.BACKEND_MAP[self.model_config.family]
-            self.backend: Backend = backend_cls(self.llm, self.model_config, n_ctx)
+            self.backend = backend_cls(self.llm, self.model_config, n_ctx)
         except Exception:
             self.llm.close()
+            self.llm = None  # type: ignore[assignment]
             raise
-
-        self._closed = False
 
         # Register for cleanup at exit (lazy registration on first instance)
         _register_unified_cleanup()
@@ -1163,16 +1217,46 @@ class UnifiedLLM:
     def strip_thinking(self, text: str) -> str:
         """Remove thinking tags from text, return only the answer.
 
+        Delegates to the backend's ``strip_thinking`` method. Backends that
+        don't produce thinking output return the text unchanged (ABC default).
+
         Args:
             text: Text potentially containing thinking tags.
 
         Returns:
             Text with thinking content removed.
         """
-        if isinstance(self.backend, ChatTemplateBackend):
-            _, answer = self.backend._parse_thinking(text)
-            return answer
-        return text
+        return self.backend.strip_thinking(text)
+
+    def sanitize_history(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Strip thinking / reasoning blocks from historical assistant turns.
+
+        Unsloth's Gemma 4 guidance is explicit: "only keep the final visible
+        answer in chat history. Do not feed prior thought blocks back into
+        the next turn." Qwen 3 / 3.5 thinking models benefit from the same
+        hygiene. Call this on your conversation list before each new turn:
+
+            history.append({"role": "assistant", "content": raw_response})
+            next_turn_messages = llm.sanitize_history(history) + [
+                {"role": "user", "content": next_user_prompt},
+            ]
+
+        Args:
+            messages: Conversation so far. Not mutated in place.
+
+        Returns:
+            New list with assistant-turn ``content`` run through the
+            backend's ``strip_thinking``. System/user turns pass through.
+        """
+        cleaned: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role == "assistant" and isinstance(content, str):
+                cleaned.append({**msg, "content": self.backend.strip_thinking(content)})
+            else:
+                cleaned.append(dict(msg))
+        return cleaned
 
     def __enter__(self) -> UnifiedLLM:
         """Context manager entry."""
@@ -1215,7 +1299,11 @@ class UnifiedLLM:
 
     def close(self) -> None:
         """Release model resources. Safe to call multiple times (idempotent)."""
-        if getattr(self, "_closed", True):
+        # _closed is set in __init__ before any operation that can raise, so
+        # direct access is safe. If close() runs after a partial __init__
+        # failure, self.llm / self.backend may still be None — the
+        # per-attribute guards below handle that.
+        if self._closed:
             return
         self._closed = True
         # Remove from instance tracking
@@ -1224,7 +1312,13 @@ class UnifiedLLM:
         if hasattr(self, "llm") and self.llm is not None:
             self.llm.close()
             self.llm = None  # type: ignore[assignment]
-        if hasattr(self, "backend"):
+        if hasattr(self, "backend") and self.backend is not None:
+            # Null the backend's reference to the closed Llama before
+            # dropping our own reference. This way any stray caller who
+            # stashed a `backend` handle gets a clean AttributeError instead
+            # of operating on a closed Llama (which would fail deeper with
+            # a less clear message).
+            self.backend.llm = None  # type: ignore[assignment]
             self.backend = None  # type: ignore[assignment]
         # Force GC to collect any reference cycles while interpreter is safe
         gc.collect()

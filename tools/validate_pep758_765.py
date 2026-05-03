@@ -64,17 +64,18 @@ def check_pep_758(file_path: Path) -> list[Violation]:
         )
         return violations
 
+    # Note: ast.parse already enforces PEP 758 — invalid syntax won't parse.
+    # This check is primarily for documentation/awareness. An ExceptHandler
+    # that captures to a name AND has a Tuple of exception types necessarily
+    # had parentheses in the source (otherwise it wouldn't have parsed).
     for node in ast.walk(tree):
-        if isinstance(node, ast.ExceptHandler):
-            # Check if exception handler has multiple exception types AND captures to a name
-            if node.name and node.type:
-                # Check if it's a Tuple without explicit parentheses
-                # Note: ast.parse already enforces PEP 758 - invalid syntax won't parse
-                # This check is primarily for documentation/awareness
-                if isinstance(node.type, ast.Tuple):
-                    # AST always represents valid syntax - if we see Tuple with name,
-                    # it means parentheses were present (otherwise it wouldn't parse)
-                    pass
+        if (
+            isinstance(node, ast.ExceptHandler)
+            and node.name
+            and node.type
+            and isinstance(node.type, ast.Tuple)
+        ):
+            pass  # AST confirms parentheses were present — nothing to flag.
 
     return violations
 

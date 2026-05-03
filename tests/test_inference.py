@@ -318,11 +318,17 @@ def test_special_tokens_extended(llm):
 # Auto-detect BOS test
 @requires_model
 def test_auto_detect_bos(llm):
-    """Test that add_bos is auto-detected from model preference."""
+    """Test that add_bos is auto-detected from model preference.
+
+    The user-supplied config is not mutated; the resolved effective value
+    lives on the instance as ``_effective_add_bos``.
+    """
     assert isinstance(llm.get_add_bos(), bool)
-    # Config should have been resolved from None to actual value
-    assert llm.config.add_bos is not None
-    assert isinstance(llm.config.add_bos, bool)
+    # User-supplied config is not mutated (None = "auto-detect").
+    assert llm.config.add_bos is None
+    # Resolved effective value is exposed on the instance.
+    assert isinstance(llm._effective_add_bos, bool)
+    assert llm._effective_add_bos == llm.get_add_bos()
 
 
 # Memory introspection tests

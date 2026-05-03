@@ -1,7 +1,5 @@
 """Test logging re-enable functionality."""
 
-import pytest
-
 from llama_cpp import Llama, LlamaConfig, disable_logging, reset_logging
 
 

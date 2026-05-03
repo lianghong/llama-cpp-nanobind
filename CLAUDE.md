@@ -451,7 +451,7 @@ On macOS, `brew install llama.cpp` provides headers and libraries that CMake aut
 
 UnifiedLLM auto-detects model families by filename patterns (with GGUF metadata refinement after load):
 - Qwen3 (with thinking/non-thinking mode detection, Instruct-2507 / Thinking-2507 variants)
-- Qwen3.5 (hybrid attention, 262K context / 1M via YaRN, thinking default-on for large models, disabled for 0.8B–9B)
+- Qwen3.5 (hybrid attention, 262K context / 1M via YaRN, thinking default-on for 27B / 35B-A3B / 122B-A10B / 397B-A17B, disabled for 0.8B–9B small variants). Opt-in `"qwen3.5-coding"` preset available for precise coding / WebDev workloads (`temperature=0.6`, `presence_penalty=0.0`).
 - Gemma (Gemma 2 / Gemma 3)
 - Gemma 4 (E2B/E4B → 128K ctx; 26B-A4B/31B → 256K ctx; thinking via `<|think|>` system-prompt prefix per Unsloth spec)
 - Mistral / Ministral (reasoning vs. instruct variants)
@@ -462,6 +462,15 @@ UnifiedLLM auto-detects model families by filename patterns (with GGUF metadata 
 - MiniCPM
 
 See `src/llama_cpp/unified.py` for family detection logic.
+
+### Multi-turn hygiene for thinking models
+
+Unsloth's Gemma 4 guidance (and it's good practice for Qwen 3 / 3.5 thinking variants too): **do not feed prior turns' thought blocks back into the next turn's context.** Call `UnifiedLLM.sanitize_history(messages)` before sending conversation history back to the model — it strips `<|channel>...<channel|>` (Gemma 4), `<think>...</think>` (Qwen), and `[THINK]...[/THINK]` blocks from historical `assistant` messages while leaving system/user turns intact.
+
+### Operational notes (per upstream)
+
+- **Qwen 3.5**: Prefer `UD-Q2_K_XL` or higher for a good size/accuracy balance. If you see gibberish, the context length may be set too low, or try `--cache-type-k bf16 --cache-type-v bf16`. Currently no Qwen 3.5 GGUF works in Ollama (separate mmproj vision files); use llama.cpp-compatible backends.
+- **Gemma 4**: **Do NOT use the CUDA 13.2 runtime for Gemma 4 GGUFs** — upstream flags this as producing poor outputs. Recommended quants: `Q8_0` for E2B/E4B, `UD-Q4_K_XL` for 26B-A4B / 31B.
 
 ## Translation Example (`examples/translate.py`)
 

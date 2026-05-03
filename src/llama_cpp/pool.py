@@ -126,22 +126,51 @@ class LlamaPool:
         self._available: asyncio.Queue[Llama | object] | None = None
         self._queue_initialized = False
         self._queue_init_lock = threading.Lock()
+        # Event loop the queue is bound to. asyncio.Queue is not portable
+        # across event loops — subsequent checkouts from a different loop
+        # would silently hang or raise. We record the loop at first-init
+        # time and raise a clear error on any mismatch.
+        self._bound_loop: asyncio.AbstractEventLoop | None = None
+        # Serializes close()/close_graceful() so a concurrent second call
+        # returns a no-op instead of re-entering the close path.
+        self._close_lock = threading.Lock()
 
     def _ensure_queue_initialized(self) -> None:
         """Lazily initialize asyncio.Queue on first async use.
 
         This avoids creating the queue outside an event loop, which causes
         'RuntimeError: no running event loop' in Python 3.10+.
+
+        Also records the binding event loop so we can detect cross-loop
+        misuse (an asyncio.Queue belongs to one loop; using it from another
+        would silently hang or raise deep in asyncio internals).
         """
+        current_loop = asyncio.get_running_loop()
         if self._queue_initialized:
+            if self._bound_loop is not current_loop:
+                raise RuntimeError(
+                    "LlamaPool was first used on a different event loop. "
+                    "asyncio.Queue is bound to one loop; reusing this pool "
+                    "from another loop would hang. Create a new LlamaPool "
+                    "per event loop, or reuse the pool within a single loop."
+                )
             return
         with self._queue_init_lock:
             if self._queue_initialized:
+                if self._bound_loop is not current_loop:
+                    raise RuntimeError(
+                        "LlamaPool was first used on a different event loop. "
+                        "asyncio.Queue is bound to one loop; reusing this "
+                        "pool from another loop would hang. Create a new "
+                        "LlamaPool per event loop, or reuse the pool within "
+                        "a single loop."
+                    )
                 return
             queue: asyncio.Queue[Llama | object] = asyncio.Queue()
             for instance in self.instances:
                 queue.put_nowait(instance)
             self._available = queue
+            self._bound_loop = current_loop
             self._queue_initialized = True
 
     def _warmup_instances(self) -> None:
@@ -172,11 +201,15 @@ class LlamaPool:
                 instance.ctx.kv_cache_clear()
             except (RuntimeError, ValueError) as e:
                 # Expected errors from model inference - warmup is optional optimization
-                logging.warning("Warmup failed for instance %d (non-fatal): %s", i + 1, e)
+                logging.warning(
+                    "Warmup failed for instance %d (non-fatal): %s", i + 1, e
+                )
             except Exception as e:
                 # Unexpected errors during warmup
                 logging.warning(
-                    "Unexpected error during warmup for instance %d (non-fatal): %s", i + 1, e
+                    "Unexpected error during warmup for instance %d (non-fatal): %s",
+                    i + 1,
+                    e,
                 )
 
     async def _checkout_instance(self, timeout: float | None = None) -> Llama:
@@ -413,9 +446,10 @@ class LlamaPool:
             >>> # ... use pool ...
             >>> pool.close()
         """
-        if self._closed:
-            return
-        self._closed = True
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
 
         # If queue was never initialized (pool never used), skip queue operations
         if self._available is not None:
@@ -460,16 +494,22 @@ class LlamaPool:
             >>> # ... use pool ...
             >>> await pool.close_graceful(timeout=10.0)
         """
-        if self._closed:
-            return
-        self._closed = True
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
 
         # If queue was never initialized (pool never used), skip graceful wait
         if self._available is not None:
             # Inject sentinel to reject new checkout attempts
             self._available.put_nowait(_POOL_CLOSED)
 
-            # Wait for checked-out instances to be returned to the queue
+            # Wait for checked-out instances to be returned to the queue.
+            # Re-inject the sentinel whenever we encounter it so concurrent
+            # waiters in _checkout_instance still wake up with RuntimeError.
+            # To avoid a busy-loop when only the sentinel remains (e.g.
+            # in-flight requests are stuck), sleep briefly after re-injecting
+            # before retrying the get.
             returned = 0
             try:
                 deadline = asyncio.get_running_loop().time() + timeout
@@ -481,13 +521,18 @@ class LlamaPool:
                         item = await asyncio.wait_for(
                             self._available.get(), timeout=remaining
                         )
-                        if item is _POOL_CLOSED:
-                            # Put it back for other waiters, don't count it
-                            self._available.put_nowait(_POOL_CLOSED)
-                            continue
-                        returned += 1
                     except TimeoutError:
                         break
+                    if item is _POOL_CLOSED:
+                        # Put it back for other waiters, then yield so any
+                        # woken waiter can consume it before we retry get().
+                        # Without the sleep, dequeue-then-re-inject would
+                        # burn the remaining timeout window in a tight loop
+                        # when the sentinel is the only item in the queue.
+                        self._available.put_nowait(_POOL_CLOSED)
+                        await asyncio.sleep(0.01)
+                        continue
+                    returned += 1
             except Exception:
                 pass  # Best-effort drain; force-close below handles the rest
 
