@@ -38,7 +38,8 @@ _cleanup_registered = False
 _llama_initialized = False
 _cleanup_lock = threading.Lock()
 
-# ggml_type constants for KV cache quantization (cache_type_k, cache_type_v)
+# ggml_type constants for KV cache quantization (cache_type_k, cache_type_v).
+# Values mirror ggml.h's `enum ggml_type`.
 GGML_TYPE_F32 = 0
 GGML_TYPE_F16 = 1  # default
 GGML_TYPE_Q4_0 = 2
@@ -46,6 +47,23 @@ GGML_TYPE_Q4_1 = 3
 GGML_TYPE_Q5_0 = 6
 GGML_TYPE_Q5_1 = 7
 GGML_TYPE_Q8_0 = 8
+GGML_TYPE_IQ4_NL = 20
+GGML_TYPE_BF16 = 30
+
+# ggml_types accepted by llama.cpp for KV cache (k/v). Used for validation in
+# LlamaConfig. Keep in sync with llama.cpp's llama_kv_cache_unified; unsupported
+# types (e.g. k-quants like Q4_K) crash context construction.
+_VALID_CACHE_TYPES: frozenset[int] = frozenset({
+    GGML_TYPE_F32,
+    GGML_TYPE_F16,
+    GGML_TYPE_BF16,
+    GGML_TYPE_Q4_0,
+    GGML_TYPE_Q4_1,
+    GGML_TYPE_Q5_0,
+    GGML_TYPE_Q5_1,
+    GGML_TYPE_Q8_0,
+    GGML_TYPE_IQ4_NL,
+})
 
 # Configuration constants
 _ALL_GPU_LAYERS_SENTINEL = (
@@ -280,6 +298,28 @@ class LlamaConfig:
             raise ValidationError("n_gpu_layers must be >= -1 (-1 means all layers)")
         if self.n_seq_max < 1:
             raise ValidationError("n_seq_max must be at least 1")
+        if self.cache_type_k not in _VALID_CACHE_TYPES:
+            raise ValidationError(
+                f"cache_type_k={self.cache_type_k} is not a supported ggml_type "
+                f"for KV cache. Use one of the GGML_TYPE_* constants from "
+                f"llama_cpp (F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL)."
+            )
+        if self.cache_type_v not in _VALID_CACHE_TYPES:
+            raise ValidationError(
+                f"cache_type_v={self.cache_type_v} is not a supported ggml_type "
+                f"for KV cache. Use one of the GGML_TYPE_* constants from "
+                f"llama_cpp (F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL)."
+            )
+        # Quantized V-cache requires flash attention; llama.cpp produces
+        # NaN/garbage output otherwise. F16/F32/BF16 V is safe without FA.
+        if (
+            self.cache_type_v not in {GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_BF16}
+            and self.flash_attn == 0
+        ):
+            raise ValidationError(
+                "Quantized cache_type_v requires flash_attn=1 "
+                "(quantized V without flash attention produces invalid output)"
+            )
 
 
 class Llama:

@@ -435,6 +435,7 @@ MALLOC_CHECK_=3 python examples/verify_double_free.py
 13. **Translation hallucination**: LLMs may editorialize, reverse sentiment, or inject opinions when translating opinionated/sarcastic text. Mitigate with: low temperature (0.1–0.3), explicit system prompt rules against editorializing/moral hedging, and structured prompt sections (FAITHFULNESS/FLUENCY/STYLE) that models attend to better than flat rule lists
 14. **14B+ models on 16GB Apple Silicon**: Expect ~10 tok/s generation (memory-bandwidth-limited). Default context 10240 may crash Metal; use `--ctx 4096`. Performance is near hardware ceiling — use 8B or 4B models for better throughput
 15. **Streaming thread leaks**: If `generate_stream()` is terminated early and C++ generation is stuck, a warning is logged. Avoid reusing the instance until thread completes
+16. **Quantized KV cache constraints**: `cache_type_k` / `cache_type_v` accept only a whitelisted set of ggml_types (F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL). k-quants (Q4_K, Q5_K, Q6_K, …) are NOT supported by llama.cpp's KV cache and are rejected by `LlamaConfig` validation. Quantized V (anything other than F32/F16/BF16) requires `flash_attn=1` — without FA llama.cpp produces NaN/garbage output, so `LlamaConfig` raises `ValidationError` for this combination
 
 ## Integration with llama.cpp
 
@@ -491,6 +492,14 @@ Key design decisions:
 - **Low default temperature (0.3)**: Reduces hallucination and sentiment drift in translations
 - **`--temperature` CLI arg**: Overrides the model's default temperature after construction via `llm.model_config.temperature`
 - **VRAM check**: Estimates GPU memory usage before loading and warns if insufficient
+
+## Recent Improvements (2026-05-08)
+
+### Quantized KV cache ergonomics
+- **`UnifiedLLM`**: `cache_type_k` / `cache_type_v` kwargs now pass through to the underlying `LlamaConfig` (default `GGML_TYPE_F16` = 1 preserves prior behavior). Flash attention is already on by default, so `cache_type_v=GGML_TYPE_Q8_0` works out of the box.
+- **New constants** exported from `llama_cpp`: `GGML_TYPE_BF16` (30), `GGML_TYPE_IQ4_NL` (20). BF16 unblocks the Qwen 3.5 `--cache-type-k bf16 --cache-type-v bf16` recipe without magic numbers.
+- **`LlamaConfig` validation**: rejects unsupported ggml_types for KV cache at construction (previously surfaced as an opaque `ModelLoadError` deep in llama.cpp). Also rejects quantized V with `flash_attn=0`, which would otherwise produce NaN/garbage output. Whitelist lives in the `_VALID_CACHE_TYPES` frozenset in `src/llama_cpp/llama.py`.
+- **Docs**: `docs/API.md` gains a "Quantized KV cache" subsection under `LlamaConfig` with the full constant table and usage example; `UnifiedLLM` constructor table updated.
 
 ## Recent Improvements (v0.4.0, 2026-05-03)
 

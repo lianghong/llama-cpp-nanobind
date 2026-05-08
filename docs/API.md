@@ -151,7 +151,9 @@ if __name__ == "__main__":
 | `use_mmap` | True | Memory-map model |
 | `use_mlock` | False | mlock model into RAM |
 | `offload_kqv` | True | Offload K/Q/V to GPU |
-| `flash_attn` | 1 | Flash-attention mode |
+| `flash_attn` | 1 | Flash-attention mode (required for quantized V cache) |
+| `cache_type_k` | `GGML_TYPE_F16` (1) | ggml_type for K cache — see "Quantized KV cache" below |
+| `cache_type_v` | `GGML_TYPE_F16` (1) | ggml_type for V cache — see "Quantized KV cache" below |
 | `embeddings` | False | Enable embeddings (required for `embed()` and `create_embedding()`) |
 | `add_bos` | None | Add BOS during tokenization (None = auto-detect from model) |
 | `parse_special` | False | Parse special tokens |
@@ -159,7 +161,43 @@ if __name__ == "__main__":
 | `verbose` | True | Control logging |
 | `seed` | -1 | RNG seed (-1 = random) |
 
-Raises `ValidationError` if `n_ctx < 1`, `n_batch < 1`, `n_seq_max < 1`, or `n_gpu_layers < -1`.
+Raises `ValidationError` if:
+- `n_ctx < 1`, `n_batch < 1`, `n_seq_max < 1`, or `n_gpu_layers < -1`
+- `cache_type_k` / `cache_type_v` is not one of the supported ggml_types listed below
+- `cache_type_v` is quantized (not F32/F16/BF16) and `flash_attn == 0` — quantized V without flash attention produces NaN/garbage output in llama.cpp
+
+#### Quantized KV cache
+
+Constants exported from `llama_cpp` (mirror `ggml.h`'s `enum ggml_type`):
+
+| Constant | Value | Notes |
+| --- | --- | --- |
+| `GGML_TYPE_F32` | 0 | Full precision |
+| `GGML_TYPE_F16` | 1 | Default |
+| `GGML_TYPE_BF16` | 30 | Recommended for Qwen 3.5 per upstream |
+| `GGML_TYPE_Q4_0` | 2 | |
+| `GGML_TYPE_Q4_1` | 3 | |
+| `GGML_TYPE_Q5_0` | 6 | |
+| `GGML_TYPE_Q5_1` | 7 | |
+| `GGML_TYPE_Q8_0` | 8 | Good size/quality balance |
+| `GGML_TYPE_IQ4_NL` | 20 | |
+
+```python
+from llama_cpp import Llama, LlamaConfig, GGML_TYPE_Q8_0
+
+llm = Llama(
+    "models/Qwen3-8B-Q6_K.gguf",
+    config=LlamaConfig(
+        model_path="models/Qwen3-8B-Q6_K.gguf",
+        n_ctx=8192,
+        cache_type_k=GGML_TYPE_Q8_0,
+        cache_type_v=GGML_TYPE_Q8_0,
+        flash_attn=1,  # required for quantized V
+    ),
+)
+```
+
+k-quants (Q4_K, Q5_K, Q6_K, etc.) are NOT supported by llama.cpp for KV cache and are rejected by validation.
 
 ### SamplingParams
 
@@ -218,7 +256,9 @@ UnifiedLLM(
     n_ubatch: int = 512,
     n_gpu_layers: int = -1,
     verbose: bool = False,
-    family: str | ModelFamily | None = None
+    family: str | ModelFamily | None = None,
+    cache_type_k: int = 1,   # GGML_TYPE_F16
+    cache_type_v: int = 1,   # GGML_TYPE_F16
 )
 ```
 
@@ -229,6 +269,22 @@ UnifiedLLM(
 - `n_gpu_layers`: Layers to offload to GPU (-1 = all).
 - `verbose`: Enable verbose logging.
 - `family`: Explicit model family override (auto-detects if None).
+- `cache_type_k` / `cache_type_v`: ggml_type for K/V cache. Defaults to F16. Pass e.g. `GGML_TYPE_Q8_0` or `GGML_TYPE_BF16` from `llama_cpp` to quantize. Flash attention is enabled by default (`flash_attn=1`), which is required for quantized V. See [Quantized KV cache](#quantized-kv-cache) above for the full constant list and validation rules.
+
+**Quantized KV cache example**
+
+```python
+from llama_cpp import GGML_TYPE_Q8_0
+from llama_cpp.unified import UnifiedLLM
+
+# Halves KV cache VRAM vs F16 with minimal quality loss
+llm = UnifiedLLM(
+    "models/Qwen3-8B-Q6_K.gguf",
+    n_ctx=8192,
+    cache_type_k=GGML_TYPE_Q8_0,
+    cache_type_v=GGML_TYPE_Q8_0,
+)
+```
 
 **Context Manager**
 

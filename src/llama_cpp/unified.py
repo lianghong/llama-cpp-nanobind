@@ -1024,6 +1024,8 @@ class UnifiedLLM:
         n_gpu_layers: int = -1,
         verbose: bool = False,
         family: str | ModelFamily | None = None,
+        cache_type_k: int = 1,
+        cache_type_v: int = 1,
     ) -> None:
         """Initialize UnifiedLLM.
 
@@ -1036,6 +1038,10 @@ class UnifiedLLM:
             verbose: Enable verbose logging.
             family: Explicit model family override (str key or ModelFamily enum).
                    If None, auto-detects from model path.
+            cache_type_k: ggml_type for K cache (default 1=f16). Use
+                ``GGML_TYPE_Q8_0`` etc. from ``llama_cpp`` to quantize.
+            cache_type_v: ggml_type for V cache (default 1=f16). Quantized V
+                typically requires flash attention, which is enabled by default.
 
         Raises:
             ValueError: If model family cannot be detected.
@@ -1086,6 +1092,8 @@ class UnifiedLLM:
             n_gpu_layers=n_gpu_layers,
             offload_kqv=True,
             flash_attn=1,
+            cache_type_k=cache_type_k,
+            cache_type_v=cache_type_v,
             verbose=verbose,
         )
 
