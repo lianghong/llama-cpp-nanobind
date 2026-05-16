@@ -355,10 +355,12 @@ ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
 13. **Negative value validation**: Always validate that token counts and similar integer values are non-negative before arithmetic operations
 14. **Training context awareness**: `UnifiedLLM` logs warning when `n_ctx > model.n_ctx_train()` — generation quality may degrade beyond training context
 15. **Close checks**: All public methods that access `self.model` or `self.ctx` must call `_check_closed()` first to provide clear error messages instead of `AttributeError` on closed instances
+16. **Prompt-prefix cache reuse (`cache_prompt`)**: The `Llama` instance keeps a `_cached_prompt_tokens` mirror of seq 0's contents. When `reset_kv_cache=False` and `cache_prompt=True` (defaults for continuation), `_apply_prefix_reuse(primed)` computes the LCP, calls `kv_cache_seq_rm(0, n_match, -1)` to trim the divergent suffix, and the C++ generator decodes only `priming[n_match:]` via the `skip_decode_prefix` parameter. **Mirror invariant**: `len(_cached_prompt_tokens) == kv_pos_max + 1` whenever caching is active. **Invalidate the mirror** (`_invalidate_prompt_cache()`) from any code path that mutates KV outside the generation loop: `kv_cache_clear`, direct `kv_cache_seq_*`, `set_state_data`, `load_state`, `reset`, `embed`/`create_embedding`, `close`. **Hybrid models** (Qwen3.5, Granite 4 hybrid, …) report `memory_can_shift()=False`; for them `seq_rm(seq, p0, -1)` returns `False` without modifying KV — `_apply_prefix_reuse` detects this and falls back to a full `kv_cache_clear` so KV doesn't end up with stale tokens past the new prefix
+17. **BOS rule with `cache_prompt`**: When `reset_kv_cache=False` AND `cache_prompt=True`, the BOS prepend rule reverts to `_effective_add_bos` (model preference) rather than the legacy "suppress BOS on continuation" rule. The matching BOS already sits at position 0 of the mirror from the first `reset_kv_cache=True` turn, so LCP covers the BOS slot and the suffix-only decode lines up. C++'s own `prompt[0] != bos` guard prevents double-BOS if the user already tokenized with BOS. The legacy rule (suppress BOS) only applies when `cache_prompt=False`
 
 ### Model File Requirement
 
-Default test model: `./models/Qwen3-8B-Q6_K.gguf`
+Default test model: `./models/Qwen3.5-4B-Q4_K_M.gguf` (override via `LLAMA_TEST_MODEL`).
 
 Update `conftest.py` if using different model paths.
 
@@ -450,38 +452,45 @@ On macOS, `brew install llama.cpp` provides headers and libraries that CMake aut
 
 ## Model Support
 
-UnifiedLLM auto-detects model families by filename patterns (with GGUF metadata refinement after load):
-- Qwen3 (with thinking/non-thinking mode detection, Instruct-2507 / Thinking-2507 variants)
-- Qwen3.5 (hybrid attention, 262K context / 1M via YaRN, thinking default-on for 27B / 35B-A3B / 122B-A10B / 397B-A17B, disabled for 0.8B–9B small variants). Opt-in `"qwen3.5-coding"` preset available for precise coding / WebDev workloads (`temperature=0.6`, `presence_penalty=0.0`).
-- Gemma (Gemma 2 / Gemma 3)
-- Gemma 4 (E2B/E4B → 128K ctx; 26B-A4B/31B → 256K ctx; thinking via `<|think|>` system-prompt prefix per Unsloth spec)
-- Mistral / Ministral (reasoning vs. instruct variants)
-- GPT-OSS
-- Phi-4
-- GLM4 (with GLM-4.7 thinking mode support, REAP compression variants)
-- Granite (including Granite 4.x `granitehybrid` / `granitemoe` via metadata arch detection; thinking mode enabled, `<|end_of_text|>`/`<|endoftext|>` stops, 131K ctx, `temperature=0.7`/`top_p=0.9`/`top_k=40` defaults)
-- MiniCPM
+UnifiedLLM intentionally supports a curated set of architectures. Other GGUFs are rejected at construction time with `UnsupportedModelError` listing the supported families. For unsupported models, drop to the lower-level `Llama` class.
 
-See `src/llama_cpp/unified.py` for family detection logic.
+| Family | Variants | Context | Sampling defaults (general / thinking) | Source |
+|---|---|---|---|---|
+| **Qwen 3.5** | 0.8B / 2B / 4B / 9B (small, thinking off); 27B / 35B-A3B / 122B-A10B / 397B-A17B (thinking on) | 262K (1M via YaRN) | T=0.7/top_p=0.8 (small), T=1.0/top_p=0.95 (thinking); top_k=20, presence_penalty=1.5, repeat_penalty=1.0 | https://unsloth.ai/docs/models/qwen3.5 |
+| **Qwen 3.6** | 27B dense, 35B-A3B MoE; thinking + instruct (general / reasoning) modes | 262K (1M via YaRN) | Thinking T=1.0/top_p=0.95; instruct general T=0.7/top_p=0.8; instruct reasoning T=1.0/top_p=0.95; top_k=20, presence_penalty=1.5 | https://unsloth.ai/docs/models/qwen3.6 |
+| **Gemma 4** | E2B / E4B (128K), 26B-A4B / 31B (256K). Thinking via `<\|think\|>` system-prompt prefix per Unsloth spec. | 128K / 256K | T=1.0, top_p=0.95, top_k=64, repeat_penalty=1.0 | https://unsloth.ai/docs/models/gemma-4 |
+| **IBM Granite 4.1** | 3B / 8B / 30B dense | 16K min, 131K max | Deterministic: T=0.0, top_p=1.0, top_k=0 | https://unsloth.ai/docs/models/ibm-granite-4.1 |
+
+**Opt-in presets** (auto-detection picks the family default; pass `family="..."` to override):
+
+- `qwen3.5-coding`: Qwen 3.5 thinking with T=0.6, presence_penalty=0.0 — precise coding / WebDev / Arena.
+- `qwen3.6-coding`: same recipe for Qwen 3.6.
+- `qwen3.6-instruct` / `qwen3.6-instruct-reasoning`: non-thinking variants of Qwen 3.6 (general vs higher-temp reasoning).
+
+`UnifiedLLM` exposes a multi-turn `chat(messages, *, thinking=False, sanitize_history=True, reset_kv_cache=True, cache_prompt=True)` method that auto-strips prior thinking blocks from assistant turns before sending. Set `sanitize_history=False` to opt out (e.g. when replaying a saved transcript verbatim). The single-turn `generate(prompt, ...)` and `generate_with_thinking(prompt, ...)` entry points remain for non-conversation workloads.
+
+See `src/llama_cpp/unified.py` for the detection state machine: filename match (`detect_model_family`) → metadata refinement after load (`detect_from_metadata`).
 
 ### Multi-turn hygiene for thinking models
 
-Unsloth's Gemma 4 guidance (and it's good practice for Qwen 3 / 3.5 thinking variants too): **do not feed prior turns' thought blocks back into the next turn's context.** Call `UnifiedLLM.sanitize_history(messages)` before sending conversation history back to the model — it strips `<|channel>...<channel|>` (Gemma 4), `<think>...</think>` (Qwen), and `[THINK]...[/THINK]` blocks from historical `assistant` messages while leaving system/user turns intact.
+Unsloth's Gemma 4 guidance (and the same applies to Qwen 3.5 / 3.6 thinking variants): **do not feed prior turns' thought blocks back into the next turn's context.** `UnifiedLLM.chat(...)` does this automatically via `sanitize_history=True` (default). The underlying helper `UnifiedLLM.sanitize_history(messages)` is also exposed for callers using `Llama.create_chat_completion` directly — it strips `<|channel>...<channel|>` (Gemma 4), `<think>...</think>` (Qwen), and `[THINK]...[/THINK]` blocks from historical `assistant` messages while leaving system/user turns intact.
 
 ### Operational notes (per upstream)
 
 - **Qwen 3.5**: Prefer `UD-Q2_K_XL` or higher for a good size/accuracy balance. If you see gibberish, the context length may be set too low, or try `--cache-type-k bf16 --cache-type-v bf16`. Currently no Qwen 3.5 GGUF works in Ollama (separate mmproj vision files); use llama.cpp-compatible backends.
+- **Qwen 3.6**: MTP variants (`Qwen3.5-4B-Q4_K_M-MTP.gguf` style) are runtime-only and accept the same sampling presets as the base model. Disable thinking via `--chat-template-kwargs '{"enable_thinking":false}'` or pass `family="qwen3.6-instruct"` to UnifiedLLM.
 - **Gemma 4**: **Do NOT use the CUDA 13.2 runtime for Gemma 4 GGUFs** — upstream flags this as producing poor outputs. Recommended quants: `Q8_0` for E2B/E4B, `UD-Q4_K_XL` for 26B-A4B / 31B.
+- **Granite 4.1**: Same CUDA 13.2 caveat as Gemma 4. Deterministic sampling means temperature=0.0 by default; override via the `Llama` sampling kwargs if you need creativity.
 
 ## Translation Example (`examples/translate.py`)
 
 General-purpose translation tool using `UnifiedLLM` with configurable target language:
 
 ```bash
-python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --ctx 8192
-python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -t Japanese
-python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --thinking
-python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --temperature 0.1 -o
+python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --ctx 8192
+python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf -t Japanese
+python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --thinking
+python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --temperature 0.1 -o
 ```
 
 Key design decisions:
@@ -492,6 +501,19 @@ Key design decisions:
 - **Low default temperature (0.3)**: Reduces hallucination and sentiment drift in translations
 - **`--temperature` CLI arg**: Overrides the model's default temperature after construction via `llm.model_config.temperature`
 - **VRAM check**: Estimates GPU memory usage before loading and warns if insufficient
+
+## Recent Improvements (2026-05-16)
+
+### Prompt-prefix KV cache reuse (`cache_prompt=True`)
+
+- **New `cache_prompt: bool = True` kwarg** on `Llama.generate`, `generate_stream`, `create_chat_completion`, `_generate_with_token_count`, plus their async wrappers. When paired with `reset_kv_cache=False`, the wrapper trims KV to the longest common prefix with the new prompt and decodes only the divergent suffix.
+- **C++ `skip_decode_prefix` parameter** on the five `generate_tokens_*` entry points. Sampler still accepts the full priming for penalty windows; only `priming[skip:]` is fed to `llama_decode`. Default `0` preserves legacy behavior.
+- **Mirror state**: `Llama._cached_prompt_tokens` tracks what's currently in seq 0. Invalidated by `kv_cache_clear`, `reset`, direct `kv_cache_seq_*`, `set_state_data`, `load_state`, `embed`/`create_embedding`, `close`.
+- **Hybrid-model fallback**: when `llama_memory_seq_rm(seq, p0, -1)` returns `False` (Qwen3.5, Granite 4 hybrid, some flash-attn configs report `memory_can_shift()=False`), `_apply_prefix_reuse` falls back to `kv_cache_clear` + full re-prime — correctness preserved, speedup lost for those models.
+- **BOS rule update**: `cache_prompt=True` continuations use the model's BOS preference; the legacy "suppress BOS when reset_kv_cache=False" rule applies only when `cache_prompt=False`.
+- **Tests**: 12 new tests in `tests/test_prefix_reuse.py` covering empty cache, full LCP, partial LCP, mirror invalidation across KV-mutating APIs, `cache_prompt=False` opt-out, and parity-of-leading-tokens with a fresh re-prime. Verified on a shiftable model (Gemma 4) and a hybrid model (Qwen 3.5).
+- **Behavior change for `reset_kv_cache=False` callers**: with the new default `cache_prompt=True`, divergent prompts now trim KV to LCP instead of appending to the end. For "stitch arbitrary prompts" semantics, pass `cache_prompt=False`.
+- **Docs**: `docs/API.md` "Session-Style Continuation & Prompt-Prefix Cache Reuse" section.
 
 ## Recent Improvements (2026-05-08)
 

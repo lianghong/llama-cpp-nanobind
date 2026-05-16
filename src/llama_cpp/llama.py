@@ -53,17 +53,19 @@ GGML_TYPE_BF16 = 30
 # ggml_types accepted by llama.cpp for KV cache (k/v). Used for validation in
 # LlamaConfig. Keep in sync with llama.cpp's llama_kv_cache_unified; unsupported
 # types (e.g. k-quants like Q4_K) crash context construction.
-_VALID_CACHE_TYPES: frozenset[int] = frozenset({
-    GGML_TYPE_F32,
-    GGML_TYPE_F16,
-    GGML_TYPE_BF16,
-    GGML_TYPE_Q4_0,
-    GGML_TYPE_Q4_1,
-    GGML_TYPE_Q5_0,
-    GGML_TYPE_Q5_1,
-    GGML_TYPE_Q8_0,
-    GGML_TYPE_IQ4_NL,
-})
+_VALID_CACHE_TYPES: frozenset[int] = frozenset(
+    {
+        GGML_TYPE_F32,
+        GGML_TYPE_F16,
+        GGML_TYPE_BF16,
+        GGML_TYPE_Q4_0,
+        GGML_TYPE_Q4_1,
+        GGML_TYPE_Q5_0,
+        GGML_TYPE_Q5_1,
+        GGML_TYPE_Q8_0,
+        GGML_TYPE_IQ4_NL,
+    }
+)
 
 # Configuration constants
 _ALL_GPU_LAYERS_SENTINEL = (
@@ -370,6 +372,14 @@ class Llama:
         self._lora_configs: list[
             tuple[str, float]
         ] = []  # (path, scale) for reapplication
+        # Mirror of tokens currently materialized in seq 0 of the KV cache.
+        # Used by cache_prompt-style prefix reuse: when a new prompt shares
+        # a leading prefix with this list, we trim the divergent suffix from
+        # the KV cache and only decode the new tail. Any code path that
+        # mutates KV state outside the generation loop (kv_cache_clear,
+        # kv_cache_seq_*, set_state_data, load_state, reset) must call
+        # _invalidate_prompt_cache() to keep this mirror consistent.
+        self._cached_prompt_tokens: list[int] = []
 
         # Apply verbose setting with class-level synchronization
         # WARNING: This affects logging globally, not per-instance.
@@ -599,6 +609,9 @@ class Llama:
                 finally:
                     self.model = None
 
+            # Drop prompt-cache mirror — KV is gone, mirror is meaningless
+            self._cached_prompt_tokens = []
+
             # Mark as closed AFTER attempting all cleanup
             self._closed = True
 
@@ -681,6 +694,7 @@ class Llama:
         """Clear the KV cache."""
         self._check_closed()
         self.ctx.kv_cache_clear()
+        self._invalidate_prompt_cache()
 
     def token_bos(self) -> int:
         """Return BOS token id."""
@@ -839,6 +853,69 @@ class Llama:
             self._metadata_cache = result
         return self._metadata_cache
 
+    def _invalidate_prompt_cache(self) -> None:
+        """Drop the mirror of KV-cached prompt tokens.
+
+        Call after any operation that mutates seq 0 outside of the normal
+        generation flow (full kv_cache_clear, direct kv_cache_seq_*,
+        set_state_data, load_state, ctx.reset). Subsequent generations will
+        fall back to a full prompt decode until the mirror is rebuilt.
+        """
+        self._cached_prompt_tokens = []
+
+    def _apply_prefix_reuse(self, new_tokens: list[int]) -> int:
+        """Trim KV seq 0 to the longest common prefix with ``new_tokens``.
+
+        Returns the number of leading tokens that are guaranteed to be in the
+        KV cache after this call (i.e. the LCP length). The caller is
+        responsible for decoding ``new_tokens[n_match:]`` and updating
+        ``self._cached_prompt_tokens`` once generation begins.
+
+        If LCP equals the full cached length, no llama_memory_seq_rm call is
+        issued. If LCP is shorter, the divergent suffix is removed from KV
+        and ``cur_pos_`` is updated by the C++ binding.
+
+        Hybrid-attention models (Qwen3.5, Granite 4 hybrid, …) and other
+        configurations report ``memory_can_shift() == False``; for those,
+        ``llama_memory_seq_rm(seq, p0, -1)`` returns False without modifying
+        the KV cache. In that case we fall back to a full clear so KV stays
+        consistent with the mirror — caller pays the full prompt-decode cost
+        for that turn but correctness is preserved.
+
+        The mirror is replaced with ``new_tokens`` here; generation appends
+        produced tokens via _commit_generation_to_cache. On unexpected error
+        the caller should invalidate the mirror via _invalidate_prompt_cache.
+        """
+        cached = self._cached_prompt_tokens
+        n_match = 0
+        limit = min(len(cached), len(new_tokens))
+        for i in range(limit):
+            if cached[i] != new_tokens[i]:
+                break
+            n_match += 1
+        if n_match < len(cached):
+            # Trim divergent suffix; bindings update cur_pos_ via seq_pos_max+1
+            # iff the trim succeeded. Hybrid-attention models silently refuse
+            # mid-sequence trim; fall back to a full clear so KV doesn't end
+            # up with stale tokens past the new prefix.
+            ok = self.ctx.kv_cache_seq_rm(0, n_match, -1)
+            if not ok:
+                self.ctx.kv_cache_clear()
+                self._cached_prompt_tokens = list(new_tokens)
+                return 0
+        # Mirror the new prompt; generation extends it as tokens arrive.
+        self._cached_prompt_tokens = list(new_tokens)
+        return n_match
+
+    def _commit_generation_to_cache(self, generated: Sequence[int]) -> None:
+        """Append generated tokens to the prompt-cache mirror.
+
+        Stop tokens are NOT decoded and NOT in ``generated`` (see
+        bindings/llama_cpp.cpp stop-handling), so this is just a tail extend.
+        """
+        if generated:
+            self._cached_prompt_tokens.extend(generated)
+
     def _apply_adapters(self) -> None:
         """Push current adapter list to the C++ context."""
         scales = [scale for _, scale in self._lora_configs]
@@ -860,6 +937,7 @@ class Llama:
                 "Embeddings not enabled. Set embeddings=True in LlamaConfig."
             )
         self.ctx.kv_cache_clear()
+        self._invalidate_prompt_cache()
         tokens = self.tokenize(text)
         self.ctx.decode(tokens, return_logits=False)
         return list(self.ctx.embeddings())
@@ -890,6 +968,10 @@ class Llama:
 
         data = []
         total_tokens = 0
+        # Each embedding pass clears KV; ensure prompt-cache mirror is dropped
+        # once for the batch — subsequent loop iterations re-clear, but the
+        # mirror stays empty regardless.
+        self._invalidate_prompt_cache()
         for i, text in enumerate(inputs):
             tokens = self.tokenize(text)
             total_tokens += len(tokens)
@@ -1022,6 +1104,7 @@ class Llama:
         grammar: Any | None = None,
         reset_kv_cache: bool = True,
         add_bos: bool | None = None,
+        cache_prompt: bool = True,
     ) -> list[int]:
         """Internal generation from pre-tokenized input.
 
@@ -1034,56 +1117,122 @@ class Llama:
             reset_kv_cache: Whether to clear KV cache before generation.
             add_bos: Override BOS behavior. If None, derived from config and
                 reset_kv_cache (no BOS inserted mid-session).
+            cache_prompt: When True (default), reuse the longest matching
+                prefix of the previous prompt+completion that is still in the
+                KV cache, decoding only the divergent suffix. Ignored when
+                reset_kv_cache=True (full clear) or when ``prompt_tokens``
+                shares no prefix with the mirror.
 
         Returns:
             List of generated token IDs.
         """
         if reset_kv_cache:
             self.ctx.kv_cache_clear()
+            self._invalidate_prompt_cache()
 
         eos = self.model.eos()
         stop_seqs = stop_sequences or []
-        effective_add_bos = (
-            self._effective_add_bos and reset_kv_cache if add_bos is None else add_bos
+        # BOS rules:
+        # - reset_kv_cache=True: use the model's BOS preference. C++ prepends
+        #   BOS to its priming when needed.
+        # - reset_kv_cache=False + cache_prompt=True: also use the model's
+        #   BOS preference — C++ prepends BOS to its internal priming, the
+        #   matching BOS already sits at position 0 of the mirror (and KV)
+        #   from the first reset_kv_cache=True turn, so LCP covers the BOS
+        #   slot and the suffix-only decode lines up. C++'s own
+        #   "front == bos" guard prevents double-BOS when the user already
+        #   tokenized with BOS.
+        # - reset_kv_cache=False + cache_prompt=False (legacy manual session
+        #   continuation): suppress BOS so the user can stitch turns by
+        #   hand without injecting a stray BOS mid-stream.
+        if add_bos is None:
+            if reset_kv_cache or cache_prompt:
+                effective_add_bos = self._effective_add_bos
+            else:
+                effective_add_bos = False
+        else:
+            effective_add_bos = add_bos
+
+        # Build the priming sequence the C++ generator will see, so we can
+        # compute skip_decode_prefix against the mirror. C++ prepends BOS
+        # itself when add_bos=True; mirror it here so the LCP comparison
+        # operates on identical sequences.
+        primed = (
+            [self.model.bos(), *prompt_tokens]
+            if effective_add_bos
+            and (not prompt_tokens or prompt_tokens[0] != self.model.bos())
+            else list(prompt_tokens)
         )
 
-        if grammar is not None:
-            return list(
-                _llama.generate_tokens_grammar_multi_stop(
-                    self.ctx,
-                    sampler,
-                    grammar,
-                    prompt_tokens,
-                    int(max_tokens),
-                    effective_add_bos,
-                    eos,
-                    stop_seqs,
-                )
-            )
-        elif stop_seqs:
-            return list(
-                _llama.generate_tokens_multi_stop(
-                    self.ctx,
-                    sampler,
-                    prompt_tokens,
-                    int(max_tokens),
-                    effective_add_bos,
-                    eos,
-                    stop_seqs,
-                )
-            )
+        skip_decode_prefix = 0
+        if reset_kv_cache:
+            # Fresh KV: priming will be the entire seq 0 after this call.
+            self._cached_prompt_tokens = list(primed)
+        elif cache_prompt and self._cached_prompt_tokens:
+            # Trim divergent suffix and reuse the matching prefix.
+            skip_decode_prefix = self._apply_prefix_reuse(primed)
+        elif cache_prompt:
+            # Empty mirror but caching enabled: full prime, then track.
+            self._cached_prompt_tokens = list(primed)
         else:
-            return list(
-                _llama.generate_tokens(
-                    self.ctx,
-                    sampler,
-                    prompt_tokens,
-                    int(max_tokens),
-                    effective_add_bos,
-                    eos,
-                    [],
+            # Caller opted out of caching mid-session — KV state is whatever
+            # they were managing. Drop the mirror so the next cache_prompt
+            # call falls back to a clean full prime.
+            self._invalidate_prompt_cache()
+
+        try:
+            if grammar is not None:
+                generated = list(
+                    _llama.generate_tokens_grammar_multi_stop(
+                        self.ctx,
+                        sampler,
+                        grammar,
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        stop_seqs,
+                        skip_decode_prefix,
+                    )
                 )
-            )
+            elif stop_seqs:
+                generated = list(
+                    _llama.generate_tokens_multi_stop(
+                        self.ctx,
+                        sampler,
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        stop_seqs,
+                        skip_decode_prefix,
+                    )
+                )
+            else:
+                generated = list(
+                    _llama.generate_tokens(
+                        self.ctx,
+                        sampler,
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        [],
+                        skip_decode_prefix,
+                    )
+                )
+        except Exception:
+            # On C++ failure the KV state is unknown; drop the mirror so the
+            # next call falls back to a clean full prime.
+            self._invalidate_prompt_cache()
+            raise
+
+        # Only extend the mirror when caching is on; with cache_prompt=False
+        # the mirror was just invalidated and must stay empty so the next
+        # cache_prompt=True call falls back to a clean full prime.
+        if cache_prompt or reset_kv_cache:
+            self._commit_generation_to_cache(generated)
+        return generated
 
     def generate_stream(
         self,
@@ -1094,6 +1243,7 @@ class Llama:
         stop: Sequence[str | int] | None = None,
         seed: int | None = None,
         reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> Iterator[str]:
         """True streaming generation - yields text as tokens are decoded.
 
@@ -1122,6 +1272,10 @@ class Llama:
             stop: Optional stop sequences.
             seed: Optional RNG seed.
             reset_kv_cache: Clear KV cache before generation (default True).
+            cache_prompt: When True (default) and reset_kv_cache=False, reuse
+                the longest matching prefix of the previous turn's KV state and
+                decode only the divergent suffix. Ignored when reset_kv_cache
+                is True.
 
         Yields:
             Text chunks as they're generated.
@@ -1149,14 +1303,47 @@ class Llama:
 
         if reset_kv_cache:
             self.ctx.kv_cache_clear()
+            self._invalidate_prompt_cache()
 
-        effective_add_bos = self._effective_add_bos and reset_kv_cache
-        prompt_tokens = self.tokenize(prompt, add_special=effective_add_bos)
+        # Tokenize without BOS — C++ generator prepends based on add_bos and
+        # the `prompt[0] != bos` guard.
+        prompt_tokens = self.tokenize(prompt, add_special=False)
         self._validate_prompt_token_count(len(prompt_tokens))
+
+        # BOS rules — see _generate_from_tokens for full rationale.
+        if reset_kv_cache or cache_prompt:
+            effective_add_bos = self._effective_add_bos
+        else:
+            effective_add_bos = False
 
         stop_sequences = self._tokenize_stop_sequences(stop)
 
         eos = self.model.eos()
+
+        # Compute prefix reuse before spawning the worker. Mirror must reflect
+        # the priming sequence the C++ generator sees: BOS-prepended when
+        # add_bos is True. We compute skip_decode_prefix here under the lock
+        # acquired below; appending generated tokens to the mirror happens in
+        # finally on success.
+        primed_for_mirror = (
+            [self.model.bos(), *prompt_tokens]
+            if effective_add_bos
+            and (not prompt_tokens or prompt_tokens[0] != self.model.bos())
+            else list(prompt_tokens)
+        )
+        skip_decode_prefix = 0
+        if reset_kv_cache:
+            self._cached_prompt_tokens = list(primed_for_mirror)
+        elif cache_prompt and self._cached_prompt_tokens:
+            skip_decode_prefix = self._apply_prefix_reuse(primed_for_mirror)
+        elif cache_prompt:
+            self._cached_prompt_tokens = list(primed_for_mirror)
+        else:
+            self._invalidate_prompt_cache()
+        # Tokens generated in this stream — appended to mirror on success,
+        # discarded if the worker dies. Lives outside the worker closure so
+        # the finally block can read it.
+        generated_in_stream: list[int] = []
 
         # Queue carries already-detokenized raw bytes from the worker thread,
         # never raw token IDs. This keeps all llama.cpp calls on the same Model
@@ -1188,6 +1375,11 @@ class Llama:
                     except Exception as exc:  # noqa: BLE001
                         token_queue.put(exc)
                         return False
+                    # Record generated token for the prompt-cache mirror.
+                    # The mirror is only committed if the worker exits cleanly
+                    # (see finally below). C++ does not call on_token for
+                    # stop tokens, so this list reflects what's actually in KV.
+                    generated_in_stream.append(token)
                     token_queue.put(raw)
                     return True
 
@@ -1200,6 +1392,7 @@ class Llama:
                     eos,
                     stop_sequences,
                     on_token,
+                    skip_decode_prefix,
                 )
                 token_queue.put(None)  # Sentinel: generation complete
             except Exception as e:
@@ -1253,8 +1446,17 @@ class Llama:
                 thread.join(timeout=self._STREAM_JOIN_TIMEOUT)
                 worker_zombie = thread.is_alive()
             if not worker_zombie:
+                # Commit the streamed tokens to the prompt-cache mirror only
+                # on clean exit AND when caching is on. C++ skips on_token for
+                # matched stop tokens, so generated_in_stream is exactly what's
+                # now in KV beyond the priming sequence.
+                if cache_prompt or reset_kv_cache:
+                    self._commit_generation_to_cache(generated_in_stream)
                 self._lock.release()
             else:
+                # Worker is stuck in C++; KV state is unknown. Drop the mirror
+                # so any future call (after lock recovery) starts clean.
+                self._invalidate_prompt_cache()
                 # Intentionally leave self._lock held and raise so the caller
                 # learns of the problem. Do NOT release — another call
                 # entering generation concurrently with a zombie worker would
@@ -1279,6 +1481,7 @@ class Llama:
         stream: bool = False,
         seed: int | None = None,
         reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> str | Iterator[str] | dict[str, Any]:
         """Generate text for ``prompt``.
 
@@ -1294,6 +1497,10 @@ class Llama:
             seed: Optional per-request RNG seed.
             reset_kv_cache: If True (default), clear KV cache before generation.
                 Set to False for session-style continuation to reduce recompute.
+            cache_prompt: When True (default) and reset_kv_cache=False, reuse
+                the longest matching prefix of the previous turn that's still
+                in the KV cache and decode only the divergent suffix. Ignored
+                when reset_kv_cache=True.
 
         Raises:
             ValidationError: If prompt is not a string or max_tokens is invalid.
@@ -1316,14 +1523,10 @@ class Llama:
         if seed is not None:
             sampler_params = dc_replace(sampler_params, seed=seed)
         sampler = self._build_sampler(sampler_params)
-        # Optionally clear KV cache (default True for fresh generation)
-        if reset_kv_cache:
-            self.ctx.kv_cache_clear()
-        # BOS is only added for a fresh context. In session continuation the KV
-        # cache already contains a BOS from the prior turn, so re-inserting one
-        # would pollute the sequence mid-stream.
-        effective_add_bos = self._effective_add_bos and reset_kv_cache
-        prompt_tokens = self.tokenize(prompt, add_special=effective_add_bos)
+        # We tokenize WITHOUT BOS — C++ generators prepend BOS independently
+        # based on the `add_bos` argument and a `prompt[0] != bos` guard.
+        # Whether C++ actually prepends is decided below per call mode.
+        prompt_tokens = self.tokenize(prompt, add_special=False)
         self._validate_prompt_token_count(len(prompt_tokens))
 
         stop_sequences = self._tokenize_stop_sequences(stop)
@@ -1335,49 +1538,77 @@ class Llama:
                 "Streaming with logprobs is not supported; set stream=False or logprobs=None"
             )
 
+        # BOS rules — see _generate_from_tokens for full rationale.
+        if reset_kv_cache or cache_prompt:
+            effective_add_bos = self._effective_add_bos
+        else:
+            effective_add_bos = False
+
         # Only use expensive details path when logprobs is actually requested.
         # echo alone is handled cheaply by prepending prompt tokens after
         # generation.
         token_probs = None
         if logprobs is not None:
-            token_probs = _llama.generate_tokens_with_details(
-                self.ctx,
-                sampler,
-                prompt_tokens,
-                int(max_tokens),
-                effective_add_bos,
-                eos,
-                stop_sequences,
-                int(logprobs),
-                bool(echo),
+            # Logprobs path: dispatch directly so we can pull TokenProb structs
+            # back out. Replicate the prefix-reuse + KV-clear bookkeeping that
+            # _generate_from_tokens does for the non-logprobs paths.
+            primed = (
+                [self.model.bos(), *prompt_tokens]
+                if effective_add_bos
+                and (not prompt_tokens or prompt_tokens[0] != self.model.bos())
+                else list(prompt_tokens)
             )
+            skip_decode_prefix = 0
+            if reset_kv_cache:
+                self.ctx.kv_cache_clear()
+                self._cached_prompt_tokens = list(primed)
+            elif cache_prompt and self._cached_prompt_tokens:
+                skip_decode_prefix = self._apply_prefix_reuse(primed)
+            elif cache_prompt:
+                self._cached_prompt_tokens = list(primed)
+            else:
+                self._invalidate_prompt_cache()
+            try:
+                token_probs = _llama.generate_tokens_with_details(
+                    self.ctx,
+                    sampler,
+                    prompt_tokens,
+                    int(max_tokens),
+                    effective_add_bos,
+                    eos,
+                    stop_sequences,
+                    int(logprobs),
+                    bool(echo),
+                    skip_decode_prefix,
+                )
+            except Exception:
+                self._invalidate_prompt_cache()
+                raise
+            # generate_tokens_with_details may include echoed prompt tokens at
+            # the head of the returned list (when echo=True). Generated tokens
+            # are everything after the priming length. Commit only those to
+            # the mirror to keep it aligned with KV.
+            primed_len = len(primed)
+            tail = (
+                [tp.token for tp in token_probs[primed_len:]]
+                if echo
+                else [tp.token for tp in token_probs]
+            )
+            if cache_prompt or reset_kv_cache:
+                self._commit_generation_to_cache(tail)
             output_tokens = [tp.token for tp in token_probs]
-        elif stop_sequences:
-            # Use fast C++ multi-stop helper (no O(n_vocab) per-token overhead)
-            generated = _llama.generate_tokens_multi_stop(
-                self.ctx,
-                sampler,
-                prompt_tokens,
-                int(max_tokens),
-                effective_add_bos,
-                eos,
-                stop_sequences,
-            )
-            output_tokens = list(generated)
-            if echo:
-                output_tokens = list(prompt_tokens) + output_tokens
         else:
-            # No stop sequences - use simplest path
-            generated = _llama.generate_tokens(
-                self.ctx,
-                sampler,
+            # No-logprobs paths route through _generate_from_tokens, which
+            # handles prefix reuse, KV clear, mirror updates, and dispatch.
+            output_tokens = self._generate_from_tokens(
                 prompt_tokens,
-                int(max_tokens),
-                effective_add_bos,
-                eos,
-                [],
+                max_tokens=max_tokens,
+                sampler=sampler,
+                stop_sequences=stop_sequences,
+                grammar=None,
+                reset_kv_cache=reset_kv_cache,
+                cache_prompt=cache_prompt,
             )
-            output_tokens = list(generated)
             if echo:
                 output_tokens = list(prompt_tokens) + output_tokens
 
@@ -1409,6 +1640,7 @@ class Llama:
         echo: bool = False,
         seed: int | None = None,
         reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> tuple[str, int]:
         """Generate text and return (text, n_generated_tokens).
 
@@ -1433,39 +1665,22 @@ class Llama:
         if seed is not None:
             sampler_params = dc_replace(sampler_params, seed=seed)
         sampler = self._build_sampler(sampler_params)
-        if reset_kv_cache:
-            self.ctx.kv_cache_clear()
-        effective_add_bos = self._effective_add_bos and reset_kv_cache
-        prompt_tokens = self.tokenize(prompt, add_special=effective_add_bos)
+        # Tokenize without BOS — _generate_from_tokens decides whether C++
+        # prepends BOS based on (reset_kv_cache, cache_prompt).
+        prompt_tokens = self.tokenize(prompt, add_special=False)
         self._validate_prompt_token_count(len(prompt_tokens))
 
         stop_sequences = self._tokenize_stop_sequences(stop)
-        eos = self.model.eos()
 
-        if stop_sequences:
-            generated = list(
-                _llama.generate_tokens_multi_stop(
-                    self.ctx,
-                    sampler,
-                    prompt_tokens,
-                    int(max_tokens),
-                    effective_add_bos,
-                    eos,
-                    stop_sequences,
-                )
-            )
-        else:
-            generated = list(
-                _llama.generate_tokens(
-                    self.ctx,
-                    sampler,
-                    prompt_tokens,
-                    int(max_tokens),
-                    effective_add_bos,
-                    eos,
-                    [],
-                )
-            )
+        generated = self._generate_from_tokens(
+            prompt_tokens,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            stop_sequences=stop_sequences,
+            grammar=None,
+            reset_kv_cache=reset_kv_cache,
+            cache_prompt=cache_prompt,
+        )
 
         n_generated = len(generated)
         output_tokens = list(prompt_tokens) + generated if echo else generated
@@ -1543,7 +1758,7 @@ class Llama:
             # wastes CPU). Only pass kwargs the helper accepts.
             helper_kwargs = {
                 k: kwargs[k]
-                for k in ("sampling", "seed", "reset_kv_cache")
+                for k in ("sampling", "seed", "reset_kv_cache", "cache_prompt")
                 if k in kwargs
             }
             text, completion_tokens = self._generate_with_token_count(
@@ -1599,6 +1814,7 @@ class Llama:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
         **sampling_overrides: Any,
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         """Chat completions endpoint compatible with llama-cpp-python.
@@ -1614,6 +1830,10 @@ class Llama:
             tool_choice: "auto", "none", or {"type": "function", "function": {"name": "..."}}
             reset_kv_cache: If True (default), clear KV cache before generation.
                 Set to False for multi-turn session continuation.
+            cache_prompt: When True (default) and reset_kv_cache=False, reuse
+                the longest matching prefix of the previous turn's KV state.
+                Decodes only the divergent suffix (typically the new user
+                message). Ignored when reset_kv_cache=True.
             **sampling_overrides: Override sampling params (temperature, top_p, etc.)
         """
         # Handle function calling by injecting tools into messages
@@ -1643,12 +1863,11 @@ class Llama:
         # confusing TypeError deep in SamplingParams.__init__.
         self._validate_sampling_overrides(sampling_overrides)
 
-        # BOS only for fresh contexts: mid-session continuations already have
-        # BOS in the KV cache.
-        effective_add_bos = self._effective_add_bos and reset_kv_cache
-        # Tokenize once via _prepare_chat
+        # Tokenize without BOS — the chat template may already include BOS
+        # as a literal, and _generate_from_tokens applies its BOS rule based
+        # on (reset_kv_cache, cache_prompt). Avoid double-tokenizing BOS here.
         _, prompt_tokens, n_prompt_tokens = self._prepare_chat(
-            effective_messages, add_bos=effective_add_bos
+            effective_messages, add_bos=False
         )
         # Same DoS guard as generate() / generate_stream(): reject high-
         # compression prompts that tokenize to > 2×n_ctx.
@@ -1679,7 +1898,7 @@ class Llama:
             stop_sequences=stop_sequences,
             grammar=use_grammar,
             reset_kv_cache=reset_kv_cache,
-            add_bos=effective_add_bos,
+            cache_prompt=cache_prompt,
         )
 
         created = int(time.time())
@@ -1759,12 +1978,20 @@ class Llama:
         """Reset context (recreates KV cache). Reapplies any loaded LoRA adapters."""
         self._check_closed()
         self.ctx.reset()
+        self._invalidate_prompt_cache()
         self._reapply_lora_adapters()
 
     def kv_cache_seq_rm(self, seq_id: int = 0, p0: int = -1, p1: int = -1) -> bool:
-        """Remove tokens from KV cache for sequence. Returns True if successful."""
+        """Remove tokens from KV cache for sequence. Returns True if successful.
+
+        Invalidates the prompt-cache mirror — direct seq_rm callers are
+        treated as escape hatches, so the mirror's "matches KV exactly"
+        invariant cannot be guaranteed. Subsequent generations will fall
+        back to a full prompt decode.
+        """
         self._check_closed()
         result: bool = self.ctx.kv_cache_seq_rm(seq_id, p0, p1)
+        self._invalidate_prompt_cache()
         return result
 
     def kv_cache_seq_cp(
@@ -1773,16 +2000,19 @@ class Llama:
         """Copy KV cache from one sequence to another."""
         self._check_closed()
         self.ctx.kv_cache_seq_cp(seq_id_src, seq_id_dst, p0, p1)
+        self._invalidate_prompt_cache()
 
     def kv_cache_seq_keep(self, seq_id: int) -> None:
         """Remove all tokens not belonging to the specified sequence."""
         self._check_closed()
         self.ctx.kv_cache_seq_keep(seq_id)
+        self._invalidate_prompt_cache()
 
     def kv_cache_seq_add(self, seq_id: int, p0: int, p1: int, delta: int) -> None:
         """Add delta to positions in range [p0, p1] for sequence."""
         self._check_closed()
         self.ctx.kv_cache_seq_add(seq_id, p0, p1, delta)
+        self._invalidate_prompt_cache()
 
     def kv_cache_seq_pos_max(self, seq_id: int = 0) -> int:
         """Return max position in KV cache for sequence. -1 if empty."""
@@ -1797,9 +2027,14 @@ class Llama:
         return result
 
     def load_state(self, path: str) -> int:
-        """Load KV cache state from file. Returns token count."""
+        """Load KV cache state from file. Returns token count.
+
+        Invalidates the prompt-cache mirror: post-load KV contents are not
+        what the mirror represents.
+        """
         self._check_closed()
         result: int = self.ctx.load_state(path)
+        self._invalidate_prompt_cache()
         return result
 
     def get_state(self) -> bytes:
@@ -1809,9 +2044,13 @@ class Llama:
         return data
 
     def set_state(self, data: bytes) -> int:
-        """Set KV cache state from bytes. Returns bytes read."""
+        """Set KV cache state from bytes. Returns bytes read.
+
+        Invalidates the prompt-cache mirror.
+        """
         self._check_closed()
         result: int = self.ctx.set_state_data(data)
+        self._invalidate_prompt_cache()
         return result
 
     def load_lora(self, path: str, scale: float = 1.0) -> Any:
@@ -1903,6 +2142,8 @@ class Llama:
         logprobs: int | None = None,
         stream: bool = False,
         seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> str | AsyncIterator[str] | dict[str, Any]:
         """Async version of generate(). Runs in thread pool.
 
@@ -1932,6 +2173,8 @@ class Llama:
                         sampling=sampling,
                         stop=stop,
                         seed=seed,
+                        reset_kv_cache=reset_kv_cache,
+                        cache_prompt=cache_prompt,
                     ):
                         asyncio.run_coroutine_threadsafe(out_queue.put(chunk), loop)
                     asyncio.run_coroutine_threadsafe(out_queue.put(None), loop)
@@ -1971,6 +2214,8 @@ class Llama:
             logprobs=logprobs,
             stream=False,
             seed=seed,
+            reset_kv_cache=reset_kv_cache,
+            cache_prompt=cache_prompt,
         )
 
     async def create_chat_completion_async(
@@ -1984,6 +2229,8 @@ class Llama:
         grammar: LlamaGrammar | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
         **sampling_overrides: Any,
     ) -> dict[str, Any] | AsyncIterator[dict[str, Any]]:
         """Async version of create_chat_completion(). Runs in thread pool.
@@ -2004,6 +2251,8 @@ class Llama:
                     grammar=grammar,
                     tools=tools,
                     tool_choice=tool_choice,
+                    reset_kv_cache=reset_kv_cache,
+                    cache_prompt=cache_prompt,
                     **sampling_overrides,
                 )
                 for chunk in chunks:
@@ -2021,6 +2270,8 @@ class Llama:
             grammar=grammar,
             tools=tools,
             tool_choice=tool_choice,
+            reset_kv_cache=reset_kv_cache,
+            cache_prompt=cache_prompt,
             **sampling_overrides,
         )
 

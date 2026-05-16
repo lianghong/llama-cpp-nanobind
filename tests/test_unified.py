@@ -1,4 +1,4 @@
-"""Tests for UnifiedLLM wrapper."""
+"""Tests for UnifiedLLM (Qwen 3.5, Qwen 3.6, Gemma 4, IBM Granite 4.1)."""
 
 import os
 
@@ -8,290 +8,247 @@ from llama_cpp.unified import detect_model_family
 from llama_cpp.unified import MODEL_CONFIGS
 from llama_cpp.unified import ModelFamily
 from llama_cpp.unified import UnifiedLLM
+from llama_cpp.unified import UnsupportedModelError
 import pytest
 
 
-# Model family detection tests (no model loading required)
-def test_detect_model_family_qwen():
-    config = detect_model_family("models/Qwen3-8B-Q6_K.gguf")
-    assert config.family == ModelFamily.QWEN3
+# ---------------------------------------------------------------------------
+# Family enum membership — guards against accidental re-introduction of the
+# legacy families we explicitly dropped.
+# ---------------------------------------------------------------------------
 
 
-def test_detect_model_family_gemma():
-    config = detect_model_family("models/gemma-2-9b-it-Q6_K.gguf")
-    assert config.family == ModelFamily.GEMMA
+def test_supported_families_only():
+    """ModelFamily must contain exactly the four supported architectures."""
+    assert {m.name for m in ModelFamily} == {
+        "QWEN3_5",
+        "QWEN3_6",
+        "GEMMA4",
+        "GRANITE",
+    }
 
 
-def test_detect_model_family_gpt_oss():
-    config = detect_model_family("models/gpt-oss-20b-Q4_K_M.gguf")
-    assert config.family == ModelFamily.GPT_OSS
+def test_model_configs_keys():
+    """MODEL_CONFIGS must contain only presets for supported families."""
+    expected = {
+        "qwen3.5",
+        "qwen3.5-small",
+        "qwen3.5-coding",
+        "qwen3.6",
+        "qwen3.6-coding",
+        "qwen3.6-instruct",
+        "qwen3.6-instruct-reasoning",
+        "gemma-4",
+        "gemma-4-large",
+        "granite",
+    }
+    assert set(MODEL_CONFIGS.keys()) == expected
 
 
-def test_detect_model_family_phi():
-    config = detect_model_family("models/phi-4-Q6_K.gguf")
-    assert config.family == ModelFamily.PHI
+# ---------------------------------------------------------------------------
+# Filename detection
+# ---------------------------------------------------------------------------
 
 
-def test_detect_model_family_gemma4_small():
-    """Gemma 4 E2B / E4B routes to the 128K 'gemma-4' config."""
+def test_detect_qwen35_default_thinking():
+    config = detect_model_family("models/Qwen3.5-27B-Q4_K_M.gguf")
+    assert config.family == ModelFamily.QWEN3_5
+    assert config.supports_thinking is True
+
+
+def test_detect_qwen35_small_sizes_skip_thinking():
+    """0.8B / 2B / 4B / 9B Qwen 3.5 default to thinking off per Unsloth."""
+    for size in ("0.8B", "2B", "4B", "9B"):
+        config = detect_model_family(f"models/Qwen3.5-{size}-Q4_K_M.gguf")
+        assert config.supports_thinking is False, (
+            f"Qwen3.5-{size} should be non-thinking"
+        )
+        assert config.temperature == 0.7
+        assert config.top_p == 0.8
+
+
+def test_detect_qwen35_large_keeps_thinking():
+    """27B / 35B-A3B / 122B-A10B / 397B-A17B keep thinking on."""
+    for name in (
+        "Qwen3.5-27B-Q4_K_M.gguf",
+        "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "Qwen3.5-122B-A10B-Q4_K_M.gguf",
+        "Qwen3.5-397B-A17B-Q4_K_M.gguf",
+    ):
+        config = detect_model_family(f"models/{name}")
+        assert config.supports_thinking is True, f"{name} should have thinking"
+
+
+def test_detect_qwen36_default_thinking():
+    config = detect_model_family("models/Qwen3.6-27B-Q4_K_M.gguf")
+    assert config.family == ModelFamily.QWEN3_6
+    assert config.supports_thinking is True
+    assert config.temperature == 1.0
+
+
+def test_detect_qwen36_instruct():
+    """Qwen 3.6 *Instruct* filenames pick the non-thinking instruct preset."""
+    config = detect_model_family("models/Qwen3.6-35B-A3B-Instruct-Q4_K_M.gguf")
+    assert config.family == ModelFamily.QWEN3_6
+    assert config.supports_thinking is False
+    assert config.temperature == 0.7  # general-instruct preset
+
+
+def test_detect_qwen36_instruct_reasoning():
+    """Filenames with both 'Instruct' and 'Reasoning' pick the higher-temp preset."""
+    config = detect_model_family(
+        "models/Qwen3.6-35B-A3B-Instruct-Reasoning-Q4_K_M.gguf"
+    )
+    assert config.family == ModelFamily.QWEN3_6
+    assert config.supports_thinking is False
+    assert config.temperature == 1.0
+
+
+def test_detect_gemma4_small_128k():
     config = detect_model_family("models/gemma-4-e4b-it-Q8_0.gguf")
     assert config.family == ModelFamily.GEMMA4
     assert config.max_ctx == 131072
     assert config.supports_thinking is True
 
 
-def test_detect_model_family_gemma4_large():
-    """Gemma 4 26B-A4B / 31B routes to the 256K 'gemma-4-large' config."""
-    config_26 = detect_model_family("models/gemma-4-26b-a4b-it-Q4_K_XL.gguf")
-    assert config_26.family == ModelFamily.GEMMA4
-    assert config_26.max_ctx == 262144
-
-    config_31 = detect_model_family("models/gemma-4-31b-it-Q4_K_XL.gguf")
-    assert config_31.family == ModelFamily.GEMMA4
-    assert config_31.max_ctx == 262144
-
-
-def test_detect_model_family_gemma_not_gemma4():
-    """Legacy 'gemma' filenames (e.g. Gemma 2) must NOT match Gemma 4."""
-    config = detect_model_family("models/gemma-2-9b-it-Q6_K.gguf")
-    assert config.family == ModelFamily.GEMMA
+def test_detect_gemma4_large_256k():
+    for name in (
+        "gemma-4-26b-a4b-it-Q4_K_XL.gguf",
+        "gemma-4-31b-it-Q4_K_XL.gguf",
+    ):
+        config = detect_model_family(f"models/{name}")
+        assert config.family == ModelFamily.GEMMA4
+        assert config.max_ctx == 262144
 
 
-def test_detect_model_family_glm47():
-    config = detect_model_family("models/GLM-4.7-Flash-REAP-23B-A3B-Q4_K_M.gguf")
-    assert config.family == ModelFamily.GLM4
-    assert config.supports_thinking is True
-
-
-def test_detect_model_family_glm4_legacy():
-    """Older GLM-4 models still match glm-4 config."""
-    config = detect_model_family("models/glm-4-9b-chat-Q6_K.gguf")
-    assert config.family == ModelFamily.GLM4
+def test_detect_granite_4_1():
+    config = detect_model_family("models/granite-4.1-3b-Q6_K.gguf")
+    assert config.family == ModelFamily.GRANITE
+    assert config.temperature == 0.0
+    assert config.top_p == 1.0
+    assert config.top_k == 0
     assert config.supports_thinking is False
 
 
-def test_detect_model_family_unknown():
-    with pytest.raises(ValueError) as exc_info:
-        detect_model_family("unknown_model.gguf")
-    assert "Supported:" in str(exc_info.value)
+# ---------------------------------------------------------------------------
+# Negative detection — unsupported families must raise loudly.
+# ---------------------------------------------------------------------------
 
 
-def test_model_configs_exist():
-    """Verify all expected model families have configs."""
-    expected = [
-        "gemma",
-        "gemma-4",
-        "gemma-4-large",
-        "glm-4",
-        "glm-4.7",
-        "granite",
-        "minicpm",
-        "ministral-instruct",
-        "ministral-reasoning",
-        "phi-4",
-        "qwen3",
-        "qwen3-instruct-2507",
-        "qwen3-thinking-2507",
-        "qwen3.5",
-        "qwen3.5-small",
-        "gpt-oss",
-    ]
-    for key in expected:
-        assert key in MODEL_CONFIGS
-
-
-def test_gemma4_config_values():
-    """Verify Gemma 4 configs follow Unsloth spec."""
-    small = MODEL_CONFIGS["gemma-4"]
-    assert small.supports_thinking is True
-    assert small.temperature == 1.0
-    assert small.top_p == 0.95
-    assert small.top_k == 64
-    assert small.repeat_penalty == 1.0  # Unsloth: keep disabled
-    assert small.max_ctx == 131072
-    assert "<turn|>" in small.stop_sequences
-
-    large = MODEL_CONFIGS["gemma-4-large"]
-    assert large.supports_thinking is True
-    assert large.max_ctx == 262144
-    assert large.repeat_penalty == 1.0
-
-
-def test_glm47_config_values():
-    """Verify GLM-4.7 config has thinking support and correct params."""
-    config = MODEL_CONFIGS["glm-4.7"]
-    assert config.supports_thinking is True
-    assert config.temperature == 1.0
-    assert config.top_p == 0.95
-    assert config.min_p == 0.01
-    assert config.repeat_penalty == 1.0  # Z.ai: must be disabled
-    assert "<|endoftext|>" in config.stop_sequences
-    assert "<|user|>" in config.stop_sequences
-    assert "<|observation|>" in config.stop_sequences
-
-
-def test_detect_model_family_qwen35():
-    config = detect_model_family("models/Qwen3.5-27B-Q4_K_M.gguf")
-    assert config.family == ModelFamily.QWEN3_5
-
-
-def test_detect_model_family_qwen3_not_qwen35():
-    """Qwen3 filenames must NOT match qwen3.5 config."""
-    config = detect_model_family("models/Qwen3-8B-Q6_K.gguf")
-    assert config.family == ModelFamily.QWEN3
-
-
-def test_qwen35_config_values():
-    """Verify Qwen3.5 config has correct params from model card."""
-    config = MODEL_CONFIGS["qwen3.5"]
-    assert config.family == ModelFamily.QWEN3_5
-    assert config.supports_thinking is True
-    assert config.temperature == 1.0
-    assert config.top_p == 0.95
-    assert config.top_k == 20
-    assert config.presence_penalty == 1.5
-    assert config.max_ctx == 262144
-    assert "<|im_end|>" in config.stop_sequences
-    assert "<|endoftext|>" in config.stop_sequences
-
-
-def test_qwen35_no_think_suffix():
-    """Qwen3.5 must NOT append /think or /nothink suffixes."""
-    config = MODEL_CONFIGS["qwen3.5"]
-    # The _build_messages guard only triggers for ModelFamily.QWEN3,
-    # so QWEN3_5 naturally skips the /think suffix
-    assert config.family != ModelFamily.QWEN3
+@pytest.mark.parametrize(
+    "filename",
+    [
+        # Removed families
+        "Qwen3-8B-Q6_K.gguf",
+        "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+        "gemma-2-9b-it-Q6_K.gguf",
+        "gemma-3-27b-it-Q4_K_M.gguf",
+        "GLM-4.7-Flash-23B-Q4_K_M.gguf",
+        "glm-4-9b-chat-Q6_K.gguf",
+        "MiniCPM-3-4B-Q6_K.gguf",
+        "Phi-4-Q6_K.gguf",
+        "Mistral-Small-Q5_K_M.gguf",
+        "Ministral-3-14B-Reasoning-Q6_K.gguf",
+        "gpt-oss-20b-Q4_K_M.gguf",
+        # Generic / unknown
+        "llama-3.1-8B-instruct-Q5_K_M.gguf",
+        "unknown_model.gguf",
+        # Granite 3.x is not in scope (only 4.1)
+        "granite-3.2-8b-Q6_K.gguf",
+    ],
+)
+def test_unsupported_models_raise(filename):
+    with pytest.raises(UnsupportedModelError) as exc_info:
+        detect_model_family(f"models/{filename}")
+    msg = str(exc_info.value)
+    assert "Qwen 3.5" in msg
+    assert "Granite 4.1" in msg
 
 
 def test_detect_ignores_directory_names():
     """Directory names must not trigger false-positive detection."""
-    with pytest.raises(ValueError):
-        detect_model_family("/home/user/phi-experiments/llama-model.gguf")
-    with pytest.raises(ValueError):
-        detect_model_family("/data/qwen3-finetuning/my_custom_model.gguf")
+    with pytest.raises(UnsupportedModelError):
+        detect_model_family("/home/user/qwen-finetuning/llama-model.gguf")
+    with pytest.raises(UnsupportedModelError):
+        detect_model_family("/data/gemma-2-experiments/my_custom_model.gguf")
 
 
-def test_detect_ministral():
-    """Test Ministral model detection."""
-    config = detect_model_family("models/Ministral-3-14B-Reasoning-2512-Q6_K.gguf")
-    assert config.family == ModelFamily.MISTRAL
+# ---------------------------------------------------------------------------
+# Preset values track Unsloth recipes — these are regression guards.
+# ---------------------------------------------------------------------------
 
 
-def test_detect_qwen3_instruct_2507():
-    """Qwen3-Instruct-2507 should be non-thinking with Instruct defaults."""
-    config = detect_model_family("models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf")
-    assert config.family == ModelFamily.QWEN3
-    assert config.supports_thinking is False
-    assert config.temperature == 0.7
-    assert config.top_p == 0.8
-    assert config.top_k == 20
-    assert config.presence_penalty == 1.0
+def test_qwen35_default_preset():
+    cfg = MODEL_CONFIGS["qwen3.5"]
+    assert cfg.family == ModelFamily.QWEN3_5
+    assert cfg.temperature == 1.0
+    assert cfg.top_p == 0.95
+    assert cfg.top_k == 20
+    assert cfg.min_p == 0.0
+    assert cfg.presence_penalty == 1.5
+    assert cfg.repeat_penalty == 1.0  # Unsloth: disabled
+    assert cfg.max_ctx == 262144
 
 
-def test_detect_qwen3_thinking_2507():
-    """Qwen3-Thinking-2507 should be thinking-enabled with Thinking defaults."""
-    config = detect_model_family("models/Qwen3-8B-Thinking-2507-Q6_K.gguf")
-    assert config.family == ModelFamily.QWEN3
-    assert config.supports_thinking is True
-    assert config.temperature == 0.6
-    assert config.top_p == 0.95
-    assert config.top_k == 20
-    assert config.presence_penalty == 1.0
+def test_qwen35_coding_preset():
+    cfg = MODEL_CONFIGS["qwen3.5-coding"]
+    assert cfg.temperature == 0.6
+    assert cfg.presence_penalty == 0.0
+    assert cfg.repeat_penalty == 1.0
 
 
-def test_qwen3_2507_configs_in_model_configs():
-    """Verify both 2507 configs are registered."""
-    assert "qwen3-instruct-2507" in MODEL_CONFIGS
-    assert "qwen3-thinking-2507" in MODEL_CONFIGS
+def test_qwen36_default_preset():
+    cfg = MODEL_CONFIGS["qwen3.6"]
+    assert cfg.family == ModelFamily.QWEN3_6
+    assert cfg.temperature == 1.0
+    assert cfg.top_p == 0.95
+    assert cfg.top_k == 20
+    assert cfg.presence_penalty == 1.5
 
 
-def test_detect_qwen35_small_9b():
-    """Qwen3.5-9B should detect as small (thinking disabled)."""
-    config = detect_model_family("models/Qwen3.5-9B-Q6_K.gguf")
-    assert config.family == ModelFamily.QWEN3_5
-    assert config.supports_thinking is False
-    assert config.temperature == 0.7
-    assert config.top_p == 0.8
+def test_qwen36_instruct_presets():
+    """Qwen 3.6 instruct presets follow Unsloth's general/reasoning split."""
+    instr = MODEL_CONFIGS["qwen3.6-instruct"]
+    assert instr.temperature == 0.7
+    assert instr.top_p == 0.8
+    assert instr.supports_thinking is False
+
+    reason = MODEL_CONFIGS["qwen3.6-instruct-reasoning"]
+    assert reason.temperature == 1.0
+    assert reason.top_p == 0.95
+    assert reason.supports_thinking is False
 
 
-def test_detect_qwen35_small_sizes():
-    """All Qwen3.5 small sizes (0.8B, 2B, 4B, 9B) should detect as small."""
-    for size in ["0.8B", "2B", "4B", "9B"]:
-        config = detect_model_family(f"models/Qwen3.5-{size}-Q4_K_M.gguf")
-        assert config.supports_thinking is False, (
-            f"Qwen3.5-{size} should be non-thinking"
-        )
+def test_gemma4_presets():
+    small = MODEL_CONFIGS["gemma-4"]
+    assert small.temperature == 1.0
+    assert small.top_p == 0.95
+    assert small.top_k == 64
+    assert small.repeat_penalty == 1.0
+    assert small.max_ctx == 131072
+    assert "<turn|>" in small.stop_sequences
+
+    large = MODEL_CONFIGS["gemma-4-large"]
+    assert large.max_ctx == 262144
 
 
-def test_detect_qwen35_large_still_thinking():
-    """Large Qwen3.5 models (27B, 35B, 122B, 397B) keep thinking enabled."""
-    for name in [
-        "Qwen3.5-27B-Q4_K_M.gguf",
-        "Qwen3.5-35B-A3B-Q4_K_M.gguf",
-        "Qwen3.5-122B-A10B-Q4_K_M.gguf",
-        "Qwen3.5-397B-A17B-Q4_K_M.gguf",
-    ]:
-        config = detect_model_family(f"models/{name}")
-        assert config.supports_thinking is True, f"{name} should have thinking"
+def test_granite_preset_deterministic():
+    cfg = MODEL_CONFIGS["granite"]
+    assert cfg.family == ModelFamily.GRANITE
+    assert cfg.temperature == 0.0
+    assert cfg.top_p == 1.0
+    assert cfg.top_k == 0
+    assert cfg.repeat_penalty == 1.0
+    assert cfg.max_ctx == 131072
 
 
-def test_qwen35_repeat_penalty_disabled():
-    """Qwen3.5 configs should have repeat_penalty=1.0 (disabled per Unsloth guide)."""
-    assert MODEL_CONFIGS["qwen3.5"].repeat_penalty == 1.0
-    assert MODEL_CONFIGS["qwen3.5-small"].repeat_penalty == 1.0
+# ---------------------------------------------------------------------------
+# Integration tests — require a real model.
+# ---------------------------------------------------------------------------
 
 
-def test_qwen35_config_presence_penalty():
-    """Both Qwen3.5 configs should have presence_penalty=1.5."""
-    assert MODEL_CONFIGS["qwen3.5"].presence_penalty == 1.5
-    assert MODEL_CONFIGS["qwen3.5-small"].presence_penalty == 1.5
-
-
-def test_gpt_oss_config_values():
-    """Verify GPT-OSS config matches OpenAI recommended settings."""
-    config = MODEL_CONFIGS["gpt-oss"]
-    assert config.family == ModelFamily.GPT_OSS
-    assert config.temperature == 1.0
-    assert config.top_p == 1.0
-    assert config.top_k == 0  # OpenAI: disable top-k
-    assert config.min_p == 0.0
-    assert config.max_ctx == 131072  # 128K context window
-    assert config.supports_thinking is True
-    assert config.repeat_penalty == 1.0  # RL-trained, disable penalty
-
-
-def test_qwen3_config_values():
-    """Verify base Qwen3 config matches official recommended settings."""
-    config = MODEL_CONFIGS["qwen3"]
-    assert config.family == ModelFamily.QWEN3
-    assert config.temperature == 0.7
-    assert config.top_p == 0.8
-    assert config.top_k == 20
-    assert config.min_p == 0.0  # Official: 0.0
-    assert config.max_ctx == 131072  # 128K via YaRN
-    assert config.supports_thinking is True
-    assert "<|im_end|>" in config.stop_sequences
-    assert "<|endoftext|>" in config.stop_sequences
-    # Thinking mode overrides
-    assert config.think_temperature == 0.6
-    assert config.think_top_p == 0.95
-    assert config.think_top_k == 20
-    assert config.think_min_p == 0.0
-
-
-def test_gpt_oss_stop_sequences():
-    """GPTOSSBackend must include <|return|> EOS token."""
-    from llama_cpp.unified import GPTOSSBackend
-
-    assert "<|return|>" in GPTOSSBackend.STOP
-    assert "<|start|>user" in GPTOSSBackend.STOP
-    assert "<|end|><|end|>" in GPTOSSBackend.STOP
-
-
-# Integration tests (require model)
 @pytest.fixture(scope="module")
 def unified_llm():
-    """Shared UnifiedLLM instance for tests."""
     if not os.path.exists(MODEL_PATH):
         pytest.skip("test model not found")
     instance = UnifiedLLM(MODEL_PATH, verbose=False)
@@ -300,8 +257,14 @@ def unified_llm():
 
 
 @requires_model
-def test_unified_llm_family(unified_llm):
-    assert unified_llm.family == ModelFamily.QWEN3
+def test_unified_llm_family_detected(unified_llm):
+    """Whatever the test model is, family must be one of the supported four."""
+    assert unified_llm.family in {
+        ModelFamily.QWEN3_5,
+        ModelFamily.QWEN3_6,
+        ModelFamily.GEMMA4,
+        ModelFamily.GRANITE,
+    }
 
 
 @requires_model
@@ -311,8 +274,52 @@ def test_unified_llm_generate(unified_llm):
 
 
 @requires_model
+def test_unified_llm_chat_basic(unified_llm):
+    """chat() returns a non-empty assistant response and strips thinking."""
+    messages = [{"role": "user", "content": "Say hi in one word."}]
+    response = unified_llm.chat(messages, max_tokens=16)
+    assert isinstance(response, str)
+    # Thinking blocks must not leak through.
+    assert "<think>" not in response
+    assert "<|channel>" not in response
+
+
+@requires_model
+def test_unified_llm_chat_streaming(unified_llm):
+    """chat(stream=True) yields raw text deltas as an iterator."""
+    messages = [{"role": "user", "content": "Count from one to three."}]
+    stream = unified_llm.chat(messages, max_tokens=24, stream=True)
+    # Must be an iterator (not a string), and yield at least one non-empty chunk.
+    assert not isinstance(stream, str)
+    chunks = list(stream)
+    assert len(chunks) >= 1
+    assert all(isinstance(c, str) for c in chunks)
+    joined = "".join(chunks)
+    assert joined  # non-empty
+    # Stream is *raw* — caller is responsible for stripping thinking blocks.
+    # We don't assert their absence here; just that we got text.
+
+
+@requires_model
+def test_unified_llm_chat_history_sanitization(unified_llm):
+    """Prior assistant turns with thinking blocks are stripped automatically."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {
+            "role": "assistant",
+            "content": "<think>working on it</think>Hi!",
+        },
+        {"role": "user", "content": "Who are you?"},
+    ]
+    # Should run without raising; sanitize_history defaults True for thinking
+    # families.  We can't assert what the model returns, only that the call
+    # completes and doesn't choke on the embedded thinking block.
+    response = unified_llm.chat(messages, max_tokens=24)
+    assert isinstance(response, str)
+
+
+@requires_model
 def test_unified_llm_context_manager():
-    """Test context manager protocol."""
     with UnifiedLLM(MODEL_PATH, verbose=False) as llm:
         response = llm.generate("Hi", max_tokens=5)
         assert isinstance(response, str)
@@ -321,28 +328,16 @@ def test_unified_llm_context_manager():
 
 
 @requires_model
-def test_unified_llm_close():
-    """Test explicit close() method."""
+def test_unified_llm_close_idempotent():
     llm = UnifiedLLM(MODEL_PATH, verbose=False)
     assert llm.llm is not None
-    assert llm.backend is not None
     llm.close()
-    assert llm.llm is None
-    assert llm.backend is None
-
-
-@requires_model
-def test_unified_llm_double_close():
-    """Test that calling close() twice is safe."""
-    llm = UnifiedLLM(MODEL_PATH, verbose=False)
-    llm.close()
-    llm.close()
+    llm.close()  # safe to call twice
     assert llm.llm is None
 
 
 @requires_model
 def test_unified_llm_kv_cache_clear():
-    """Test kv_cache_clear works correctly."""
     with UnifiedLLM(MODEL_PATH, verbose=False) as llm:
         llm.generate("Hello", max_tokens=5)
         llm.kv_cache_clear()
@@ -352,7 +347,6 @@ def test_unified_llm_kv_cache_clear():
 
 @requires_model
 def test_unified_llm_invalid_max_tokens():
-    """Test that invalid max_tokens raises ValueError."""
     with UnifiedLLM(MODEL_PATH, verbose=False) as llm:
         with pytest.raises(ValueError, match="must be positive"):
             llm.backend._calc_max_tokens("test", 0)

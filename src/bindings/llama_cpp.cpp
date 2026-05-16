@@ -863,9 +863,16 @@ inline llama_token SamplerChain::sample(Context& ctx, int32_t idx) {
 // Helper: Prime generation by adding BOS, accepting tokens into sampler, and decoding prompt.
 // Returns the primed token sequence (with BOS if added).
 // This is the common setup boilerplate for all generate_tokens_* functions.
+//
+// skip_decode_prefix: number of leading tokens of the (post-BOS) priming
+// sequence whose KV state is already present in the context (longest-common-
+// prefix reuse). Sampler still accepts the full priming for penalty tracking,
+// but only `priming[skip_decode_prefix:]` is fed to llama_decode. Caller is
+// responsible for ensuring the cached prefix actually matches what's in the
+// KV cache (e.g. via Llama._cached_prompt_tokens).
 inline std::vector<llama_token> prime_generation(Context& ctx, SamplerChain& sampler,
                                                  const std::vector<llama_token>& prompt,
-                                                 bool add_bos) {
+                                                 bool add_bos, int32_t skip_decode_prefix = 0) {
   // Build priming with BOS prepended in a single pass — avoids the O(n)
   // memmove that std::vector::insert(begin(), ...) would cost for large
   // prompts.
@@ -877,14 +884,23 @@ inline std::vector<llama_token> prime_generation(Context& ctx, SamplerChain& sam
   }
   priming.insert(priming.end(), prompt.begin(), prompt.end());
 
-  // Accept all prompt tokens into sampler for penalty tracking
+  // Accept all prompt tokens into sampler for penalty tracking. This must
+  // cover the full priming — penalty windows depend on the entire history,
+  // not just the suffix that gets decoded.
   for (llama_token const t : priming) {
     llama_sampler_accept(sampler.get(), t);
   }
 
-  // Decode prompt to populate KV cache
-  if (!priming.empty()) {
-    ctx.decode(priming, /*return_logits=*/true);
+  // Validate skip range. Negative skip is treated as 0; skip >= priming.size()
+  // means the caller already has the entire priming in KV — nothing to decode.
+  // We still need cur_pos_ to reflect that prefix; caller (Python wrapper) is
+  // responsible for ensuring kv_cache_seq_rm / cur_pos_ are consistent before
+  // calling.
+  const int32_t skip = std::max<int32_t>(0, skip_decode_prefix);
+  const auto priming_size = static_cast<int32_t>(priming.size());
+  if (skip < priming_size) {
+    const std::vector<llama_token> suffix(priming.begin() + skip, priming.end());
+    ctx.decode(suffix, /*return_logits=*/true);
   }
 
   return priming;
@@ -894,11 +910,12 @@ std::vector<llama_token> generate_tokens(Context& ctx, SamplerChain& sampler,
                                          const std::vector<llama_token>& prompt,
                                          int32_t max_new_tokens, bool add_bos,
                                          llama_token eos_token,
-                                         const std::vector<llama_token>& stop_tokens) {
+                                         const std::vector<llama_token>& stop_tokens,
+                                         int32_t skip_decode_prefix = 0) {
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  prime_generation(ctx, sampler, prompt, add_bos);
+  prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
 
   for (int i = 0; i < max_new_tokens; ++i) {
     // llama_sampler_sample (called by generate_next) already accepts the token
@@ -1079,9 +1096,10 @@ std::vector<TokenProb> generate_tokens_with_details(
     Context& ctx, SamplerChain& sampler, const std::vector<llama_token>& prompt,
     int32_t max_new_tokens, bool add_bos, llama_token eos_token,
     const std::vector<std::vector<llama_token>>& stop_sequences, int32_t top_logprobs,
-    bool echo_prompt) {
+    bool echo_prompt, int32_t skip_decode_prefix = 0) {
   std::vector<TokenProb> results;
-  std::vector<llama_token> const priming = prime_generation(ctx, sampler, prompt, add_bos);
+  std::vector<llama_token> const priming =
+      prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
 
   // Echo prompt tokens if requested
   if (echo_prompt && !priming.empty()) {
@@ -1218,11 +1236,12 @@ std::vector<llama_token> generate_tokens_with_grammar(Context& ctx, SamplerChain
                                                       const std::vector<llama_token>& prompt,
                                                       int32_t max_new_tokens, bool add_bos,
                                                       llama_token eos_token,
-                                                      const std::vector<llama_token>& stop_tokens) {
+                                                      const std::vector<llama_token>& stop_tokens,
+                                                      int32_t skip_decode_prefix = 0) {
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  prime_generation(ctx, sampler, prompt, add_bos);
+  prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
 
   const int32_t n_vocab = ctx.model().n_vocab();
   // Allocate once outside the loop to avoid per-token heap allocation
@@ -1293,11 +1312,11 @@ std::vector<llama_token> generate_tokens_with_grammar(Context& ctx, SamplerChain
 std::vector<llama_token> generate_tokens_multi_stop(
     Context& ctx, SamplerChain& sampler, const std::vector<llama_token>& prompt,
     int32_t max_new_tokens, bool add_bos, llama_token eos_token,
-    const std::vector<std::vector<llama_token>>& stop_sequences) {
+    const std::vector<std::vector<llama_token>>& stop_sequences, int32_t skip_decode_prefix = 0) {
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  prime_generation(ctx, sampler, prompt, add_bos);
+  prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
 
   for (int i = 0; i < max_new_tokens; ++i) {
     // llama_sampler_sample (called by generate_next) already accepts the token
@@ -1328,11 +1347,12 @@ std::vector<llama_token> generate_tokens_multi_stop(
 std::vector<llama_token> generate_tokens_grammar_multi_stop(
     Context& ctx, SamplerChain& sampler, GrammarSampler& grammar,
     const std::vector<llama_token>& prompt, int32_t max_new_tokens, bool add_bos,
-    llama_token eos_token, const std::vector<std::vector<llama_token>>& stop_sequences) {
+    llama_token eos_token, const std::vector<std::vector<llama_token>>& stop_sequences,
+    int32_t skip_decode_prefix = 0) {
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  prime_generation(ctx, sampler, prompt, add_bos);
+  prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
 
   const int32_t n_vocab = ctx.model().n_vocab();
   // Allocate once outside the loop to avoid per-token heap allocation
@@ -1411,7 +1431,8 @@ int32_t generate_tokens_streaming(Context& ctx, SamplerChain& sampler,
                                   const std::vector<llama_token>& prompt, int32_t max_new_tokens,
                                   bool add_bos, llama_token eos_token,
                                   const std::vector<std::vector<llama_token>>& stop_sequences,
-                                  const std::function<bool(llama_token)>& callback) {
+                                  const std::function<bool(llama_token)>& callback,
+                                  int32_t skip_decode_prefix = 0) {
   // Release GIL for the duration of C++ computation.
   // Re-acquire only when calling the Python callback.
   nb::gil_scoped_release const release;
@@ -1428,7 +1449,7 @@ int32_t generate_tokens_streaming(Context& ctx, SamplerChain& sampler,
   }
   size_t n_yielded = 0;  // Number of tokens already yielded via callback
 
-  prime_generation(ctx, sampler, prompt, add_bos);
+  prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
 
   // Helper: yield tokens that are safe (too far from the end to be part of
   // any stop sequence). Returns false if callback requested cancellation.
@@ -1755,8 +1776,9 @@ NB_MODULE(_llama, m) {
 
   m.def("generate_tokens", &generate_tokens, "ctx"_a, "sampler"_a, "prompt"_a, "max_new_tokens"_a,
         "add_bos"_a, "eos_token"_a, "stop_tokens"_a = std::vector<llama_token>{},
-        nb::call_guard<nb::gil_scoped_release>(),
-        "Generate tokens using sampler chain. Returns list of token IDs.");
+        "skip_decode_prefix"_a = 0, nb::call_guard<nb::gil_scoped_release>(),
+        "Generate tokens using sampler chain. Returns list of token IDs. "
+        "skip_decode_prefix: leading tokens already in KV cache (prefix reuse).");
 
   nb::class_<TokenProb>(m, "TokenProb", "Token with probability information")
       .def_ro("token", &TokenProb::token, "Token ID")
@@ -1766,7 +1788,8 @@ NB_MODULE(_llama, m) {
   m.def("generate_tokens_with_details", &generate_tokens_with_details, "ctx"_a, "sampler"_a,
         "prompt"_a, "max_new_tokens"_a, "add_bos"_a, "eos_token"_a,
         "stop_sequences"_a = std::vector<std::vector<llama_token>>{}, "top_logprobs"_a = 0,
-        "echo_prompt"_a = false, nb::call_guard<nb::gil_scoped_release>(),
+        "echo_prompt"_a = false, "skip_decode_prefix"_a = 0,
+        nb::call_guard<nb::gil_scoped_release>(),
         "Generate tokens with per-token logprobs. Returns list of TokenProb.");
 
   // logging controls
@@ -1792,23 +1815,24 @@ NB_MODULE(_llama, m) {
 
   m.def("generate_tokens_with_grammar", &generate_tokens_with_grammar, "ctx"_a, "sampler"_a,
         "grammar"_a, "prompt"_a, "max_new_tokens"_a, "add_bos"_a, "eos_token"_a,
-        "stop_tokens"_a = std::vector<llama_token>{}, nb::call_guard<nb::gil_scoped_release>(),
-        "Generation with grammar constraint");
+        "stop_tokens"_a = std::vector<llama_token>{}, "skip_decode_prefix"_a = 0,
+        nb::call_guard<nb::gil_scoped_release>(), "Generation with grammar constraint");
 
   m.def("generate_tokens_multi_stop", &generate_tokens_multi_stop, "ctx"_a, "sampler"_a, "prompt"_a,
         "max_new_tokens"_a, "add_bos"_a, "eos_token"_a,
-        "stop_sequences"_a = std::vector<std::vector<llama_token>>{},
+        "stop_sequences"_a = std::vector<std::vector<llama_token>>{}, "skip_decode_prefix"_a = 0,
         nb::call_guard<nb::gil_scoped_release>(), "Generation with multi-token stop sequences");
 
   m.def("generate_tokens_grammar_multi_stop", &generate_tokens_grammar_multi_stop, "ctx"_a,
         "sampler"_a, "grammar"_a, "prompt"_a, "max_new_tokens"_a, "add_bos"_a, "eos_token"_a,
-        "stop_sequences"_a = std::vector<std::vector<llama_token>>{},
+        "stop_sequences"_a = std::vector<std::vector<llama_token>>{}, "skip_decode_prefix"_a = 0,
         nb::call_guard<nb::gil_scoped_release>(),
         "Generation with grammar and multi-token stop sequences");
 
   m.def("generate_tokens_streaming", &generate_tokens_streaming, "ctx"_a, "sampler"_a, "prompt"_a,
         "max_new_tokens"_a, "add_bos"_a, "eos_token"_a,
         "stop_sequences"_a = std::vector<std::vector<llama_token>>{}, "callback"_a,
+        "skip_decode_prefix"_a = 0,
         "Streaming generation with callback. Callback receives token, returns "
         "False to stop.");
 

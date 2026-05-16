@@ -11,7 +11,7 @@ import pytest
 
 MODEL_PATH = os.environ.get(
     "LLAMA_TEST_MODEL",
-    os.path.join(os.path.dirname(__file__), "..", "models", "Qwen3-8B-Q6_K.gguf"),
+    os.path.join(os.path.dirname(__file__), "..", "models", "Qwen3.5-4B-Q4_K_M.gguf"),
 )
 
 requires_model = pytest.mark.skipif(

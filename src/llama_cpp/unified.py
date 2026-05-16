@@ -1,22 +1,30 @@
-"""Unified LLM wrapper supporting multiple model families.
+"""Unified LLM wrapper for a curated set of model families.
 
-This module provides a unified interface for working with different LLM families
-(Qwen3, Gemma, Gemma 4, Mistral, GPT-OSS, Phi, GLM4, MiniCPM, Granite) with
-automatic model detection and family-specific optimizations.
+Supported families (other architectures are rejected at construction time):
+
+- **Qwen 3.5** (hybrid attention; thinking on by default for 27B / 35B-A3B
+  / 122B-A10B / 397B-A17B; thinking off for 0.8B / 2B / 4B / 9B small variants)
+- **Qwen 3.6** (27B dense, 35B-A3B MoE; both thinking and instruct modes)
+- **Gemma 4** (E2B / E4B 128K; 26B-A4B / 31B 256K; thinking via ``<|think|>``
+  prefix in the system prompt per Unsloth spec)
+- **IBM Granite 4.1** (3B / 8B / 30B dense; deterministic defaults
+  T=0.0, top_p=1.0, top_k=0; ctx 16K-131K)
+
+All sampling defaults follow the recipes published at https://unsloth.ai/docs.
 
 Example:
     >>> from llama_cpp.unified import UnifiedLLM
-    >>> llm = UnifiedLLM("models/Qwen3-8B-Q6_K.gguf")
+    >>> llm = UnifiedLLM("models/Qwen3.5-4B-Q4_K_M.gguf")
     >>> response = llm.generate("Hello, world!")
     >>> print(response)
 """
 
 from abc import ABC, abstractmethod
 import atexit
+from collections.abc import Iterator
 import contextlib
 from dataclasses import dataclass
 from dataclasses import field
-from datetime import datetime
 from enum import auto
 from enum import Enum
 import gc
@@ -66,27 +74,34 @@ class ModelFamily(Enum):
     """Supported model families.
 
     Each family has specific chat templates, sampling defaults, and capabilities.
+    Models outside this set are rejected at construction time.
     """
 
-    GEMMA = auto()
-    GEMMA4 = auto()
-    GLM4 = auto()
-    GRANITE = auto()
-    MINICPM = auto()
-    PHI = auto()
-    MISTRAL = auto()
-    QWEN3 = auto()
     QWEN3_5 = auto()
-    GPT_OSS = auto()
+    QWEN3_6 = auto()
+    GEMMA4 = auto()
+    GRANITE = auto()
+
+
+class UnsupportedModelError(ValueError):
+    """Raised when a model file does not match any supported family."""
 
 
 @dataclass(slots=True)
 class ModelConfig:
     """Model-specific configuration.
 
+    Per the supported families' Unsloth recipes, thinking mode reuses the
+    base sampling profile (Qwen 3.5/3.6) or has no separate spec (Gemma 4,
+    Granite 4.1). There is therefore no per-mode sampling override —
+    callers needing different sampling for thinking vs non-thinking should
+    construct two ``UnifiedLLM`` instances with different ``family=``
+    presets (e.g. ``qwen3.6`` vs ``qwen3.6-coding``).
+
     Attributes:
         family: The model family this config belongs to.
-        chat_format: llama.cpp chat format name (e.g., "chatml", "gemma").
+        chat_format: llama.cpp chat format name (e.g., "chatml", "gemma"),
+            or None to use the model's embedded chat template.
         temperature: Default sampling temperature.
         top_p: Default nucleus sampling probability.
         top_k: Default top-k sampling value.
@@ -94,12 +109,9 @@ class ModelConfig:
         max_ctx: Maximum supported context length.
         supports_thinking: Whether model supports thinking/reasoning mode.
         stop_sequences: Default stop sequences for this model.
-        think_temperature: Temperature override for thinking mode.
-        think_top_p: Top-p override for thinking mode.
-        think_top_k: Top-k override for thinking mode.
-        think_min_p: Min-p override for thinking mode.
-        presence_penalty: Penalty for token presence (0.0-2.0, reduces repetition).
-        repeat_penalty: Repetition penalty multiplier (1.0 = disabled, >1.0 penalizes).
+        presence_penalty: Token-presence penalty (Unsloth uses 1.5 for Qwen
+            thinking; 0.0 disables).
+        repeat_penalty: Repetition penalty multiplier (1.0 = disabled).
     """
 
     family: ModelFamily
@@ -111,166 +123,29 @@ class ModelConfig:
     max_ctx: int = 8192
     supports_thinking: bool = False
     stop_sequences: list[str] = field(default_factory=list)
-    think_temperature: float | None = None
-    think_top_p: float | None = None
-    think_top_k: int | None = None
-    think_min_p: float | None = None
     presence_penalty: float = 0.0
-    repeat_penalty: float = 1.1  # 1.0 = disabled
+    repeat_penalty: float = 1.0
+
+
+# All sampling defaults below follow https://unsloth.ai/docs/models/...
+# Stop sequences include both the canonical chatml/gemma turn ends and the
+# common GGUF eos variants — extra entries are harmless if the model never
+# emits them.
+
+_QWEN_CHATML_STOPS = ["<|im_end|>", "<|endoftext|>"]
+_GEMMA4_STOPS = ["<turn|>", "<end_of_turn>"]
+_GRANITE_STOPS = ["<|end_of_text|>", "<|endoftext|>"]
 
 
 # Maps config key -> ModelConfig.  Used for auto-detection by filename.
 MODEL_CONFIGS: dict[str, ModelConfig] = {
-    "gemma": ModelConfig(
-        ModelFamily.GEMMA,
-        chat_format="gemma",
-        temperature=1.0,
-        top_p=0.95,
-        top_k=64,
-        min_p=0.0,
-        max_ctx=128000,
-    ),
-    # Gemma 4 E2B / E4B — dense + PLE, 128K context, thinking via <|think|> in system prompt
-    "gemma-4": ModelConfig(
-        ModelFamily.GEMMA4,
-        chat_format="gemma",
-        temperature=1.0,
-        top_p=0.95,
-        top_k=64,
-        min_p=0.0,
-        max_ctx=131072,
-        supports_thinking=True,
-        repeat_penalty=1.0,  # Unsloth: keep disabled unless looping
-        stop_sequences=["<turn|>", "<end_of_turn>"],
-    ),
-    # Gemma 4 26B-A4B (MoE) / 31B (dense) — 256K context
-    "gemma-4-large": ModelConfig(
-        ModelFamily.GEMMA4,
-        chat_format="gemma",
-        temperature=1.0,
-        top_p=0.95,
-        top_k=64,
-        min_p=0.0,
-        max_ctx=262144,
-        supports_thinking=True,
-        repeat_penalty=1.0,
-        stop_sequences=["<turn|>", "<end_of_turn>"],
-    ),
-    "glm-4": ModelConfig(
-        ModelFamily.GLM4,
-        chat_format="glm4",
-        temperature=1.0,
-        top_p=0.95,
-        top_k=0,
-        min_p=0.01,
-        max_ctx=131072,
-    ),
-    "glm-4.7": ModelConfig(
-        ModelFamily.GLM4,
-        temperature=1.0,
-        top_p=0.95,
-        top_k=0,
-        min_p=0.01,
-        max_ctx=202752,
-        supports_thinking=True,
-        repeat_penalty=1.0,
-        stop_sequences=["<|endoftext|>", "<|user|>", "<|observation|>"],
-    ),
-    "granite": ModelConfig(
-        ModelFamily.GRANITE,
-        temperature=0.7,
-        top_p=0.9,
-        top_k=40,
-        min_p=0.0,
-        max_ctx=131072,
-        supports_thinking=True,
-        repeat_penalty=1.05,
-        stop_sequences=["<|end_of_text|>", "<|endoftext|>"],
-        think_temperature=0.6,
-        think_top_p=0.95,
-    ),
-    "minicpm": ModelConfig(
-        ModelFamily.MINICPM,
-        chat_format="chatml",
-        temperature=0.9,
-        top_p=0.95,
-        top_k=50,
-        max_ctx=65536,
-    ),
-    "ministral-reasoning": ModelConfig(
-        ModelFamily.MISTRAL,
-        temperature=0.7,
-        top_p=0.95,
-        max_ctx=256000,
-    ),
-    "ministral-instruct": ModelConfig(
-        ModelFamily.MISTRAL,
-        temperature=0.15,
-        max_ctx=256000,
-    ),
-    "mistral": ModelConfig(
-        ModelFamily.MISTRAL,
-        temperature=0.7,
-        top_p=0.95,
-        max_ctx=32768,
-    ),
-    "phi-4": ModelConfig(
-        ModelFamily.PHI,
-        temperature=0.8,
-        top_p=0.95,
-        top_k=50,
-        max_ctx=16000,
-        stop_sequences=["<|im_end|>"],
-    ),
-    "qwen3": ModelConfig(
-        ModelFamily.QWEN3,
-        chat_format="chatml",
-        supports_thinking=True,
-        temperature=0.7,
-        top_p=0.8,
-        top_k=20,
-        min_p=0.0,
-        max_ctx=131072,
-        stop_sequences=["<|im_end|>", "<|endoftext|>"],
-        think_temperature=0.6,
-        think_top_p=0.95,
-        think_top_k=20,
-        think_min_p=0.0,
-    ),
-    "qwen3-instruct-2507": ModelConfig(
-        ModelFamily.QWEN3,
-        chat_format="chatml",
-        supports_thinking=False,
-        temperature=0.7,
-        top_p=0.8,
-        top_k=20,
-        min_p=0.0,
-        max_ctx=16384,
-        presence_penalty=1.0,
-        stop_sequences=["<|im_end|>", "<|endoftext|>"],
-    ),
-    "qwen3-thinking-2507": ModelConfig(
-        ModelFamily.QWEN3,
-        chat_format="chatml",
-        supports_thinking=True,
-        temperature=0.6,
-        top_p=0.95,
-        top_k=20,
-        min_p=0.0,
-        max_ctx=32768,
-        presence_penalty=1.0,
-        stop_sequences=["<|im_end|>", "<|endoftext|>"],
-        think_temperature=0.6,
-        think_top_p=0.95,
-        think_top_k=20,
-        think_min_p=0.0,
-    ),
-    # Qwen 3.5 (27B / 35B-A3B / 122B-A10B / 397B-A17B) — thinking on by default.
-    # Per Unsloth, thinking mode uses the same general-thinking sampling as
-    # the base config (temperature 1.0, top_p 0.95, top_k 20, min_p 0.0,
-    # presence_penalty 1.5, repeat_penalty disabled). Do NOT override with
-    # think_temperature=0.6 — that's a Qwen-3 (not 3.5) value and pushes
-    # thinking generation colder than upstream recommends.
+    # ------------------------------------------------------------------
+    # Qwen 3.5 — hybrid-attention (262K ctx, 1M via YaRN).
+    #
+    # Large variants (27B / 35B-A3B / 122B-A10B / 397B-A17B) default to
+    # thinking on; small variants (0.8B / 2B / 4B / 9B) default to
+    # thinking off but use the same sampling profile.
+    # ------------------------------------------------------------------
     "qwen3.5": ModelConfig(
         ModelFamily.QWEN3_5,
         chat_format="chatml",
@@ -282,9 +157,8 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_ctx=262144,
         presence_penalty=1.5,
         repeat_penalty=1.0,
-        stop_sequences=["<|im_end|>", "<|endoftext|>"],
+        stop_sequences=_QWEN_CHATML_STOPS,
     ),
-    # Qwen 3.5 Small (0.8B, 2B, 4B, 9B) — thinking disabled by default
     "qwen3.5-small": ModelConfig(
         ModelFamily.QWEN3_5,
         chat_format="chatml",
@@ -296,11 +170,9 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_ctx=262144,
         presence_penalty=1.5,
         repeat_penalty=1.0,
-        stop_sequences=["<|im_end|>", "<|endoftext|>"],
+        stop_sequences=_QWEN_CHATML_STOPS,
     ),
-    # Qwen 3.5 "Precise coding" preset — Unsloth's recommended settings for
-    # WebDev/Arena-style tasks: colder temp, presence_penalty off.
-    # Not auto-detected; opt in via UnifiedLLM(..., config_override="qwen3.5-coding").
+    # Opt-in coding preset (Unsloth: precise coding / WebDev / Arena).
     "qwen3.5-coding": ModelConfig(
         ModelFamily.QWEN3_5,
         chat_format="chatml",
@@ -312,31 +184,126 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_ctx=262144,
         presence_penalty=0.0,
         repeat_penalty=1.0,
-        stop_sequences=["<|im_end|>", "<|endoftext|>"],
+        stop_sequences=_QWEN_CHATML_STOPS,
     ),
-    "gpt-oss": ModelConfig(
-        ModelFamily.GPT_OSS,
+    # ------------------------------------------------------------------
+    # Qwen 3.6 — 27B dense + 35B-A3B MoE.  Thinking and instruct modes
+    # share max_ctx but diverge on sampling.  MTP variants accept the
+    # same presets — MTP affects the runtime, not the sampling recipe.
+    # ------------------------------------------------------------------
+    "qwen3.6": ModelConfig(
+        ModelFamily.QWEN3_6,
+        chat_format="chatml",
+        supports_thinking=True,
         temperature=1.0,
-        top_p=1.0,
-        top_k=0,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        max_ctx=262144,
+        presence_penalty=1.5,
+        repeat_penalty=1.0,
+        stop_sequences=_QWEN_CHATML_STOPS,
+    ),
+    "qwen3.6-coding": ModelConfig(
+        ModelFamily.QWEN3_6,
+        chat_format="chatml",
+        supports_thinking=True,
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        max_ctx=262144,
+        presence_penalty=0.0,
+        repeat_penalty=1.0,
+        stop_sequences=_QWEN_CHATML_STOPS,
+    ),
+    "qwen3.6-instruct": ModelConfig(
+        ModelFamily.QWEN3_6,
+        chat_format="chatml",
+        supports_thinking=False,
+        temperature=0.7,
+        top_p=0.8,
+        top_k=20,
+        min_p=0.0,
+        max_ctx=262144,
+        presence_penalty=1.5,
+        repeat_penalty=1.0,
+        stop_sequences=_QWEN_CHATML_STOPS,
+    ),
+    "qwen3.6-instruct-reasoning": ModelConfig(
+        ModelFamily.QWEN3_6,
+        chat_format="chatml",
+        supports_thinking=False,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        max_ctx=262144,
+        presence_penalty=1.5,
+        repeat_penalty=1.0,
+        stop_sequences=_QWEN_CHATML_STOPS,
+    ),
+    # ------------------------------------------------------------------
+    # Gemma 4 — E2B/E4B 128K, 26B-A4B/31B 256K.  Thinking is opt-in via
+    # `<|think|>` prefix in the system prompt (handled in
+    # ChatTemplateBackend._build_messages).  Repetition penalty disabled
+    # per Unsloth.
+    # ------------------------------------------------------------------
+    "gemma-4": ModelConfig(
+        ModelFamily.GEMMA4,
+        chat_format="gemma",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=64,
         min_p=0.0,
         max_ctx=131072,
         supports_thinking=True,
         repeat_penalty=1.0,
+        stop_sequences=_GEMMA4_STOPS,
+    ),
+    "gemma-4-large": ModelConfig(
+        ModelFamily.GEMMA4,
+        chat_format="gemma",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=64,
+        min_p=0.0,
+        max_ctx=262144,
+        supports_thinking=True,
+        repeat_penalty=1.0,
+        stop_sequences=_GEMMA4_STOPS,
+    ),
+    # ------------------------------------------------------------------
+    # IBM Granite 4.1 — deterministic defaults per Unsloth (T=0.0, top_p=1.0,
+    # top_k=0).  3B / 8B / 30B dense; 16K min recommended ctx, 131K max.
+    # No thinking-mode spec from upstream, so we expose it as off.
+    # ------------------------------------------------------------------
+    "granite": ModelConfig(
+        ModelFamily.GRANITE,
+        temperature=0.0,
+        top_p=1.0,
+        top_k=0,
+        min_p=0.0,
+        max_ctx=131072,
+        supports_thinking=False,
+        repeat_penalty=1.0,
+        stop_sequences=_GRANITE_STOPS,
     ),
 }
 
-# Reverse mapping: ModelFamily enum -> default config key.
-# When a user passes a ModelFamily enum directly (not a string key),
-# this determines which config to use.  The first config key registered
-# for each family is the default — additional keys (e.g.
-# "qwen3-instruct-2507" for QWEN3) are reachable only by string key.
+# Reverse mapping: ModelFamily enum -> default config key.  When a user
+# passes a ModelFamily enum directly, this picks the canonical preset.  The
+# first config key registered for each family is the default; additional
+# keys (e.g. "qwen3.5-coding", "qwen3.6-instruct") require an explicit
+# string.  Order in MODEL_CONFIGS therefore matters.
 _FAMILY_DEFAULT_KEY: dict[ModelFamily, str] = {}
 for _key, _cfg in MODEL_CONFIGS.items():
     _FAMILY_DEFAULT_KEY.setdefault(_cfg.family, _key)
 
 
+# Filename / metadata markers used to pick the right preset within a family.
 _GEMMA4_LARGE_MARKERS: tuple[str, ...] = ("26b", "31b", "a4b")
+_QWEN_SMALL_SIZES: tuple[str, ...] = ("0.8b", "2b", "4b", "9b")
 
 
 def _is_gemma4_large(name_lower: str) -> bool:
@@ -344,144 +311,97 @@ def _is_gemma4_large(name_lower: str) -> bool:
     return any(marker in name_lower for marker in _GEMMA4_LARGE_MARKERS)
 
 
-# Qwen 3.5 sizes where thinking is disabled by default.
-_QWEN35_SMALL_SIZES: tuple[str, ...] = ("0.8b", "2b", "4b", "9b")
-
-
 def _classify_qwen35_variant(name_lower: str) -> ModelConfig:
-    """Pick the right Qwen 3.5 config for a name / filename.
-
-    Accepts either a metadata ``general.name`` (may contain spaces) or a
-    filename stem (dash-separated). Returns the small-variant config when a
-    known small size marker appears; otherwise the default Qwen 3.5 config.
-    """
-    for size in _QWEN35_SMALL_SIZES:
+    """Qwen 3.5: size-based routing for thinking-default-on vs -off."""
+    for size in _QWEN_SMALL_SIZES:
         if f"-{size}" in name_lower or f" {size}" in name_lower:
             return MODEL_CONFIGS["qwen3.5-small"]
     return MODEL_CONFIGS["qwen3.5"]
 
 
+def _classify_qwen36_variant(name_lower: str) -> ModelConfig:
+    """Qwen 3.6: thinking-mode default unless 'instruct' is in the name.
+
+    Coding preset is not auto-detected; opt in via ``family="qwen3.6-coding"``.
+    """
+    if "instruct" in name_lower:
+        if "reasoning" in name_lower:
+            return MODEL_CONFIGS["qwen3.6-instruct-reasoning"]
+        return MODEL_CONFIGS["qwen3.6-instruct"]
+    return MODEL_CONFIGS["qwen3.6"]
+
+
 def detect_from_metadata(model: Llama) -> ModelConfig | None:
-    """Detect model family using GGUF metadata (authoritative).
+    """Detect a supported family from GGUF metadata (authoritative).
 
-    Args:
-        model: Loaded Llama instance with model metadata available.
-
-    Returns:
-        ModelConfig if detected from metadata, None if metadata unavailable or unrecognized.
+    Returns ``None`` if metadata is unavailable or the architecture is not
+    in the supported set — caller is expected to fall back to filename
+    detection or raise.
     """
     try:
-        # Try to get architecture from GGUF metadata (most authoritative)
-        arch = model.model.meta_val_str("general.architecture")
-        name = model.model.meta_val_str("general.name")
-        name_lower = name.lower()
+        arch = model.model.meta_val_str("general.architecture").lower()
+        name = model.model.meta_val_str("general.name").lower()
+    except (RuntimeError, AttributeError):
+        return None
 
-        # Architecture-based detection with name-based variant refinement
-        if "qwen" in arch:
-            if "qwen3.5" in name_lower or "qwen-3.5" in name_lower:
-                return _classify_qwen35_variant(name_lower)
-            elif "2507" in name_lower:
-                if "thinking" in name_lower:
-                    return MODEL_CONFIGS["qwen3-thinking-2507"]
-                else:
-                    return MODEL_CONFIGS["qwen3-instruct-2507"]
-            elif "qwen3" in arch or "qwen3" in name_lower:
-                return MODEL_CONFIGS["qwen3"]
-            elif "qwen" in arch:
-                # Older qwen models (qwen1, qwen2) might have different configs
-                # Fall back to qwen3 as reasonable default
-                return MODEL_CONFIGS["qwen3"]
+    # Qwen family — distinguish 3.5 vs 3.6 by name; arch stays "qwen*".
+    if "qwen" in arch:
+        if "qwen3.6" in name or "qwen-3.6" in name or "qwen3_6" in name:
+            return _classify_qwen36_variant(name)
+        if "qwen3.5" in name or "qwen-3.5" in name or "qwen3_5" in name:
+            return _classify_qwen35_variant(name)
+        return None
 
-        elif "gemma" in arch:
-            # Gemma 4 detection — arch stays "gemma*" but name carries the version
-            if "gemma-4" in name_lower or "gemma4" in name_lower:
-                if _is_gemma4_large(name_lower):
-                    return MODEL_CONFIGS["gemma-4-large"]
-                return MODEL_CONFIGS["gemma-4"]
-            return MODEL_CONFIGS["gemma"]
+    # Gemma 4 — only Gemma 4 is supported, not Gemma 2/3.
+    if "gemma" in arch:
+        if "gemma-4" in name or "gemma4" in name:
+            if _is_gemma4_large(name):
+                return MODEL_CONFIGS["gemma-4-large"]
+            return MODEL_CONFIGS["gemma-4"]
+        return None
 
-        elif "ministral" in arch or "ministral" in name_lower:
-            if "reasoning" in name_lower:
-                return MODEL_CONFIGS["ministral-reasoning"]
-            return MODEL_CONFIGS["ministral-instruct"]
-
-        elif "mistral" in arch:
-            return MODEL_CONFIGS["mistral"]
-
-        elif "phi" in arch:
-            return MODEL_CONFIGS["phi-4"]
-
-        elif "glm" in arch:
-            if "glm-4.7" in name_lower or "glm4.7" in name_lower:
-                return MODEL_CONFIGS["glm-4.7"]
-            return MODEL_CONFIGS["glm-4"]
-
-        elif "granite" in arch or "granite" in name_lower:
-            # Granite 3.x, 4.x (incl. granitehybrid, granitemoe)
+    # Granite 4.x — also covers granitehybrid / granitemoe arch tags from
+    # llama.cpp upstream; sampling preset is the same deterministic recipe
+    # regardless of layout variant.
+    if "granite" in arch or "granite" in name:
+        if "granite-4" in name or "granite4" in name or "granite-4.1" in name:
             return MODEL_CONFIGS["granite"]
-
-        elif "llama" in arch:
-            # Generic llama architecture - could be llama2, llama3, etc.
-            # No specific config needed for now
-            return None
-
-    except RuntimeError, AttributeError:
-        # Metadata not available or model not loaded
-        pass
+        # An older Granite (3.x) — not in the supported set.
+        return None
 
     return None
 
 
 def detect_model_family(model_path: str) -> ModelConfig:
-    """Detect model family from file path (filename-based fallback).
+    """Detect a supported family from a filename.
 
-    This is used for initial detection before model is loaded. For more
-    reliable detection, use detect_from_metadata() after loading.
-
-    Args:
-        model_path: Path to the GGUF model file.
-
-    Returns:
-        ModelConfig for the detected family.
+    Used before the model loads (initial config). Refined post-load via
+    ``detect_from_metadata`` for cases where the filename lies (e.g. mirror
+    repos that rename files).
 
     Raises:
-        ValueError: If model family cannot be detected from path.
+        UnsupportedModelError: if the filename does not match any of
+            Qwen 3.5, Qwen 3.6, Gemma 4, or Granite 4.1.
     """
-    # Match against filename only to avoid false positives from directory
-    # names (e.g. /home/user/phi-experiments/llama-model.gguf).
-    filename_lower = os.path.basename(model_path).lower()
+    # Match against the filename only — avoid false positives from
+    # directory names (e.g. ``/home/user/granite-experiments/foo.gguf``).
+    filename = os.path.basename(model_path).lower()
 
-    if "ministral" in filename_lower:
-        if "reasoning" in filename_lower:
-            return MODEL_CONFIGS["ministral-reasoning"]
-        return MODEL_CONFIGS["ministral-instruct"]
-
-    # Qwen3-2507 variants (Instruct vs Thinking)
-    if "qwen3" in filename_lower and "2507" in filename_lower:
-        if "thinking" in filename_lower:
-            return MODEL_CONFIGS["qwen3-thinking-2507"]
-        return MODEL_CONFIGS["qwen3-instruct-2507"]
-
-    # Qwen 3.5 — size-based routing (thinking disabled on small variants).
-    # NOTE: Early return here prevents the generic loop below from matching 'qwen3.5'
-    if "qwen3.5" in filename_lower:
-        return _classify_qwen35_variant(filename_lower)
-
-    # Gemma 4 variants — routed by size marker (26B-A4B / 31B → large, else E2B/E4B)
-    # NOTE: Early return prevents 'gemma' from matching Gemma 4 filenames in the generic loop
-    if "gemma-4" in filename_lower or "gemma4" in filename_lower:
-        if _is_gemma4_large(filename_lower):
+    if "qwen3.6" in filename or "qwen-3.6" in filename:
+        return _classify_qwen36_variant(filename)
+    if "qwen3.5" in filename or "qwen-3.5" in filename:
+        return _classify_qwen35_variant(filename)
+    if "gemma-4" in filename or "gemma4" in filename:
+        if _is_gemma4_large(filename):
             return MODEL_CONFIGS["gemma-4-large"]
         return MODEL_CONFIGS["gemma-4"]
+    if "granite-4" in filename or "granite4" in filename:
+        return MODEL_CONFIGS["granite"]
 
-    # Generic fallback: match longest config key first (prevents 'qwen3' matching 'qwen3.5')
-    for key in sorted(MODEL_CONFIGS.keys(), key=len, reverse=True):
-        if key in filename_lower:
-            return MODEL_CONFIGS[key]
-
-    raise ValueError(
-        f"Unknown model family: {model_path}. "
-        f"Supported: {', '.join(sorted(MODEL_CONFIGS.keys()))}"
+    raise UnsupportedModelError(
+        f"Model {os.path.basename(model_path)!r} does not match any supported "
+        f"family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and "
+        f"IBM Granite 4.1. Use the lower-level Llama class for other models."
     )
 
 
@@ -517,6 +437,8 @@ class Backend(ABC):
         *,
         thinking: bool = False,
         stop: list[str] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> str:
         """Generate text response.
 
@@ -530,6 +452,12 @@ class Backend(ABC):
                 (e.g., Qwen3). When enabled, model shows its reasoning process.
             stop: Additional stop sequences to terminate generation. These are
                 combined with backend-specific default stop sequences.
+            reset_kv_cache: Forwarded to ``Llama.create_chat_completion``.
+                Default True clears KV before this turn.
+            cache_prompt: Forwarded to ``Llama.create_chat_completion``.
+                When ``reset_kv_cache=False`` and this is True, trims KV to
+                the longest matching prefix and decodes only the divergent
+                suffix.
 
         Returns:
             Generated text response with thinking content removed if present.
@@ -552,6 +480,8 @@ class Backend(ABC):
         max_tokens: int | None,
         *,
         stop: list[str] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> tuple[str, str]:
         """Generate with separate thinking and answer.
 
@@ -563,6 +493,8 @@ class Backend(ABC):
                 based on prompt length and context window size.
             stop: Additional stop sequences to terminate generation. These are
                 combined with backend-specific default stop sequences.
+            reset_kv_cache: Forwarded to ``Llama.create_chat_completion``.
+            cache_prompt: Forwarded to ``Llama.create_chat_completion``.
 
         Returns:
             Tuple of (thinking_text, answer_text) where thinking_text contains
@@ -619,6 +551,32 @@ class Backend(ABC):
             return min(requested, available)
         return available
 
+    def _sampling_kwargs(self, stop: list[str] | None) -> dict[str, Any]:
+        """Build per-call sampling kwargs from this backend's ModelConfig.
+
+        Centralizes the kwargs construction so ``generate``,
+        ``generate_with_thinking``, and ``UnifiedLLM.chat`` all use the same
+        recipe. Stop sequences from ``self.config.stop_sequences`` are
+        unioned with the caller's ``stop`` argument.
+        """
+        kwargs: dict[str, Any] = {
+            "temperature": self.config.temperature,
+            "top_p": self.config.top_p,
+            "top_k": self.config.top_k,
+            "min_p": self.config.min_p,
+            "repeat_penalty": self.config.repeat_penalty,
+        }
+        if self.config.presence_penalty > 0:
+            kwargs["presence_penalty"] = self.config.presence_penalty
+        all_stop = (
+            list(self.config.stop_sequences) if self.config.stop_sequences else []
+        )
+        if stop:
+            all_stop.extend(stop)
+        if all_stop:
+            kwargs["stop"] = all_stop
+        return kwargs
+
 
 class ChatTemplateBackend(Backend):
     """Backend using llama.cpp built-in chat templates.
@@ -652,29 +610,16 @@ class ChatTemplateBackend(Backend):
         *,
         thinking: bool = False,
         stop: list[str] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> str:
         messages = self._build_messages(prompt, system_prompt, thinking=thinking)
-        # Use _prepare_chat to format and tokenize once
         _, _, n_tokens = self.llm._prepare_chat(messages)
         max_tokens = self._calc_max_tokens_from_count(n_tokens, max_tokens)
 
-        kwargs: dict[str, Any] = {
-            "temperature": self.config.temperature,
-            "top_p": self.config.top_p,
-            "top_k": self.config.top_k,
-            "min_p": self.config.min_p,
-            "repeat_penalty": self.config.repeat_penalty,
-        }
-        if self.config.presence_penalty > 0:
-            kwargs["presence_penalty"] = self.config.presence_penalty
-        all_stop = (
-            list(self.config.stop_sequences) if self.config.stop_sequences else []
-        )
-        if stop:
-            all_stop.extend(stop)
-        if all_stop:
-            kwargs["stop"] = all_stop
-
+        kwargs = self._sampling_kwargs(stop)
+        kwargs["reset_kv_cache"] = reset_kv_cache
+        kwargs["cache_prompt"] = cache_prompt
         resp = cast(
             dict[str, Any],
             self.llm.create_chat_completion(messages, max_tokens=max_tokens, **kwargs),
@@ -689,53 +634,26 @@ class ChatTemplateBackend(Backend):
         max_tokens: int | None,
         *,
         stop: list[str] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> tuple[str, str]:
         if not self.config.supports_thinking:
-            return "", self.generate(prompt, system_prompt, max_tokens, stop=stop)
+            return "", self.generate(
+                prompt,
+                system_prompt,
+                max_tokens,
+                stop=stop,
+                reset_kv_cache=reset_kv_cache,
+                cache_prompt=cache_prompt,
+            )
 
         messages = self._build_messages(prompt, system_prompt, thinking=True)
-        # Use _prepare_chat to format and tokenize once
         _, _, n_tokens = self.llm._prepare_chat(messages)
         max_tokens = self._calc_max_tokens_from_count(n_tokens, max_tokens)
 
-        temp = (
-            self.config.think_temperature
-            if self.config.think_temperature is not None
-            else self.config.temperature
-        )
-        top_p = (
-            self.config.think_top_p
-            if self.config.think_top_p is not None
-            else self.config.top_p
-        )
-        top_k = (
-            self.config.think_top_k
-            if self.config.think_top_k is not None
-            else self.config.top_k
-        )
-        min_p = (
-            self.config.think_min_p
-            if self.config.think_min_p is not None
-            else self.config.min_p
-        )
-
-        kwargs: dict[str, Any] = {
-            "temperature": temp,
-            "top_p": top_p,
-            "top_k": top_k,
-            "min_p": min_p,
-            "repeat_penalty": self.config.repeat_penalty,
-        }
-        if self.config.presence_penalty > 0:
-            kwargs["presence_penalty"] = self.config.presence_penalty
-        all_stop = (
-            list(self.config.stop_sequences) if self.config.stop_sequences else []
-        )
-        if stop:
-            all_stop.extend(stop)
-        if all_stop:
-            kwargs["stop"] = all_stop
-
+        kwargs = self._sampling_kwargs(stop)
+        kwargs["reset_kv_cache"] = reset_kv_cache
+        kwargs["cache_prompt"] = cache_prompt
         resp = cast(
             dict[str, Any],
             self.llm.create_chat_completion(messages, max_tokens=max_tokens, **kwargs),
@@ -772,9 +690,12 @@ class ChatTemplateBackend(Backend):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        # Only add /think or /no_think for Qwen3 family models that support thinking
+        # Qwen 3.5 / 3.6 use the chatml ``/think`` and ``/no_think`` user-side
+        # toggles to switch reasoning behavior at runtime.  Gemma 4 has its
+        # own ``<|think|>`` system-prefix mechanism (handled above) and does
+        # NOT understand /think — never append the suffix for it.
         if (
-            self.config.family in (ModelFamily.QWEN3, ModelFamily.QWEN3_5)
+            self.config.family in (ModelFamily.QWEN3_5, ModelFamily.QWEN3_6)
             and self.config.supports_thinking
         ):
             suffix = " /think" if thinking else " /no_think"
@@ -843,137 +764,6 @@ class ChatTemplateBackend(Backend):
         return "", text.strip()
 
 
-class PhiBackend(Backend):
-    """Backend for Phi-4 with custom <|im_sep|> template."""
-
-    def generate(
-        self,
-        prompt: str,
-        system_prompt: str | None,
-        max_tokens: int | None,
-        *,
-        thinking: bool = False,
-        stop: list[str] | None = None,
-    ) -> str:
-        formatted = self._format(prompt, system_prompt)
-        max_tokens = self._calc_max_tokens(formatted, max_tokens)
-        all_stop = ["<|im_end|>"]
-        if stop:
-            all_stop.extend(stop)
-        return cast(
-            str, self.llm.generate(formatted, max_tokens=max_tokens, stop=all_stop)
-        ).strip()
-
-    def generate_with_thinking(
-        self,
-        prompt: str,
-        system_prompt: str | None,
-        max_tokens: int | None,
-        *,
-        stop: list[str] | None = None,
-    ) -> tuple[str, str]:
-        return "", self.generate(prompt, system_prompt, max_tokens, stop=stop)
-
-    def _format(self, prompt: str, system_prompt: str | None) -> str:
-        """Format prompt using Phi-4 template."""
-        parts: list[str] = []
-        if system_prompt:
-            parts.append(f"<|im_start|>system<|im_sep|>\n{system_prompt}<|im_end|>\n")
-        parts.append(f"<|im_start|>user<|im_sep|>\n{prompt}<|im_end|>\n")
-        parts.append("<|im_start|>assistant<|im_sep|>\n")
-        return "".join(parts)
-
-
-class GPTOSSBackend(Backend):
-    """Backend for GPT-OSS with dual-channel (analysis/final) output.
-
-    Attributes:
-        reasoning_level: Current reasoning level ("low", "medium", "high").
-    """
-
-    _ANALYSIS_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
-        r"<\|channel\|\>\s*analysis\s*<\|message\|\>(.*?)(?:<\|end\|\>|<\|start\|\>|$)",
-        re.DOTALL,
-    )
-    _FINAL_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
-        r"<\|channel\|\>\s*final\s*<\|message\|\>(.*?)(?:<\|end\|\>|$)", re.DOTALL
-    )
-    SYSTEM: ClassVar[str] = "You are ChatGPT, a large language model trained by OpenAI."
-    STOP: ClassVar[list[str]] = ["<|start|>user", "<|end|><|end|>", "<|return|>"]
-
-    _date_lock: ClassVar = threading.Lock()
-    _cached_date: ClassVar[str | None] = None
-    _cached_date_key: ClassVar[tuple[int, int, int] | None] = None
-
-    def __init__(self, llm: Llama, config: ModelConfig, n_ctx: int) -> None:
-        super().__init__(llm, config, n_ctx)
-        self.reasoning_level: str = "medium"
-
-    @classmethod
-    def _get_current_date(cls) -> str:
-        """Get current date with daily caching (thread-safe)."""
-        now = datetime.now()
-        today = (now.year, now.month, now.day)
-        with cls._date_lock:
-            if cls._cached_date_key != today or cls._cached_date is None:
-                cls._cached_date = now.strftime("%Y-%m-%d")
-                cls._cached_date_key = today
-            return cls._cached_date
-
-    def generate(
-        self,
-        prompt: str,
-        system_prompt: str | None,
-        max_tokens: int | None,
-        *,
-        thinking: bool = False,
-        stop: list[str] | None = None,
-    ) -> str:
-        _, final = self.generate_with_thinking(
-            prompt, system_prompt, max_tokens, stop=stop
-        )
-        return final
-
-    def generate_with_thinking(
-        self,
-        prompt: str,
-        system_prompt: str | None,
-        max_tokens: int | None,
-        *,
-        stop: list[str] | None = None,
-    ) -> tuple[str, str]:
-        formatted = self._format(
-            prompt, system_prompt or self.SYSTEM, self.reasoning_level
-        )
-        max_tokens = self._calc_max_tokens(formatted, max_tokens)
-
-        all_stop = list(self.STOP)
-        if stop:
-            all_stop.extend(stop)
-
-        resp = cast(
-            str, self.llm.generate(formatted, max_tokens=max_tokens, stop=all_stop)
-        )
-
-        analysis = self._ANALYSIS_PATTERN.search(resp)
-        final = self._FINAL_PATTERN.search(resp)
-
-        analysis_text = analysis.group(1).strip() if analysis else ""
-        final_text = final.group(1).strip() if final else analysis_text
-
-        return analysis_text, final_text
-
-    def _format(self, prompt: str, system: str, reasoning: str) -> str:
-        """Format prompt using GPT-OSS template."""
-        today = self._get_current_date()
-        return (
-            f"<|start|>system<|message|>{system}\n"
-            f"Knowledge cutoff: 2024-06\nCurrent date: {today}\n"
-            f"Reasoning: {reasoning}\n<|end|>\n\n"
-            f"<|start|>user<|message|>{prompt}<|end|><|start|>assistant"
-        )
-
-
 class UnifiedLLM:
     """Unified interface for multiple LLM families.
 
@@ -1002,17 +792,14 @@ class UnifiedLLM:
         ...     print(llm.generate("Hi"))
     """
 
+    # All four supported families share the chat-template backend; family-
+    # specific behavior (Gemma 4 ``<|think|>`` prefix, Qwen ``/think`` suffix)
+    # is handled inside ChatTemplateBackend._build_messages.
     BACKEND_MAP: ClassVar[dict[ModelFamily, type[Backend]]] = {
-        ModelFamily.GEMMA: ChatTemplateBackend,
-        ModelFamily.GEMMA4: ChatTemplateBackend,
-        ModelFamily.GLM4: ChatTemplateBackend,
-        ModelFamily.GRANITE: ChatTemplateBackend,
-        ModelFamily.MINICPM: ChatTemplateBackend,
-        ModelFamily.QWEN3: ChatTemplateBackend,
         ModelFamily.QWEN3_5: ChatTemplateBackend,
-        ModelFamily.PHI: PhiBackend,
-        ModelFamily.MISTRAL: ChatTemplateBackend,
-        ModelFamily.GPT_OSS: GPTOSSBackend,
+        ModelFamily.QWEN3_6: ChatTemplateBackend,
+        ModelFamily.GEMMA4: ChatTemplateBackend,
+        ModelFamily.GRANITE: ChatTemplateBackend,
     }
 
     def __init__(
@@ -1158,20 +945,6 @@ class UnifiedLLM:
         """Check if model supports thinking/reasoning mode."""
         return self.model_config.supports_thinking
 
-    def set_reasoning_level(self, level: str) -> None:
-        """Set reasoning level for GPT-OSS models.
-
-        Args:
-            level: One of "low", "medium", "high".
-
-        Raises:
-            ValueError: If level is invalid.
-        """
-        if level not in ("low", "medium", "high"):
-            raise ValueError(f"Invalid reasoning level: {level}")
-        if isinstance(self.backend, GPTOSSBackend):
-            self.backend.reasoning_level = level
-
     def generate(
         self,
         prompt: str,
@@ -1180,6 +953,8 @@ class UnifiedLLM:
         *,
         thinking: bool = False,
         stop: list[str] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> str:
         """Generate text response.
 
@@ -1187,15 +962,26 @@ class UnifiedLLM:
             prompt: User prompt text.
             system_prompt: Optional system prompt.
             max_tokens: Maximum tokens to generate (auto if None).
-            thinking: Enable thinking mode (Qwen3, GPT-OSS).
+            thinking: Enable thinking mode (Qwen 3.5 / 3.6, Gemma 4).
             stop: Additional stop sequences.
+            reset_kv_cache: Forwarded to ``Llama.create_chat_completion``.
+                Default True clears KV before this turn (safe but discards
+                prior prefix-cache state).
+            cache_prompt: Forwarded to ``Llama.create_chat_completion``.
+                Only meaningful when ``reset_kv_cache=False``.
 
         Returns:
             Generated text response.
         """
         self._check_closed()
         return self.backend.generate(
-            prompt, system_prompt, max_tokens, thinking=thinking, stop=stop
+            prompt,
+            system_prompt,
+            max_tokens,
+            thinking=thinking,
+            stop=stop,
+            reset_kv_cache=reset_kv_cache,
+            cache_prompt=cache_prompt,
         )
 
     def generate_with_thinking(
@@ -1205,6 +991,8 @@ class UnifiedLLM:
         max_tokens: int | None = None,
         *,
         stop: list[str] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
     ) -> tuple[str, str]:
         """Generate with separate thinking and answer.
 
@@ -1213,14 +1001,165 @@ class UnifiedLLM:
             system_prompt: Optional system prompt.
             max_tokens: Maximum tokens to generate.
             stop: Additional stop sequences.
+            reset_kv_cache: Forwarded to ``Llama.create_chat_completion``.
+            cache_prompt: Forwarded to ``Llama.create_chat_completion``.
 
         Returns:
             Tuple of (thinking_text, answer_text).
         """
         self._check_closed()
         return self.backend.generate_with_thinking(
-            prompt, system_prompt, max_tokens, stop=stop
+            prompt,
+            system_prompt,
+            max_tokens,
+            stop=stop,
+            reset_kv_cache=reset_kv_cache,
+            cache_prompt=cache_prompt,
         )
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+        thinking: bool = False,
+        stop: list[str] | None = None,
+        sanitize_history: bool = True,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        stream: bool = False,
+    ) -> str | Iterator[str]:
+        """Multi-turn chat entry point.
+
+        Renders the messages through the chat template, runs generation, and
+        returns the assistant's content with thinking blocks stripped (when
+        ``stream=False``).
+
+        ``sanitize_history`` defaults to True for any family with thinking
+        support — Unsloth's Gemma 4 guidance is "do not feed prior thought
+        blocks back into the next turn", and the same hygiene helps Qwen 3.5
+        / 3.6 thinking models stay coherent across turns. Pass
+        ``sanitize_history=False`` to inject raw history yourself (e.g. if
+        you want the model to see its prior reasoning verbatim).
+
+        Args:
+            messages: Full conversation. ``system`` / ``user`` / ``assistant``
+                roles supported. Not mutated in place.
+            max_tokens: Cap on generated tokens (auto-clamped to context).
+            thinking: For Qwen 3.5 / 3.6 only — appends ``/think`` to the
+                last user turn. Gemma 4 thinking is handled per-message via
+                its ``<|think|>`` system prefix; pass thinking=True to
+                trigger it (UnifiedLLM auto-injects the prefix).
+            stop: Additional stop sequences (combined with family defaults).
+            sanitize_history: When True (default), strip thinking blocks
+                from prior assistant turns before sending. Set False to
+                opt out — useful for replaying a saved transcript verbatim.
+            reset_kv_cache: Forwarded to the underlying Llama. Default True
+                clears KV before this turn (safe but discards prior
+                prefix-cache state). Set False with cache_prompt=True for
+                fast multi-turn continuation.
+            cache_prompt: Forwarded to the underlying Llama. Only meaningful
+                when reset_kv_cache=False; trims KV to the longest matching
+                prefix and decodes only the divergent suffix. See
+                ``docs/API.md`` for the full contract.
+            stream: When True, return an iterator of text deltas (raw — no
+                thinking-block stripping). The caller is responsible for
+                rendering thinking output. Use ``self.strip_thinking(...)``
+                or ``re`` patterns on the joined output to post-process.
+
+        Returns:
+            ``str`` (default) — the assistant message content, with thinking
+            output removed.
+
+            ``Iterator[str]`` (when ``stream=True``) — text deltas as they
+            arrive, raw (no stripping).
+        """
+        self._check_closed()
+
+        effective_messages = (
+            self.sanitize_history(messages)
+            if sanitize_history and self.model_config.supports_thinking
+            else list(messages)
+        )
+
+        # Apply family-specific thinking-mode plumbing on the *last user turn*.
+        # We mutate a copy, never the caller's list.
+        effective_messages = [dict(m) for m in effective_messages]
+        if thinking and self.model_config.supports_thinking:
+            self._apply_thinking_to_last_user(effective_messages)
+
+        # Tokenize once via _prepare_chat — Llama.create_chat_completion will
+        # also tokenize inside, but token-count budgeting needs the value
+        # *here* to clamp max_tokens before dispatch. We accept the second
+        # tokenization downstream (avoiding it would require a private
+        # token-list entry point on Llama).
+        _, _, token_count = self.llm._prepare_chat(effective_messages)
+        max_tokens_resolved = self.backend._calc_max_tokens_from_count(
+            token_count, max_tokens
+        )
+
+        kwargs = self.backend._sampling_kwargs(stop)
+        kwargs["max_tokens"] = max_tokens_resolved
+        kwargs["reset_kv_cache"] = reset_kv_cache
+        kwargs["cache_prompt"] = cache_prompt
+
+        if stream:
+            kwargs["stream"] = True
+            chunks = cast(
+                Iterator[dict[str, Any]],
+                self.llm.create_chat_completion(effective_messages, **kwargs),
+            )
+            return self._stream_chat_deltas(chunks)
+
+        resp = cast(
+            dict[str, Any],
+            self.llm.create_chat_completion(effective_messages, **kwargs),
+        )
+        text = resp["choices"][0]["message"]["content"] or ""
+        return self.backend.strip_thinking(text)
+
+    @staticmethod
+    def _stream_chat_deltas(
+        chunks: Iterator[dict[str, Any]],
+    ) -> Iterator[str]:
+        """Unwrap OpenAI-style chat.completion.chunk deltas into raw text.
+
+        Each chunk has shape ``{"choices": [{"delta": {"content": "..."}, ...}]}``.
+        We yield the ``delta.content`` strings only, skipping empty-content
+        chunks (the final stop-marker chunk has ``delta == {}``).
+        """
+        for chunk in chunks:
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                yield piece
+
+    def _apply_thinking_to_last_user(self, messages: list[dict[str, Any]]) -> None:
+        """Mutate ``messages`` in place to enable thinking on the last user turn.
+
+        Family-specific:
+        - Qwen 3.5 / 3.6: append ``/think`` to the last user content.
+        - Gemma 4: prepend ``<|think|>`` to the system message (or insert one).
+        - Granite: no thinking spec from upstream; no-op.
+        """
+        family = self.model_config.family
+        if family in (ModelFamily.QWEN3_5, ModelFamily.QWEN3_6):
+            for m in reversed(messages):
+                if m.get("role") == "user" and isinstance(m.get("content"), str):
+                    m["content"] = f"{m['content']} /think"
+                    return
+        elif family is ModelFamily.GEMMA4:
+            # Find an existing system message and prepend the prefix.
+            for m in messages:
+                if m.get("role") == "system" and isinstance(m.get("content"), str):
+                    if not m["content"].lstrip().startswith("<|think|>"):
+                        m["content"] = f"<|think|>{m['content']}"
+                    return
+            # No system message — insert one.
+            messages.insert(0, {"role": "system", "content": "<|think|>"})
 
     def strip_thinking(self, text: str) -> str:
         """Remove thinking tags from text, return only the answer.

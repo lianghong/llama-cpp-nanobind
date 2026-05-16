@@ -33,14 +33,33 @@ def test_embedding_batch(llm_embed):
 
 @requires_model
 def test_reset_kv_cache_option(llm):
-    """Test reset_kv_cache=False preserves KV cache."""
+    """``reset_kv_cache=False`` keeps a session alive across calls.
+
+    With cache_prompt=True (default), divergent prompts trim KV to the
+    longest common prefix and decode only the new tail — KV can shrink or
+    stay flat when the second prompt doesn't share much with the first
+    (and on hybrid-attention models the LCP-trim falls back to a full
+    clear, so KV ends up holding only the second prompt's content).
+    The contract is "session is still alive", not "KV monotonically grows".
+    """
     llm.generate("Hello", max_tokens=5, reset_kv_cache=True)
     pos1 = llm.kv_cache_seq_pos_max()
     assert pos1 > 0
 
     llm.generate("World", max_tokens=5, reset_kv_cache=False)
     pos2 = llm.kv_cache_seq_pos_max()
-    assert pos2 > pos1  # Cache grew
+    assert pos2 > 0  # Session still alive after continuation
+
+
+@requires_model
+def test_reset_kv_cache_no_cache_prompt(llm):
+    """``cache_prompt=False`` preserves the legacy append-only behavior."""
+    llm.kv_cache_clear()
+    llm.generate("Hello", max_tokens=5, reset_kv_cache=True)
+    pos1 = llm.kv_cache_seq_pos_max()
+    llm.generate("World", max_tokens=5, reset_kv_cache=False, cache_prompt=False)
+    pos2 = llm.kv_cache_seq_pos_max()
+    assert pos2 > pos1  # KV grew because we didn't trim divergent suffix
 
 
 @requires_model

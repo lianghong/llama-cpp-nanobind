@@ -24,10 +24,10 @@ with Llama("model.gguf") as llm:
 
 **Methods**
 
-- `generate(prompt, max_tokens=128, sampling=None, stop=None, echo=False, logprobs=None, stream=False, seed=None, reset_kv_cache=True)` → `str | Iterator[str] | dict`
-- `generate_stream(prompt, max_tokens=128, sampling=None, stop=None, seed=None, reset_kv_cache=True)` → `Iterator[str]` – True streaming (yields as tokens decode)
+- `generate(prompt, max_tokens=128, sampling=None, stop=None, echo=False, logprobs=None, stream=False, seed=None, reset_kv_cache=True, cache_prompt=True)` → `str | Iterator[str] | dict`
+- `generate_stream(prompt, max_tokens=128, sampling=None, stop=None, seed=None, reset_kv_cache=True, cache_prompt=True)` → `Iterator[str]` – True streaming (yields as tokens decode)
 - `generate_async(...)` → Async version of generate
-- `create_chat_completion(messages, max_tokens=128, stream=False, stop=None, response_format=None, grammar=None, tools=None, tool_choice=None, reset_kv_cache=True, **kwargs)` → Chat completion dict or stream
+- `create_chat_completion(messages, max_tokens=128, stream=False, stop=None, response_format=None, grammar=None, tools=None, tool_choice=None, reset_kv_cache=True, cache_prompt=True, **kwargs)` → Chat completion dict or stream
 - `create_chat_completion_async(...)` → Async version
 - `create_embedding(input, model=None)` → OpenAI-compatible embedding API (requires `embeddings=True`)
 - `create_embedding_async(...)` → Async version
@@ -69,16 +69,80 @@ for chunk in llm.generate_stream("Tell me a story", max_tokens=100):
     print(chunk, end="", flush=True)
 ```
 
-### Session-Style Continuation
+### Session-Style Continuation & Prompt-Prefix Cache Reuse
 
-Use `reset_kv_cache=False` to preserve KV cache between calls for multi-turn sessions:
+Two complementary knobs govern KV cache behavior between calls:
+
+| Kwarg | Default | Effect |
+|---|---|---|
+| `reset_kv_cache` | `True` | Clear KV before this call. Set `False` to keep KV from prior turn. |
+| `cache_prompt` | `True` | When `reset_kv_cache=False`, trim KV to the longest common prefix with the new prompt and decode only the divergent suffix. Ignored when `reset_kv_cache=True`. |
+
+#### Recommended pattern: chat with automatic prefix reuse
 
 ```python
-# First turn
-llm.generate("Hello", max_tokens=10, reset_kv_cache=True)
+# First turn — fresh KV
+llm.create_chat_completion(
+    [{"role": "user", "content": "Hello"}],
+    max_tokens=64,
+    reset_kv_cache=True,
+)
 
-# Continue without clearing cache (faster, reuses computed KV)
-llm.generate("How are you?", max_tokens=10, reset_kv_cache=False)
+# Subsequent turns — keep prior KV, decode only the new user message
+# (defaults are reset_kv_cache=False not yet wired in chat helper —
+#  pass explicitly until upstream lands a session manager)
+llm.create_chat_completion(
+    [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"},
+        {"role": "user", "content": "How are you?"},
+    ],
+    max_tokens=64,
+    reset_kv_cache=False,   # don't clear KV
+    cache_prompt=True,      # trim to LCP, decode new tail only
+)
+```
+
+For an 8K-token chat history with a 200-token user turn, prompt-decode time
+drops from O(8K) to O(200) — roughly a 40× speedup on time-to-first-token.
+
+#### Hybrid-attention models
+
+Models reporting `memory_can_shift() == False` (Qwen3.5, Granite 4 hybrid,
+some flash-attention configs) cannot trim KV mid-sequence. For these,
+`cache_prompt=True` falls back to a full `kv_cache_clear()` + full reprime —
+correctness is preserved, but the speedup is lost. Check `llm.memory_can_shift()`
+to know whether you're on the fast path. The fallback is automatic; no
+caller change is needed.
+
+#### Mirror invariants
+
+The `Llama` instance keeps an internal `_cached_prompt_tokens` mirror that
+tracks what's actually in seq 0 of the KV cache. The mirror is invalidated
+automatically by:
+
+- `kv_cache_clear()`, `reset()`
+- `kv_cache_seq_rm/cp/keep/add(...)` — direct escape-hatch APIs
+- `set_state(data)`, `load_state(path)`
+- `embed()` and `create_embedding()` (each one clears KV)
+- `close()`
+
+So mixing direct KV manipulation with `cache_prompt=True` is safe — the
+next generation falls back to a clean full prime instead of trusting a
+stale mirror.
+
+#### Opting out
+
+Pass `cache_prompt=False` to keep the legacy "append-only" semantics where
+`reset_kv_cache=False` decodes the entire new prompt at the end of seq 0.
+This is rarely what you want for chat, but it preserves bit-for-bit
+compatibility with code written against pre-cache_prompt behavior.
+
+```python
+# Legacy stitching: KV grows monotonically; the model sees prior KV +
+# the new prompt as one giant sequence.
+llm.generate("Hello", max_tokens=10, reset_kv_cache=True)
+llm.generate("World", max_tokens=10, reset_kv_cache=False, cache_prompt=False)
 ```
 
 ## Exceptions
@@ -186,9 +250,9 @@ Constants exported from `llama_cpp` (mirror `ggml.h`'s `enum ggml_type`):
 from llama_cpp import Llama, LlamaConfig, GGML_TYPE_Q8_0
 
 llm = Llama(
-    "models/Qwen3-8B-Q6_K.gguf",
+    "models/Qwen3.5-4B-Q4_K_M.gguf",
     config=LlamaConfig(
-        model_path="models/Qwen3-8B-Q6_K.gguf",
+        model_path="models/Qwen3.5-4B-Q4_K_M.gguf",
         n_ctx=8192,
         cache_type_k=GGML_TYPE_Q8_0,
         cache_type_v=GGML_TYPE_Q8_0,
@@ -244,7 +308,7 @@ response = llm.create_chat_completion(messages=[...], grammar=grammar)
 
 ## llama_cpp.unified.UnifiedLLM
 
-Unified interface for multiple LLM families with automatic detection and family-specific optimizations.
+Unified interface for a curated set of LLM families: **Qwen 3.5**, **Qwen 3.6**, **Gemma 4**, and **IBM Granite 4.1**. Other architectures raise `UnsupportedModelError` at construction — use the lower-level `Llama` class for them.
 
 **Constructor**
 
@@ -279,7 +343,7 @@ from llama_cpp.unified import UnifiedLLM
 
 # Halves KV cache VRAM vs F16 with minimal quality loss
 llm = UnifiedLLM(
-    "models/Qwen3-8B-Q6_K.gguf",
+    "models/Qwen3.5-4B-Q4_K_M.gguf",
     n_ctx=8192,
     cache_type_k=GGML_TYPE_Q8_0,
     cache_type_v=GGML_TYPE_Q8_0,
@@ -289,22 +353,23 @@ llm = UnifiedLLM(
 **Context Manager**
 
 ```python
-with UnifiedLLM("models/Qwen3-30B-A3B-Instruct-2507-Q4_K_S.gguf") as llm:
+with UnifiedLLM("models/Qwen3.5-4B-Q4_K_M.gguf") as llm:
     response = llm.generate("Hello")
 # Resources automatically cleaned up
 ```
 
 **Properties**
 
-- `family` → `ModelFamily` – Detected model family enum
-- `supports_thinking` → `bool` – Whether model supports thinking mode
+- `family` → `ModelFamily` – Detected model family enum (one of `QWEN3_5`, `QWEN3_6`, `GEMMA4`, `GRANITE`)
+- `supports_thinking` → `bool` – Whether the resolved preset has thinking enabled by default
 
 **Methods**
 
-- `generate(prompt, system_prompt=None, max_tokens=None, thinking=False, stop=None)` → `str`
+- `generate(prompt, system_prompt=None, max_tokens=None, thinking=False, stop=None)` → `str` – Single-turn generation
 - `generate_with_thinking(prompt, system_prompt=None, max_tokens=None, stop=None)` → `tuple[str, str]` – Returns (thinking, answer)
-- `set_reasoning_level(level)` → None – Set GPT-OSS reasoning ("low", "medium", "high")
-- `strip_thinking(text)` → `str` – Remove thinking tags from text
+- `chat(messages, *, max_tokens=None, thinking=False, stop=None, sanitize_history=True, reset_kv_cache=True, cache_prompt=True)` → `str` – Multi-turn entry point. Auto-sanitizes prior assistant turns by default for thinking-capable families.
+- `sanitize_history(messages)` → `list[dict]` – Strip thinking blocks from historical assistant messages (called automatically by `chat`).
+- `strip_thinking(text)` → `str` – Remove thinking tags from a single response.
 - `n_tokens(text)` → `int` – Count tokens
 - `n_ctx()` → `int` – Get context size
 - `kv_cache_clear()` → None – Clear KV cache
@@ -315,25 +380,34 @@ with UnifiedLLM("models/Qwen3-30B-A3B-Instruct-2507-Q4_K_S.gguf") as llm:
 ```python
 from llama_cpp.unified import UnifiedLLM
 
-# Qwen3-Instruct-2507 (non-thinking variant)
-llm = UnifiedLLM("models/Qwen3-30B-A3B-Instruct-2507-Q4_K_S.gguf")
-print(llm.family.name)  # QWEN3
-print(llm.supports_thinking)  # False (Instruct-2507 is non-thinking)
+# Auto-detect from filename (raises UnsupportedModelError for unsupported families)
+llm = UnifiedLLM("models/Qwen3.5-4B-Q4_K_M.gguf")
+print(llm.family.name)         # QWEN3_5
+print(llm.supports_thinking)   # False (4B is in the small-variant set)
 
-# Basic generation
-response = llm.generate("Hello")
+# Multi-turn chat with automatic history hygiene
+messages = [
+    {"role": "user", "content": "Hello"},
+    {"role": "assistant", "content": "<think>greeting</think>Hi!"},
+    {"role": "user", "content": "Who are you?"},
+]
+reply = llm.chat(messages, max_tokens=64)        # thinking blocks stripped
+reply = llm.chat(messages, thinking=True)        # /think suffix added on Qwen
+reply = llm.chat(messages, sanitize_history=False)  # opt out
 
-# For thinking mode, use hybrid Qwen3 models:
-# llm = UnifiedLLM("models/Qwen3-8B-Q6_K.gguf")
-# response = llm.generate("Solve x^2 = 4", thinking=True)
-# thinking, answer = llm.generate_with_thinking("Explain gravity")
+# Explicit family override (force the coding preset on a 9B small model)
+llm = UnifiedLLM("models/Qwen3.5-9B-Q4_K_M.gguf", family="qwen3.5-coding")
 ```
 
 ### ModelFamily
 
 Enum of supported model families:
 
-- `GEMMA`, `GEMMA4`, `GLM4`, `GRANITE`, `MINICPM`, `PHI`, `MISTRAL`, `QWEN3`, `QWEN3_5`, `GPT_OSS`
+- `QWEN3_5`, `QWEN3_6`, `GEMMA4`, `GRANITE`
+
+### UnsupportedModelError
+
+Raised by `UnifiedLLM(...)` and `detect_model_family(path)` when the model file does not match any of the four supported families. Subclass of `ValueError`.
 
 ### ModelConfig
 
@@ -356,7 +430,7 @@ Model-specific configuration (auto-selected based on family):
 The `model_config` is mutable after construction, allowing per-task temperature tuning:
 
 ```python
-with UnifiedLLM("models/Qwen3-8B-Q6_K.gguf") as llm:
+with UnifiedLLM("models/Qwen3.5-4B-Q4_K_M.gguf") as llm:
     # Lower temperature for translation (more faithful, less creative)
     llm.model_config.temperature = 0.3
     response = llm.generate("Translate: ...", system_prompt=TRANSLATION_PROMPT)
