@@ -1,646 +1,217 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repo.
 
 ## Project Overview
 
-High-performance nanobind bindings for llama.cpp, packaged as a wheel-ready Python library with CUDA enabled by default. The interface mirrors llama-cpp-python where it does not conflict with upstream llama.cpp.
+High-performance nanobind bindings for llama.cpp, packaged as a wheel-ready Python library with CUDA on by default. API mirrors `llama-cpp-python` where it doesn't conflict with upstream llama.cpp.
 
-## Build System & Commands
+## Commands
 
-### Development Setup
-
+### Setup
 ```bash
-# Create virtual environment with uv
-uv venv --python 3.14 .venv
-source .venv/bin/activate
-
-# Install package in editable mode
-uv pip install -e .
-
-# Install with dev dependencies
-uv pip install -e .[dev]
-
-# Install with test dependencies
-uv pip install -e .[test]
+uv venv --python 3.14 .venv && source .venv/bin/activate
+uv pip install -e .          # editable install
+uv pip install -e .[dev]     # + dev tools
+uv pip install -e .[test]    # + test deps
 ```
 
-### Wheel Build Script
-
+### Wheel build
 ```bash
-# Native build (default)
-./scripts/build_wheel.sh
-
-# Portable (no -march=native)
-./scripts/build_wheel.sh --portable
-
-# Clean slate + install into .venv
+./scripts/build_wheel.sh                 # native
+./scripts/build_wheel.sh --portable      # no -march=native
 ./scripts/build_wheel.sh --clean --install
-
-# Opt-in to -ffast-math
-./scripts/build_wheel.sh --fast-math
+./scripts/build_wheel.sh --fast-math     # opt in (alters numerics)
 ```
+Env: `PYTHON`, `LLAMA_PREFIX` (default `/usr/local`), `CMAKE_BUILD_TYPE`, `JOBS`. The script does **not** set `CMAKE_PREFIX_PATH` — scikit-build-core injects its own so `find_package(nanobind)` resolves to the build-isolation env. For non-`/usr/local` llama.cpp installs, set `LLAMA_PREFIX=/custom/path`.
 
-Env overrides: `PYTHON`, `LLAMA_PREFIX` (default `/usr/local`), `CMAKE_BUILD_TYPE`, `JOBS`.
-The script does **not** set `CMAKE_PREFIX_PATH` — scikit-build-core needs to inject its own value so `find_package(nanobind)` resolves to the build-isolation env. For non-`/usr/local` llama.cpp installs, set `LLAMA_PREFIX=/custom/path` and the script will append it to `CMAKE_PREFIX_PATH`.
-
-### Testing
-
+### Tests
 ```bash
-# Run all tests
 uv run pytest -q
-
-# Run specific test file
-uv run pytest tests/test_inference.py -v
-
-# Run specific test
 uv run pytest tests/test_inference.py::test_basic_generation -v
 ```
 
-### Code Quality
-
+### Code quality
 ```bash
-# Python: format
 ruff format src/ tests/ examples/ tools/
-
-# Python: sort imports
 isort src/ tests/ examples/ tools/
-
-# Python: lint
 ruff check src/ tests/ examples/ tools/
-
-# Python: type checking
 mypy src/llama_cpp/
-
-# C++: format (Google-based, 100-col, 2-space indent)
 clang-format -i src/bindings/llama_cpp.cpp
-
-# C++: static analysis (requires compile_commands.json)
-clang-tidy -p build-tidy src/bindings/llama_cpp.cpp
-
-# Python 3.14: Verify PEP 758/765 compliance
-python3.14 -We -m py_compile <file>
+clang-tidy -p build-tidy src/bindings/llama_cpp.cpp     # needs compile_commands.json
+python3.14 -We -m py_compile <file>                     # PEP 758/765
 ```
 
-### Python 3.14 Exception Handling Requirements
-
-**CRITICAL:** This project requires strict compliance with Python 3.14's PEP 758 and PEP 765.
-
-#### PEP 758: Unparenthesized Exception Lists
-
-**Allowed Forms:**
-```python
-# ✅ Form 1: Parenthesized (existing, always valid)
-except (ValueError, TypeError):
-    ...
-
-# ✅ Form 2: Unparenthesized (NEW - allowed without 'as')
-except ValueError, TypeError:
-    ...
-
-# ✅ Form 3: With capture (REQUIRES parentheses)
-except (ValueError, TypeError) as e:
-    ...
-
-# ❌ INVALID: Unparenthesized with 'as'
-except ValueError, TypeError as e:  # SyntaxError
-    ...
-```
-
-**Rule:** Parentheses are REQUIRED when using the `as` keyword to capture exception instances.
-
-#### PEP 765: Control Flow in Finally Blocks
-
-**Disallowed Patterns:**
-```python
-# ❌ INVALID: return from finally
-def f():
-    try:
-        ...
-    finally:
-        return 42  # SyntaxWarning (future SyntaxError)
-
-# ❌ INVALID: break from finally
-for x in items:
-    try:
-        ...
-    finally:
-        break  # SyntaxWarning
-
-# ❌ INVALID: continue from finally
-for x in items:
-    try:
-        ...
-    finally:
-        continue  # SyntaxWarning
-```
-
-**Allowed Patterns:**
-```python
-# ✅ VALID: Control flow in nested scope
-try:
-    ...
-finally:
-    def inner():
-        return 42  # OK - exits inner function, not finally
-    
-    for x in items:
-        break  # OK - exits inner loop, not finally
-```
-
-**Rule:** `return`, `break`, and `continue` statements MUST NOT exit a `finally` block directly. Use nested scopes if control flow is needed.
-
-**Verification:** All code is compiled with `-We` flag. See `docs/PEP758_PEP765_COMPLIANCE.md` for audit report.
-
-### Build Configuration
-
-The project uses scikit-build-core with CMake. Key environment variables:
-
+### Build config
 ```bash
-# Custom build type
 CMAKE_BUILD_TYPE=RelWithDebInfo uv pip install -e .
-
-# Custom llama.cpp install prefix (overrides defaults)
 CMAKE_ARGS="-DCMAKE_PREFIX_PATH=/opt/llama" uv pip install -e .
-
-# Portable build (no -march=native)
 CMAKE_ARGS="-DLLAMA_PORTABLE=ON" uv pip install -e .
 ```
 
-### System Library Search Order
+llama.cpp search order: `CMAKE_PREFIX_PATH` → `/usr/local` (Linux) → Homebrew (macOS) → standard CMake paths. Full setup walkthrough: `docs/SYSTEM_LIBRARIES.md`.
 
-The build system searches for llama.cpp in this priority order:
+## Python 3.14 Compliance
 
-1. **User override**: `CMAKE_PREFIX_PATH` environment variable
-2. **Linux**: `/usr/local` (explicitly checked for system installs)
-3. **macOS**: Homebrew llama.cpp location (auto-detected)
-4. **Fallback**: Standard CMake search paths (`/usr`, etc.)
+Strict PEP 758 + PEP 765. All code compiled with `-We`. Audit: `docs/PEP758_PEP765_COMPLIANCE.md`.
 
-**Example:** Install llama.cpp to `/usr/local`:
-
-```bash
-# Build and install llama.cpp
-cd /path/to/llama.cpp
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_CUDA=ON
-make -j$(nproc)
-sudo make install
-
-# Verify installation
-ls /usr/local/include/llama.h       # Headers
-ls /usr/local/lib/libllama.so       # Shared library
-
-# Build Python bindings (automatically finds /usr/local)
-cd /path/to/llama-cpp-nanobind
-uv pip install -e .
-```
-
-**To verify which libraries are being used:**
-
-```bash
-# During build, CMake prints:
-# -- Using system llama.cpp from /usr/local
-# -- Found llama.h: /usr/local/include
-# -- Found libllama: /usr/local/lib/libllama.so
-# -- Found libggml: /usr/local/lib/libggml.so
-# ...
-
-# After install, check Python extension links:
-ldd .venv/lib/python3.14/site-packages/llama_cpp/_llama*.so
-```
+- **PEP 758**: Parentheses are required around exception lists when using `as`. `except (ValueError, TypeError) as e:` ✅; `except ValueError, TypeError as e:` ❌.
+- **PEP 765**: `return` / `break` / `continue` must not exit a `finally` block directly. Use a nested function/loop scope if needed.
 
 ## Architecture
 
-### Component Structure
+```
+src/bindings/llama_cpp.cpp     single-file nanobind module (C++ → Python)
+src/llama_cpp/llama.py         Llama class — low-level inference API
+src/llama_cpp/unified.py       UnifiedLLM — multi-model auto-detect
+models/                        GGUF files (not committed)
+```
 
-1. **External Dependencies** (`models/`)
-   - llama.cpp **must be installed on the system** (headers + shared libraries)
-   - **Linux**: Defaults to `/usr/local/include` and `/usr/local/lib`
-   - **macOS**: Auto-detects Homebrew install via `brew --prefix llama.cpp`
-   - CMake discovers paths via `find_path()` and `find_library()`
-   - **No bundled dependencies**: Project links against system-installed llama.cpp
-   - `models/`: GGUF model files (not included)
+**Linking**: Extension links against system-installed llama.cpp (no bundling, no RPATH). Linux defaults to `/usr/local/{include,lib}`; macOS auto-detects Homebrew via `brew --prefix llama.cpp`. Build with GPU support upstream (`-DGGML_CUDA=ON` Linux, `-DGGML_METAL=ON` macOS).
 
-2. **C++ Bindings** (`src/bindings/llama_cpp.cpp`)
-   - Single-file nanobind extension module
-   - Exposes llama.cpp C API to Python
-   - **Critical**: GIL released during heavy C++ operations (decode, generate, tokenize)
-   - Maintains internal state: `cur_pos_` for KV cache position tracking
-   - Reuses `single_batch_` to eliminate per-token allocations
-   - Style enforced by `.clang-format` (Google-based) and `.clang-tidy`
-   - All RAII classes explicitly delete copy and move operations (rule of 5)
+### Key design patterns
 
-3. **Python Wrappers** (`src/llama_cpp/`)
-   - `llama.py`: Core `Llama` class with high-level inference API
-   - `unified.py`: `UnifiedLLM` class for multi-model support (auto-detects Qwen3, Gemma, Mistral, etc.)
-   - `__init__.py`: Package initializer with public API exports
+**State management** — `cur_pos_` tracks KV position; updated by `load_state`, `set_state_data`, and `kv_cache_seq_*` ops. `set_state_data` rolls back `cur_pos_` on load failure. State save/load uses `nb::bytes` buffer protocol (single memcpy, no per-element conversion).
 
-4. **Library Linking**
-   - Extension links against system-installed llama.cpp shared libraries
-   - No RPATH or library bundling — relies on system linker paths
-   - On macOS, Homebrew llama.cpp is auto-detected via `brew --prefix`
+**Sampler chain** — Grammar applies *before* sampler chain. Canonical order: DRY → penalties → top_n_sigma → top_k → top_p → min_p → XTC → temp_ext/temp → dist. Always read `cur_p.selected` from sampler, never argmax. In `generate_tokens_with_details`, `llama_sampler_apply` is called explicitly for logprobs — do **not** then call `generate_next`/`llama_sampler_sample`, which would re-apply the chain and advance the dist sampler's RNG.
 
-### Key Design Patterns
+**Streaming** — `generate_stream()` is true incremental (background thread + queue, GIL released during decode/sample, re-acquired only for the Python callback). `generate(..., stream=True)` is buffered (simpler, higher latency). All paths share `_token_to_text_incremental()` for UTF-8 decode across token boundaries (emoji, CJK).
 
-#### State Management
-- **KV Cache Position**: `cur_pos_` tracks context position, updated by:
-  - `load_state()`, `set_state_data()`: Sync from KV cache after load
-  - `kv_cache_seq_rm()`, `kv_cache_seq_keep()`, `kv_cache_seq_add()`: Update when modifying sequence 0
-- **State Save/Load**: Uses `nb::bytes` buffer protocol for zero-copy transfer between Python and C++ (no per-element conversion). `get_state_data()` writes directly into the Python bytes buffer via `PyBytes_FromStringAndSize` + `_PyBytes_Resize` — avoids the intermediate `std::vector<uint8_t>` → `nb::bytes` copy (saves hundreds of MB of transient memory on large KV states). GIL managed manually: released during heavy llama.cpp calls, held for Python object construction/resizing.
-- **LoRA Adapters**: Tracked in `_lora_configs` list, reapplied via `_reapply_lora_adapters()` after `reset()`
+**Stop sequences** — Multi-token via `generate_tokens_multi_stop()`. Tokens buffered up to `max_stop_len` before yielding so partial stop-prefix tokens never reach the consumer; remaining buffered tokens always flushed at end.
 
-#### Sampling Pipeline
-- Grammar constraints apply **before** sampler chain
-- Sampler chain uses canonical ordering: DRY → penalties → top_n_sigma → top_k → top_p → min_p → XTC → temp_ext/temp → dist
-- Sampler chain respects temperature/top_p/top_k even with grammar
-- Use `cur_p.selected` from sampler, not argmax
-- In `generate_tokens_with_details` (logprobs path), use `cur_p.selected` directly after explicit `llama_sampler_apply` — do NOT call `generate_next`/`llama_sampler_sample` which would apply the chain a second time (advancing the dist sampler's RNG)
-- New samplers: DRY (anti-repetition on raw logits), XTC (cross-token consistency on filtered candidates), dynamic temperature (`temp_ext`), top-n-sigma (truncate by standard deviations)
+**Memory safety** — Destructors check `if (ptr_)` then null. `Model::close()`, `Context::close()`, `Context::reset()` hold `g_resource_mutex` to serialize frees. Logging holds `g_log_mutex` (concurrent `llama_log_set` calls). `g_model_count` atomic ref-counts the backend. Nanobind `keep_alive<1, 2>()` ties Context/SamplerChain/LoraAdapter to Model. No `__del__` (atexit + RAII instead). Context freed before Model.
 
-#### Stop Sequences
-- Multi-token stop sequences supported via `generate_tokens_multi_stop()`
-- Fast path when logprobs/echo not needed (avoids O(n_vocab) overhead)
+**LlamaPool** — `pool_size` independent `Llama` instances (Llama is not thread-safe), `asyncio.Queue` checkout. `close()` is immediate; `close_graceful(timeout=30)` waits for in-flight returns. Records the binding event loop on first use; cross-loop reuse raises. VRAM ≈ `model_size × pool_size`. Optional `warmup=True` runs 3-token dummy inference per instance (compiles CUDA kernels, removes cold-start variance).
 
-#### Async Support
-- Thread-pool based (not truly async within C++)
-- Single lock per `Llama` instance (concurrent calls serialize)
-- For true parallelism, use multiple `Llama` instances
+**Prompt-prefix KV reuse (`cache_prompt=True`, default)** — When paired with `reset_kv_cache=False`, `_apply_prefix_reuse` computes the LCP between cached and new prompts, calls `kv_cache_seq_rm(0, n_match, -1)`, and the C++ generator decodes only `priming[n_match:]` via `skip_decode_prefix`. Mirror invariant: `len(_cached_prompt_tokens) == kv_pos_max + 1`. Hybrid models (Qwen 3.5, Granite 4 hybrid, some flash-attn configs) report `memory_can_shift()=False`; for them `seq_rm` returns `False` and we fall back to `kv_cache_clear` + full re-prime — correctness preserved, speedup lost.
 
-#### Streaming Generation
-- **`generate_stream()`**: True incremental streaming using background thread + queue
-  - Tokens yielded immediately as generated (low latency)
-  - Background worker thread runs C++ generation with GIL released
-  - Main thread yields tokens from queue as they arrive
-  - Exceptions propagated from worker thread to caller
-  - Early termination via `threading.Event` cancellation flag (checked in callback)
-  - 5s join timeout allows current decode step to complete
-  - **Thread leak detection**: If worker thread doesn't stop within timeout, logs warning about potential data race if instance reused
-  - **Worker liveness check**: `token_queue.get(timeout=0.5)` with `thread.is_alive()` check — prevents permanent block if worker thread dies unexpectedly
-  - **Multi-token stop sequence buffering**: tokens are buffered up to `max_stop_len` before yielding to prevent partial stop sequence tokens from reaching the consumer
-  - **Flush invariant**: remaining buffered tokens at end-of-generation are always yielded (partial stop sequence prefixes are NOT treated as stops)
-  - **UTF-8 decoding**: Uses `_token_to_text_incremental()` helper for consistent handling of multi-byte characters split across token boundaries
-- **`generate(..., stream=True)`**: Buffered streaming
-  - All tokens generated first, then yielded (higher latency)
-  - Simpler implementation, no threading overhead
-  - Suitable when latency not critical
-  - **UTF-8 decoding**: Uses shared `_token_to_text_incremental()` helper with guaranteed final flush
-- **All streaming paths**: Unified UTF-8 handling via `_token_to_text_incremental()` ensures consistent behavior across `generate_stream()`, `generate(stream=True)`, and `create_chat_completion(stream=True)`. Incremental decoder properly handles emoji, CJK, and other multi-byte UTF-8 characters that may span token boundaries.
+## Implementation Rules
 
-#### Memory Safety (Double-Free Prevention)
-- **C++ classes**: All destructors check `if (ptr_)` before free, then set `ptr_ = nullptr`
-- **Thread-safe close**: `Model::close()`, `Context::close()`, and `Context::reset()` all hold `g_resource_mutex` to serialize the free of `ctx_`/`model_` — prevents double-free races between GC/`__del__`, explicit `close()`, and mid-flight context resets
-- **Thread-safe logging**: Logging configuration functions (`set_log_level`, `disable_logging`, `reset_logging`) hold `g_log_mutex` to prevent concurrent `llama_log_set()` calls during multi-threaded initialization
-- **Backend ref-counting**: `g_model_count` atomic prevents backend double-free
-- **Nanobind `keep_alive`**: Context, SamplerChain, LoraAdapter keep Model alive via `nb::keep_alive<1, 2>()`
-- **LoRA adapters**: Freed automatically by llama.cpp with the model (destructor is `= default`)
-- **No `__del__`**: Neither `Llama` nor `UnifiedLLM` uses `__del__` (avoids GIL issues during shutdown); cleanup via atexit + RAII
-- **`close()` idempotency**: `Llama._closed` flag and `UnifiedLLM`'s `self.llm is None` check
-- **Destruction order**: Context freed before Model (C++ dependency)
-- **Instance tracking**: `weakref.ref` sets prevent circular references; atexit handler calls `close()` on all live instances
-- **State load rollback**: `set_state_data()` saves old `cur_pos_` and restores it if load fails, maintaining context position integrity
+### C++ bindings (`src/bindings/llama_cpp.cpp`)
 
-#### Parallel Inference (LlamaPool)
-- **Purpose**: True concurrent processing with multiple model instances
-- **Architecture**:
-  - Creates `pool_size` independent `Llama` instances
-  - `asyncio.Queue`-based checkout/return ensures exclusive instance access (Llama is not thread-safe)
-  - Each instance is checked out by at most one request at a time
-  - Instances returned to pool after use via try/finally
-- **Shutdown**: Two modes:
-  - `close()`: Immediate force-close; logs warning if instances are checked out (in-flight)
-  - `close_graceful(timeout=30.0)`: Waits for in-flight requests to return, then force-closes after timeout
-  - `__aexit__` calls `close_graceful()` — async context manager is the recommended pattern
-- **Timeout Handling**: `_checkout_instance()` distinguishes between "pool busy" timeout and "pool closed" error — prevents infinite retry loops
-- **GPU Memory**: `VRAM ≈ model_size × pool_size`
-- **Model Warmup** (optional, `warmup=True`):
-  - Runs dummy inference (3 tokens) on each instance during init
-  - Pre-loads GPU caches, compiles CUDA kernels
-  - Eliminates cold-start latency variability
-  - Adds 1-3s to initialization time
-  - Recommended for production APIs with strict SLAs
-  - Warmup failures are non-fatal (logged as warnings)
+1. Run `clang-format -i` and `clang-tidy` after changes.
+2. Always release GIL for long ops: `nb::call_guard<nb::gil_scoped_release>()` or manual.
+3. When mutating KV / loading state, save old `cur_pos_` and roll back on failure.
+4. Reuse buffers (`single_batch_`) instead of per-call allocation.
+5. Use RAII for temp resources (e.g. `BatchGuard` around `llama_batch`).
+6. Apply grammar before the sampler chain.
+7. Hold `g_resource_mutex` for resource frees; `g_log_mutex` for logging config.
+8. Validate token range before indexing logits (sampler can return `LLAMA_TOKEN_NULL` = -1).
+9. Validate `cur_p.selected ∈ [0, cur_p.size)` after `llama_sampler_apply` (grammar can empty the candidate set).
+10. After `size_t → int32_t` casts, verify `static_cast<size_t>(result) == original`.
+11. For two-call snprintf-style llama.cpp string APIs, verify size matches and explicitly null-terminate. Use `Model::read_c_string` template.
+12. State save/load uses `nb::bytes` directly — manage GIL manually around heavy llama.cpp calls.
+13. Logprobs path reads `cur_p.data[cur_p.selected].id` after explicit apply — do **not** call `generate_next` afterwards.
 
-## Critical Implementation Details
+### Python wrappers (`src/llama_cpp/llama.py`, `unified.py`)
 
-### When Modifying C++ Bindings (`src/bindings/llama_cpp.cpp`)
+1. After `reset()`, call `_reapply_lora_adapters()`.
+2. Validate `config.embeddings=True` before `embed()` / `create_embedding()`.
+3. Use `add_special=True` when computing `max_tokens` for chat.
+4. After tokenization, call `_validate_prompt_token_count(len(prompt_tokens))` (rejects > 2×n_ctx, DoS guard).
+5. Validate stop sequences via `_validate_stop_sequences(stop)` on every entry point (max 20 sequences, 500 chars each). Used by `generate`, `generate_stream`, `create_chat_completion`.
+6. Use `_tokenize_stop_sequences(stop)` for `str|int → list[list[int]]` conversion (single source of truth).
+7. Use `generate_tokens_multi_stop()` when stops present and details not needed (fast path).
+8. Use `_token_to_text_incremental()` for all streaming UTF-8 decode (handles split multi-byte chars; guaranteed final flush).
+9. **Never** cache or reuse grammar samplers — `llama_sampler_accept` mutates internal state.
+10. Use `if x is not None else fallback`, not `x or fallback`, when `0` / `0.0` are valid.
+11. `LlamaConfig.add_bos` defaults to `None` (auto-detected from model metadata after load); effective value lives on `Llama._effective_add_bos` so the same `LlamaConfig` is reusable across loads. C++ has a `prompt[0] != bos` guard against double-BOS.
+12. All public methods that touch `self.model`/`self.ctx` must call `_check_closed()` first.
+13. **`cache_prompt` mirror invalidation**: any code path that mutates KV outside the generation loop must call `_invalidate_prompt_cache()` — `kv_cache_clear`, direct `kv_cache_seq_*`, `set_state_data`, `load_state`, `reset`, `embed`/`create_embedding`, `close`.
+14. **BOS rule with `cache_prompt`**: `reset_kv_cache=False` + `cache_prompt=True` uses `_effective_add_bos` (model preference). The legacy "suppress BOS on continuation" rule applies only when `cache_prompt=False`.
+15. `UnifiedLLM` warns when requested `n_ctx > model.n_ctx_train()` (quality may degrade).
 
-1. **Run `clang-format -i` and `clang-tidy`** after changes to maintain code style and catch issues
-2. **Always release GIL** for long operations: `nb::call_guard<nb::gil_scoped_release>()` or manual `nb::gil_scoped_release`
-3. **Update `cur_pos_` with rollback support**: When modifying KV cache or loading state, save old position for rollback on failure. State load operations must validate success before updating `cur_pos_`
-4. **Reuse buffers** (like `single_batch_`) instead of per-call allocation
-5. **Use RAII for temporary resources**: `Context::decode` uses `BatchGuard` struct for `llama_batch` cleanup instead of try/catch
-6. **Respect sampler chain** after grammar constraints
-7. **Hold `g_resource_mutex` for resource freeing, `g_log_mutex` for logging**: `close()` methods hold `g_resource_mutex` to prevent races with GC; logging functions hold `g_log_mutex` to prevent concurrent `llama_log_set()` calls
-8. **Validate token range before indexing logits**: sampler can return `LLAMA_TOKEN_NULL` (-1); always check `token >= 0 && token < n_vocab` before `logits[token]`
-9. **Validate sampler selection**: After `llama_sampler_apply()`, always check `cur_p.selected >= 0 && cur_p.selected < cur_p.size` before accessing `cur_p.data[cur_p.selected]` — grammar constraints can create empty candidate sets
-10. **Validate integer casts**: After casting `size_t` to `int32_t`, verify cast didn't truncate: `static_cast<size_t>(result) == original_size`
-11. **Validate string buffers**: For llama.cpp API calls that write to string buffers, verify returned size matches expected and explicitly null-terminate
-12. **Use `nb::bytes` for binary data**: state save/load uses `nb::bytes` directly (not `std::vector<uint8_t>`) to avoid per-element Python↔C++ conversion; manage GIL manually when mixing Python object construction with heavy C++ calls
-13. **Logprobs path uses `cur_p.selected` directly**: In `generate_tokens_with_details`, `llama_sampler_apply` is called explicitly for logprob computation, then the selected token is read from `cur_p.data[cur_p.selected].id` — do NOT call `generate_next`/`llama_sampler_sample` after an explicit apply, as it would re-apply the chain and advance the dist sampler's RNG
+### Test model
 
-### When Modifying Python Wrappers (`src/llama_cpp/llama.py`, `unified.py`)
+Default: `./models/Qwen3.5-4B-Q4_K_M.gguf` (override via `LLAMA_TEST_MODEL`; update `conftest.py` for different paths).
 
-1. **LoRA persistence**: Always call `_reapply_lora_adapters()` after context reset
-2. **Embeddings**: Validate `config.embeddings=True` before embedding operations
-3. **Token counting**: Use `add_special=True` when calculating max_tokens for chat
-4. **Tokenized prompt validation**: After tokenizing prompt, validate `len(prompt_tokens) <= n_ctx() * 2` to prevent OOM from high-compression text (e.g., `"a" * 10MB` could tokenize to massive token counts)
-5. **Stop sequences validation**: Always call `_validate_stop_sequences(stop)` on all entry points that accept stop sequences. This validates count (max 20) and length (max 500 chars per sequence). All generation entry points use this: `generate()`, `generate_stream()`, `create_chat_completion()`
-6. **Stop sequence tokenization**: Use the `_tokenize_stop_sequences(stop)` helper rather than inlining the loop — single source of truth for the `str | int` → `list[list[int]]` conversion across `generate()`, `generate_stream()`, and `create_chat_completion()`
-7. **Prompt-count validation**: Use `_validate_prompt_token_count(len(prompt_tokens))` helper after tokenization — enforces the `2 × n_ctx` DoS guard consistently across all entry points
-8. **Stop sequences implementation**: Use `generate_tokens_multi_stop()` when stop sequences present and details not needed (fast path)
-9. **Streaming UTF-8 decoding**: Use `_token_to_text_incremental(tokens)` for all streaming paths — handles multi-byte UTF-8 characters split across token boundaries with automatic final flush
-10. **Grammar samplers are stateful**: Never cache or reuse them — `llama_sampler_accept` mutates internal state, so each generation must create a fresh sampler
-11. **Falsy-value defaults**: Use `if x is not None else fallback` (not `x or fallback`) when `0` or `0.0` is a valid value
-12. **BOS auto-detection**: `LlamaConfig.add_bos` defaults to `None` (auto-detected from model metadata via `llama_vocab_get_add_bos` after model load). The C++ generation functions have a guard `if (add_bos && front != bos)` as a safety net against double BOS
-13. **Negative value validation**: Always validate that token counts and similar integer values are non-negative before arithmetic operations
-14. **Training context awareness**: `UnifiedLLM` logs warning when `n_ctx > model.n_ctx_train()` — generation quality may degrade beyond training context
-15. **Close checks**: All public methods that access `self.model` or `self.ctx` must call `_check_closed()` first to provide clear error messages instead of `AttributeError` on closed instances
-16. **Prompt-prefix cache reuse (`cache_prompt`)**: The `Llama` instance keeps a `_cached_prompt_tokens` mirror of seq 0's contents. When `reset_kv_cache=False` and `cache_prompt=True` (defaults for continuation), `_apply_prefix_reuse(primed)` computes the LCP, calls `kv_cache_seq_rm(0, n_match, -1)` to trim the divergent suffix, and the C++ generator decodes only `priming[n_match:]` via the `skip_decode_prefix` parameter. **Mirror invariant**: `len(_cached_prompt_tokens) == kv_pos_max + 1` whenever caching is active. **Invalidate the mirror** (`_invalidate_prompt_cache()`) from any code path that mutates KV outside the generation loop: `kv_cache_clear`, direct `kv_cache_seq_*`, `set_state_data`, `load_state`, `reset`, `embed`/`create_embedding`, `close`. **Hybrid models** (Qwen3.5, Granite 4 hybrid, …) report `memory_can_shift()=False`; for them `seq_rm(seq, p0, -1)` returns `False` without modifying KV — `_apply_prefix_reuse` detects this and falls back to a full `kv_cache_clear` so KV doesn't end up with stale tokens past the new prefix
-17. **BOS rule with `cache_prompt`**: When `reset_kv_cache=False` AND `cache_prompt=True`, the BOS prepend rule reverts to `_effective_add_bos` (model preference) rather than the legacy "suppress BOS on continuation" rule. The matching BOS already sits at position 0 of the mirror from the first `reset_kv_cache=True` turn, so LCP covers the BOS slot and the suffix-only decode lines up. C++'s own `prompt[0] != bos` guard prevents double-BOS if the user already tokenized with BOS. The legacy rule (suppress BOS) only applies when `cache_prompt=False`
+## Performance
 
-### Model File Requirement
+**Build (Release)**: `-O3 -march=native -mtune=native -flto=auto -funroll-loops -fno-plt`. `-ffast-math` is **off by default** (alters softmax/sampling numerics, sets FTZ/DAZ process-wide); opt in with `-DLLAMA_FAST_MATH=ON` or `--fast-math`. LTO if supported. Compiler: `gcc-15`/`g++-15` then `gcc`/`g++` on Linux, `clang`/`clang++` on macOS.
 
-Default test model: `./models/Qwen3.5-4B-Q4_K_M.gguf` (override via `LLAMA_TEST_MODEL`).
+**Runtime**: GIL released during all C++ ops including streaming. Per-token batch allocation eliminated. Fast stop-sequence path. Session continuation via `reset_kv_cache=False`. Prompt-prefix reuse via `cache_prompt=True` (default). O(n_vocab) candidate vector allocated once per call, not per token. `nb::bytes` for state save/load (single memcpy). Validation overhead < 0.1% (O(1) on hot paths).
 
-Update `conftest.py` if using different model paths.
+## Testing
 
-## Performance Considerations
+| File | Concern |
+|---|---|
+| `test_inference.py` | Core gen, chat, embeddings, state, logprobs |
+| `test_async.py` | Async API correctness |
+| `test_optimizations.py` | Embedding ctx reuse, KV cache, multi-token stops |
+| `test_regressions.py` | State load pos, grammar sampling, LoRA persistence |
+| `test_unified.py` | UnifiedLLM multi-model |
+| `test_pool.py` | LlamaPool + warmup |
+| `test_streaming.py` | Incremental streaming (needs model) |
+| `test_streaming_logic.py` | Streaming threading (no model) |
+| `test_prefix_reuse.py` | `cache_prompt` LCP, mirror invalidation |
+| `test_sanitize_history.py` | Multi-turn thinking-block stripping |
+| `test_pool_close.py` | Pool shutdown semantics |
+| `test_partial_init.py` | `close()` after failed `__init__` |
+| `test_validation.py` | Sampling override validation |
 
-### Build Optimizations (Release)
-- `-O3 -march=native -mtune=native -flto=auto -funroll-loops -fno-plt`
-- `-ffast-math` is **off by default** (alters softmax/sampling numerics, can set FTZ/DAZ process-wide). Opt in with `-DLLAMA_FAST_MATH=ON` or `scripts/build_wheel.sh --fast-math`.
-- Compiler resolution via `find_program(NAMES gcc-15 gcc)` / `g++-15 g++` on Linux, `clang` / `clang++` on macOS — works regardless of where `gcc-15` is installed.
-- LTO enabled if supported
+`conftest.py` provides `model_path` and `test_model` fixtures.
 
-### Runtime Optimizations
-- GIL released during C++ operations (v0.3.0), including streaming generation (v0.3.5)
-- Per-token batch allocation eliminated (v0.3.0)
-- Fast stop sequence path (v0.3.0)
-- Session-style continuation with `reset_kv_cache=False` (v0.3.1)
-- True incremental streaming via background thread (v0.3.2)
-  - Tokens yielded as generated, not buffered
-  - Low time-to-first-token for responsive UIs
-  - Perfect for SSE/WebSocket streaming endpoints
-  - GIL released during C++ decode/sample, re-acquired only for Python callback (v0.3.5)
-  - Multi-token stop sequence buffering prevents partial stop tokens in output
-- Grammar samplers always created fresh (stateful — caching causes incorrect results)
-- O(n_vocab) candidate vector allocated once per generation call, not per token (avoids repeated 32K–128K element allocations)
-- State save/load uses `nb::bytes` buffer protocol — single memcpy instead of per-element Python↔C++ conversion
-- RAII `BatchGuard` in `Context::decode` replaces manual try/catch for `llama_batch` cleanup
-- Validation overhead < 0.1%: All safety checks (token counts, buffer sizes, sampler selection) are O(1) operations on hot paths
-
-## Testing Strategy
-
-Test files organized by concern:
-- `test_inference.py`: Core generation, chat, embeddings, state management, logprobs
-- `test_async.py`: Async API correctness
-- `test_optimizations.py`: Embedding context reuse, KV cache, multi-token stops
-- `test_regressions.py`: State load position tracking, grammar sampling, LoRA persistence
-- `test_unified.py`: UnifiedLLM multi-model support
-- `test_pool.py`: LlamaPool parallel inference and model warmup
-- `test_streaming.py`: True incremental streaming API (requires model)
-- `test_streaming_logic.py`: Streaming threading logic (no model required)
-
-Key test fixture: `conftest.py` provides `model_path` and `test_model` fixtures.
-
-### Memory Safety Verification
-
-`examples/verify_double_free.py` exercises 20 resource cleanup scenarios for both `Llama` and `UnifiedLLM`:
-- Double `close()`, context manager + close, `close()` then `del`
-- State save/load round-trips then close
-- GC pressure interleaved with close
-- Use-after-close (must raise, not crash)
-- Multi-instance close in different orders
-- Rapid create-close loops
-- `del` without close (RAII / `__del__` paths)
-- Mixed `UnifiedLLM` + `Llama` instance close
-
-Run with glibc heap checking for allocator-level corruption detection:
+**Memory safety**: `examples/verify_double_free.py` runs 20 cleanup scenarios. Run with allocator checking:
 ```bash
 MALLOC_CHECK_=3 python examples/verify_double_free.py
 ```
 
 ## Common Pitfalls
 
-1. **Empty embeddings**: Ensure `LlamaConfig(embeddings=True)` when using `embed()` or `create_embedding()`
-2. **Lost LoRA adapters**: After `reset()`, adapters are automatically reapplied
-3. **Single-token stop sequences**: Use `generate_tokens_multi_stop()` for multi-token stops like `<|end_of_turn|>`
-4. **Context overflow**: `UnifiedLLM` validates `max_tokens > 0` and raises on overflow
-5. **Stale KV position**: State load/save automatically maintains `cur_pos_` with rollback on failure
-6. **Thread safety**: Do NOT call methods concurrently on same instance - use multiple instances or LlamaPool
-7. **Global logging**: `verbose=False` affects ALL instances (llama.cpp limitation); concurrent logging configuration protected by mutex
-8. **Grammar sampler reuse**: Never cache grammar samplers — they are stateful and must be created fresh each generation
-9. **Falsy-value traps**: Use `is not None` checks (not `or`) when `0`/`0.0` are valid parameter values
-10. **Logprobs token bounds**: In the logprobs/details path (`generate_tokens_with_details`), sampler selection is validated before access — empty candidate sets raise explicit error
-11. **High-compression prompts**: Text like `"a" * 10_000_000` can tokenize to massive token counts even though text length is < 10MB limit. Validation now rejects prompts > 2×n_ctx tokens after tokenization
-12. **Training context limits**: `UnifiedLLM` warns when `n_ctx` exceeds model's training context — generation quality may degrade beyond this limit
-13. **Translation hallucination**: LLMs may editorialize, reverse sentiment, or inject opinions when translating opinionated/sarcastic text. Mitigate with: low temperature (0.1–0.3), explicit system prompt rules against editorializing/moral hedging, and structured prompt sections (FAITHFULNESS/FLUENCY/STYLE) that models attend to better than flat rule lists
-14. **14B+ models on 16GB Apple Silicon**: Expect ~10 tok/s generation (memory-bandwidth-limited). Default context 10240 may crash Metal; use `--ctx 4096`. Performance is near hardware ceiling — use 8B or 4B models for better throughput
-15. **Streaming thread leaks**: If `generate_stream()` is terminated early and C++ generation is stuck, a warning is logged. Avoid reusing the instance until thread completes
-16. **Quantized KV cache constraints**: `cache_type_k` / `cache_type_v` accept only a whitelisted set of ggml_types (F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL). k-quants (Q4_K, Q5_K, Q6_K, …) are NOT supported by llama.cpp's KV cache and are rejected by `LlamaConfig` validation. Quantized V (anything other than F32/F16/BF16) requires `flash_attn=1` — without FA llama.cpp produces NaN/garbage output, so `LlamaConfig` raises `ValidationError` for this combination
+1. **Empty embeddings** — set `LlamaConfig(embeddings=True)`.
+2. **Lost LoRA adapters** — auto-reapplied after `reset()`; don't reapply manually.
+3. **Single-token stop only** — use `generate_tokens_multi_stop()` for multi-token stops like `<|end_of_turn|>`.
+4. **Context overflow** — `UnifiedLLM` validates `max_tokens > 0` and raises.
+5. **Thread safety** — no concurrent calls on a single `Llama`; use multiple instances or `LlamaPool`.
+6. **Global logging** — `verbose=False` affects all instances (llama.cpp limitation).
+7. **Grammar sampler reuse** — never; create fresh each generation.
+8. **Falsy traps** — `is not None`, not `or`, when `0`/`0.0` are valid.
+9. **High-compression prompts** — `"a" * 10MB` tokenizes to massive counts; rejected by 2×n_ctx guard.
+10. **Translation hallucination** — LLMs editorialize/sentiment-drift; mitigate with low temp (0.1–0.3) + structured FAITHFULNESS/FLUENCY/STYLE prompt sections.
+11. **14B+ on 16GB Apple Silicon** — ~10 tok/s (mem-bw bound); use `--ctx 4096` (default 10240 may crash Metal); prefer 4–8B models.
+12. **Streaming thread leak** — early termination during stuck C++ gen logs a warning; don't reuse the instance until the worker returns.
+13. **Quantized KV cache** — only F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL allowed. K-quants (Q4_K, …) rejected by `LlamaConfig`. Quantized V (anything besides F32/F16/BF16) requires `flash_attn=1` — `LlamaConfig` raises `ValidationError` otherwise.
+14. **`reset_kv_cache=False` semantics** — with default `cache_prompt=True`, divergent prompts trim KV to LCP, not append. For "stitch arbitrary prompts", pass `cache_prompt=False`.
 
-## Integration with llama.cpp
+## Model Support (UnifiedLLM)
 
-This project links against system-installed llama.cpp. When updating:
+`UnifiedLLM` only supports a curated set; other GGUFs raise `UnsupportedModelError` at construction. For unsupported models, drop to `Llama`.
 
-1. Build llama.cpp with GPU support (`-DGGML_CUDA=ON` on Linux, `-DGGML_METAL=ON` on macOS)
-2. Install to system: `sudo cmake --install build`
-3. Rebuild the extension: `uv pip install -e .`
-4. Update C++ bindings if API changed
-
-On macOS, `brew install llama.cpp` provides headers and libraries that CMake auto-detects.
-
-## Model Support
-
-UnifiedLLM intentionally supports a curated set of architectures. Other GGUFs are rejected at construction time with `UnsupportedModelError` listing the supported families. For unsupported models, drop to the lower-level `Llama` class.
-
-| Family | Variants | Context | Sampling defaults (general / thinking) | Source |
+| Family | Variants | Context | Sampling defaults | Source |
 |---|---|---|---|---|
-| **Qwen 3.5** | 0.8B / 2B / 4B / 9B (small, thinking off); 27B / 35B-A3B / 122B-A10B / 397B-A17B (thinking on) | 262K (1M via YaRN) | T=0.7/top_p=0.8 (small), T=1.0/top_p=0.95 (thinking); top_k=20, presence_penalty=1.5, repeat_penalty=1.0 | https://unsloth.ai/docs/models/qwen3.5 |
-| **Qwen 3.6** | 27B dense, 35B-A3B MoE; thinking + instruct (general / reasoning) modes | 262K (1M via YaRN) | Thinking T=1.0/top_p=0.95; instruct general T=0.7/top_p=0.8; instruct reasoning T=1.0/top_p=0.95; top_k=20, presence_penalty=1.5 | https://unsloth.ai/docs/models/qwen3.6 |
-| **Gemma 4** | E2B / E4B (128K), 26B-A4B / 31B (256K). Thinking via `<\|think\|>` system-prompt prefix per Unsloth spec. | 128K / 256K | T=1.0, top_p=0.95, top_k=64, repeat_penalty=1.0 | https://unsloth.ai/docs/models/gemma-4 |
-| **IBM Granite 4.1** | 3B / 8B / 30B dense | 16K min, 131K max | Deterministic: T=0.0, top_p=1.0, top_k=0 | https://unsloth.ai/docs/models/ibm-granite-4.1 |
+| **Qwen 3.5** | 0.8/2/4/9B (small, no thinking); 27B / 35B-A3B / 122B-A10B / 397B-A17B (thinking) | 262K (1M YaRN) | small T=0.7/top_p=0.8; thinking T=1.0/top_p=0.95; top_k=20, presence=1.5, repeat=1.0 | unsloth.ai/docs/models/qwen3.5 |
+| **Qwen 3.6** | 27B dense, 35B-A3B MoE; thinking + instruct (general/reasoning) | 262K (1M YaRN) | thinking T=1.0/top_p=0.95; instruct general T=0.7/top_p=0.8; reasoning T=1.0/top_p=0.95 | unsloth.ai/docs/models/qwen3.6 |
+| **Gemma 4** | E2B/E4B (128K), 26B-A4B/31B (256K). Thinking via `<\|think\|>` system prefix | 128K / 256K | T=1.0, top_p=0.95, top_k=64, repeat=1.0 | unsloth.ai/docs/models/gemma-4 |
+| **IBM Granite 4.1** | 3B / 8B / 30B dense | 16K min, 131K max | Deterministic: T=0, top_p=1, top_k=0 | unsloth.ai/docs/models/ibm-granite-4.1 |
 
-**Opt-in presets** (auto-detection picks the family default; pass `family="..."` to override):
+**Opt-in presets** (auto-detect picks the family default; pass `family="..."` to override):
+- `qwen3.5-coding`, `qwen3.6-coding` — T=0.6, presence=0.0 for coding/WebDev/Arena.
+- `qwen3.6-instruct`, `qwen3.6-instruct-reasoning` — non-thinking variants.
 
-- `qwen3.5-coding`: Qwen 3.5 thinking with T=0.6, presence_penalty=0.0 — precise coding / WebDev / Arena.
-- `qwen3.6-coding`: same recipe for Qwen 3.6.
-- `qwen3.6-instruct` / `qwen3.6-instruct-reasoning`: non-thinking variants of Qwen 3.6 (general vs higher-temp reasoning).
+`UnifiedLLM.chat(messages, *, thinking=False, sanitize_history=True, reset_kv_cache=True, cache_prompt=True)` auto-strips prior thinking blocks. Single-turn `generate(prompt, ...)` and `generate_with_thinking(...)` remain. Detection state machine: filename match (`detect_model_family`) → metadata refinement (`detect_from_metadata`) — see `src/llama_cpp/unified.py`.
 
-`UnifiedLLM` exposes a multi-turn `chat(messages, *, thinking=False, sanitize_history=True, reset_kv_cache=True, cache_prompt=True)` method that auto-strips prior thinking blocks from assistant turns before sending. Set `sanitize_history=False` to opt out (e.g. when replaying a saved transcript verbatim). The single-turn `generate(prompt, ...)` and `generate_with_thinking(prompt, ...)` entry points remain for non-conversation workloads.
-
-See `src/llama_cpp/unified.py` for the detection state machine: filename match (`detect_model_family`) → metadata refinement after load (`detect_from_metadata`).
-
-### Multi-turn hygiene for thinking models
-
-Unsloth's Gemma 4 guidance (and the same applies to Qwen 3.5 / 3.6 thinking variants): **do not feed prior turns' thought blocks back into the next turn's context.** `UnifiedLLM.chat(...)` does this automatically via `sanitize_history=True` (default). The underlying helper `UnifiedLLM.sanitize_history(messages)` is also exposed for callers using `Llama.create_chat_completion` directly — it strips `<|channel>...<channel|>` (Gemma 4), `<think>...</think>` (Qwen), and `[THINK]...[/THINK]` blocks from historical `assistant` messages while leaving system/user turns intact.
+**Multi-turn hygiene**: `sanitize_history(messages)` strips `<|channel>...<channel|>` (Gemma 4), `<think>...</think>` (Qwen), and `[THINK]...[/THINK]` from historical `assistant` messages. Required by Gemma 4 upstream; beneficial for all thinking models.
 
 ### Operational notes (per upstream)
 
-- **Qwen 3.5**: Prefer `UD-Q2_K_XL` or higher for a good size/accuracy balance. If you see gibberish, the context length may be set too low, or try `--cache-type-k bf16 --cache-type-v bf16`. Currently no Qwen 3.5 GGUF works in Ollama (separate mmproj vision files); use llama.cpp-compatible backends.
-- **Qwen 3.6**: MTP variants (`Qwen3.5-4B-Q4_K_M-MTP.gguf` style) are runtime-only and accept the same sampling presets as the base model. Disable thinking via `--chat-template-kwargs '{"enable_thinking":false}'` or pass `family="qwen3.6-instruct"` to UnifiedLLM.
-- **Gemma 4**: **Do NOT use the CUDA 13.2 runtime for Gemma 4 GGUFs** — upstream flags this as producing poor outputs. Recommended quants: `Q8_0` for E2B/E4B, `UD-Q4_K_XL` for 26B-A4B / 31B.
-- **Granite 4.1**: Same CUDA 13.2 caveat as Gemma 4. Deterministic sampling means temperature=0.0 by default; override via the `Llama` sampling kwargs if you need creativity.
+- **Qwen 3.5**: prefer `UD-Q2_K_XL`+. Gibberish often = ctx too low; try `--cache-type-k bf16 --cache-type-v bf16`. Ollama doesn't work (separate mmproj vision files); use llama.cpp-compatible backends.
+- **Qwen 3.6**: MTP variants (`*-MTP.gguf`) accept the same presets. Disable thinking via `--chat-template-kwargs '{"enable_thinking":false}'` or `family="qwen3.6-instruct"`.
+- **Gemma 4 / Granite 4.1**: **Do NOT use the CUDA 13.2 runtime** — upstream flags poor outputs. Recommended Gemma quants: `Q8_0` (E2B/E4B), `UD-Q4_K_XL` (26B-A4B / 31B). Granite is deterministic by default; override sampling kwargs for creativity.
 
-## Translation Example (`examples/translate.py`)
-
-General-purpose translation tool using `UnifiedLLM` with configurable target language:
+## Updating llama.cpp
 
 ```bash
-python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --ctx 8192
-python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf -t Japanese
-python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --thinking
-python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --temperature 0.1 -o
+cd /path/to/llama.cpp && mkdir -p build && cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_CUDA=ON
+make -j$(nproc) && sudo make install
+cd /path/to/llama-cpp-nanobind && uv pip install -e .
 ```
+On macOS: `brew install llama.cpp`. Update C++ bindings if the upstream API changed.
 
-Key design decisions:
-- **`-t` / `--target-lang`**: Target language (default: "Simplified Chinese"). System prompt and user prompt are templated with `{target_lang}` at runtime
-- **Structured system prompt**: Three named sections (FAITHFULNESS, FLUENCY, STYLE) + SPECIFICS for Markdown/proper nouns/numbers/cultural references. Structured sections get better model attention than flat numbered lists
-- **Sentiment fidelity**: Explicit anti-hedging rules ("never soften, editorialize, or moral-hedge") counter LLM tendency to neutralize critical/sarcastic/controversial text
-- **Markdown-aware**: Prompt explicitly instructs to preserve link/image/heading syntax and translate display text only, never URLs
-- **Low default temperature (0.3)**: Reduces hallucination and sentiment drift in translations
-- **`--temperature` CLI arg**: Overrides the model's default temperature after construction via `llm.model_config.temperature`
-- **VRAM check**: Estimates GPU memory usage before loading and warns if insufficient
+## Reference
 
-## Recent Improvements (2026-05-16)
-
-### Prompt-prefix KV cache reuse (`cache_prompt=True`)
-
-- **New `cache_prompt: bool = True` kwarg** on `Llama.generate`, `generate_stream`, `create_chat_completion`, `_generate_with_token_count`, plus their async wrappers. When paired with `reset_kv_cache=False`, the wrapper trims KV to the longest common prefix with the new prompt and decodes only the divergent suffix.
-- **C++ `skip_decode_prefix` parameter** on the five `generate_tokens_*` entry points. Sampler still accepts the full priming for penalty windows; only `priming[skip:]` is fed to `llama_decode`. Default `0` preserves legacy behavior.
-- **Mirror state**: `Llama._cached_prompt_tokens` tracks what's currently in seq 0. Invalidated by `kv_cache_clear`, `reset`, direct `kv_cache_seq_*`, `set_state_data`, `load_state`, `embed`/`create_embedding`, `close`.
-- **Hybrid-model fallback**: when `llama_memory_seq_rm(seq, p0, -1)` returns `False` (Qwen3.5, Granite 4 hybrid, some flash-attn configs report `memory_can_shift()=False`), `_apply_prefix_reuse` falls back to `kv_cache_clear` + full re-prime — correctness preserved, speedup lost for those models.
-- **BOS rule update**: `cache_prompt=True` continuations use the model's BOS preference; the legacy "suppress BOS when reset_kv_cache=False" rule applies only when `cache_prompt=False`.
-- **Tests**: 12 new tests in `tests/test_prefix_reuse.py` covering empty cache, full LCP, partial LCP, mirror invalidation across KV-mutating APIs, `cache_prompt=False` opt-out, and parity-of-leading-tokens with a fresh re-prime. Verified on a shiftable model (Gemma 4) and a hybrid model (Qwen 3.5).
-- **Behavior change for `reset_kv_cache=False` callers**: with the new default `cache_prompt=True`, divergent prompts now trim KV to LCP instead of appending to the end. For "stitch arbitrary prompts" semantics, pass `cache_prompt=False`.
-- **Docs**: `docs/API.md` "Session-Style Continuation & Prompt-Prefix Cache Reuse" section.
-
-## Recent Improvements (2026-05-08)
-
-### Quantized KV cache ergonomics
-- **`UnifiedLLM`**: `cache_type_k` / `cache_type_v` kwargs now pass through to the underlying `LlamaConfig` (default `GGML_TYPE_F16` = 1 preserves prior behavior). Flash attention is already on by default, so `cache_type_v=GGML_TYPE_Q8_0` works out of the box.
-- **New constants** exported from `llama_cpp`: `GGML_TYPE_BF16` (30), `GGML_TYPE_IQ4_NL` (20). BF16 unblocks the Qwen 3.5 `--cache-type-k bf16 --cache-type-v bf16` recipe without magic numbers.
-- **`LlamaConfig` validation**: rejects unsupported ggml_types for KV cache at construction (previously surfaced as an opaque `ModelLoadError` deep in llama.cpp). Also rejects quantized V with `flash_attn=0`, which would otherwise produce NaN/garbage output. Whitelist lives in the `_VALID_CACHE_TYPES` frozenset in `src/llama_cpp/llama.py`.
-- **Docs**: `docs/API.md` gains a "Quantized KV cache" subsection under `LlamaConfig` with the full constant table and usage example; `UnifiedLLM` constructor table updated.
-
-## Recent Improvements (v0.4.0, 2026-05-03)
-
-### C++ correctness
-- **`set_state_data`**: safe no-copy use of `nb::bytes` buffer protocol; lifetime invariant (calling frame's strong ref survives GIL release) is now documented in-code.
-- **`prime_generation`**: single-pass BOS prepend (was O(n) via `insert(begin(), …)`).
-- **`LoraAdapter`** tracks its parent `Model`; `set_adapters_lora` rejects mismatched adapters with `ValueError` instead of segfaulting.
-- Designated initializers for `llama_token_data[_array]`; `std::cmp_*` for signed/unsigned index comparisons; const-correct logits pointers; redundant null-writes removed.
-- Extracted `Model::read_c_string` template for the four two-call snprintf-style llama.cpp APIs (`desc`, `meta_val_str`, `meta_key_by_index`, `meta_val_by_index`).
-
-### Streaming concurrency hardening
-- **`generate_stream`**: `self._lock` is now acquired in the main thread **before** the worker is spawned (closes a concurrency hole). Worker detokenizes inline and pushes `bytes` to the consumer queue so the consumer never calls `Model` methods concurrently with the worker.
-- **Join timeout**: on worker join timeout `generate_stream` raises `LlamaError` and **keeps the lock held** to prevent a zombie worker from racing against a reused instance.
-
-### Session hygiene
-- `generate()` / `create_chat_completion()` **suppress BOS when `reset_kv_cache=False`**, so session continuations don't insert a stray BOS mid-sequence.
-- `_validate_prompt_token_count` now covers `create_chat_completion` (previously only `generate` / `generate_stream`).
-- Unknown `**sampling_overrides` raise `ValidationError` at the API boundary instead of being silently dropped.
-- `Llama.__call__` replaces the lossy `detokenize → retokenize` roundtrip with `_generate_with_token_count` for accurate `completion_tokens` counting.
-- `generate_async(stream=True)` actually streams — bridged to `generate_stream` via `asyncio.Queue` so chunks arrive incrementally rather than being buffered.
-
-### `LlamaPool`
-- Records the binding event loop on first use; cross-loop reuse raises a clear `RuntimeError`.
-- `close()` / `close_graceful()` serialized via `_close_lock` (concurrent close is now idempotent).
-- `close_graceful` no longer busy-loops on a lone sentinel in the queue.
-
-### `UnifiedLLM`
-- **Partial-init safety**: `__init__` sets `_closed`, `llm`, and `backend` before any operation that can raise, so `close()` is safe after a halfway-failed construction.
-- `close()` nulls `backend.llm` before dropping the backend.
-- New `sanitize_history(messages)` strips `<|channel>...<channel|>` (Gemma 4), `<think>...</think>` (Qwen), and `[THINK]...[/THINK]` blocks from historical `assistant` messages — required by Gemma 4 per upstream, beneficial for Qwen 3 / 3.5 thinking models.
-
-### Unsloth-aligned sampling presets
-- **Qwen 3.5** thinking defaults: `temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repeat_penalty=1.0` (the Qwen-3 era `think_*` override block was dropped).
-- **`qwen3.5-coding` preset**: `temperature=0.6`, `presence_penalty=0.0` for precise coding / WebDev workloads.
-
-### Code quality
-- `_classify_qwen35_variant` helper removes duplicated size-list logic between `detect_from_metadata` and `detect_model_family`.
-- `LlamaConfig.add_bos` is **no longer mutated at load time** — effective value lives on `Llama._effective_add_bos`, so the same `LlamaConfig` can be shared across multiple model loads.
-- `Backend.strip_thinking` is now a proper protected interface method; `ChatTemplateBackend` overrides it instead of `UnifiedLLM` reaching through to a private `_parse_thinking`.
-- `_parse_tool_calls` enforces a 1 MB cap before `json.loads` (defense-in-depth).
-- Dead `logsumexp` helper removed; `build-tidy/` added to `.gitignore`.
-
-### Tests
-- `test_sanitize_history` (8): Gemma 4 channel block, Qwen think tags, bracket-style, passthrough, role preservation, extra keys, non-string content, no-mutation guarantee.
-- `test_pool_close` (7): sentinel wake-up for `close` / `close_graceful`, checkout-after-close, concurrent-close idempotency, reinjection survival, no busy-loop on lone sentinel, cross-loop detection.
-- `test_validation` (5): unknown / misspelled / multi-key sampling overrides.
-- `test_partial_init` (3): `close()` safe after failed `__init__` via unknown-family, unknown-type, and manual `__new__` paths.
-- `test_auto_detect_bos` updated: asserts the config is NOT mutated; checks `_effective_add_bos` instead.
-
-### Version
-- `pyproject.toml`, `CMakeLists.txt`, and `src/llama_cpp/_about.py` all bumped to `0.4.0`. Wheel filename: `llama_cpp_nanobind-0.4.0-cp314-cp314-linux_x86_64.whl`.
-
-**Full details**: `docs/CHANGELOG-v0.4.0.md`.
-
-## Recent Improvements (v0.3.6)
-
-### Validation & Safety Enhancements
-- **Tokenized prompt limits**: Rejects prompts that tokenize to > 2×n_ctx tokens, preventing OOM from high-compression text (DoS protection)
-- **State load integrity**: `set_state_data()` rolls back `cur_pos_` if load fails, maintaining context position consistency
-- **Sampler validation**: Bounds-checking before accessing sampler selection, with explicit error for empty candidate sets
-- **Integer overflow protection**: Validates `size_t` to `int32_t` casts in tokenization paths
-- **String buffer validation**: Explicit null-termination and size verification for all llama.cpp string API calls
-- **Negative value guards**: Defense against corrupted token counts from C++ binding
-
-### Concurrency & Thread Safety
-- **Logging mutex**: `g_log_mutex` protects `llama_log_set()` calls, preventing races during concurrent initialization
-- **Pool timeout handling**: `LlamaPool._checkout_instance()` distinguishes "pool closed" from "pool busy" timeouts
-- **Thread leak detection**: `generate_stream()` logs warning if worker thread doesn't stop within 5s timeout
-
-### Quality of Life
-- **Training context warnings**: `UnifiedLLM` warns when requested `n_ctx` exceeds model's training context
-- **Better error messages**: Validation errors include token counts, limits, and actionable guidance
-
-### Performance Impact
-- All validation overhead < 0.1% (O(1) checks on hot paths)
-- No changes to core generation algorithms
-- Backward compatible: no breaking changes to well-formed code
-
-## Recent Improvements (2026-03-31)
-
-### Code Review Fixes - Second Review Cycle
-
-**HIGH Priority** (2 issues fixed):
-- **Missing close guards**: Added `_check_closed()` to 27 public methods (token accessors, model info, state management, LoRA, performance metrics). Users now get clear `LlamaError` instead of confusing `AttributeError` when calling methods on closed instances
-- **Missing 'mistral' config**: Added `MODEL_CONFIGS["mistral"]` entry to fix `KeyError` when Mistral models detected via GGUF metadata
-
-**MEDIUM Priority** (5 issues fixed):
-- **Backend free race**: Added `g_resource_mutex` lock in `backend_free()` to prevent race between check and free
-- **Dead code cleanup**: Replaced `getattr(config, 'max_prompt_multiplier', 2)` with module constant `_MAX_PROMPT_MULTIPLIER` (slots dataclass can't have dynamic attributes)
-- **Queue init race**: Fixed lazy initialization in `LlamaPool._ensure_queue_initialized()` to be safe for free-threaded Python 3.13+
-- **Config key typos**: Fixed `MODEL_CONFIGS["glm4"]` → `"glm-4"` and `MODEL_CONFIGS["phi"]` → `"phi-4"`
-- **Cleanup registration race**: Removed unprotected first check in `_register_unified_cleanup()` for Python 3.13+ safety
-
-**LOW Priority** (2 improvements):
-- **Loop variable clarity**: Changed `for const int i : priming` → `for const llama_token tok : priming` in C++ for correct type and clarity
-- **Type safety**: Replaced `hasattr()` with `isinstance()` check in `UnifiedLLM.strip_thinking()`
-
-**Documentation**: `docs/CODE_REVIEW_FIXES_2026-03-31_v2.md`
-
-### Code Quality Refactoring
-
-**Improvement #1: Stop-Sequence Validation Helper**
-- Extracted duplicate validation logic from `generate_stream()` and `generate()`
-- Added `_validate_stop_sequences()` static method (single source of truth)
-- **Bug fix**: Added missing validation to `create_chat_completion()` (was completely unprotected)
-- Impact: 18 lines reduced, consistent validation across all APIs
-
-**Improvement #2: UTF-8 Streaming Helper**
-- Extracted duplicate UTF-8 decoding from 3 locations: `generate_stream()`, `generate(stream=True)`, `create_chat_completion(stream=True)`
-- Added `_token_to_text_incremental()` method with guaranteed final flush
-- **Bug fix**: Ensures `decoder.decode(b"", final=True)` always called (was inconsistent)
-- Impact: 32 lines reduced, consistent multi-byte UTF-8 handling (emoji, CJK)
-
-**Total Impact**:
-- 50 lines of duplication eliminated
-- 2 bugs fixed (missing validation + UTF-8 flush)
-- 130/130 tests passing (0 regressions)
-- All changes backward compatible
-
-**Documentation**: 
-- `docs/IMPROVEMENT_SUGGESTIONS_ANALYSIS.md` - Analysis of 5 suggestions (2 implemented, 3 rejected with rationale)
-- `docs/IMPROVEMENTS_2026-03-31_v2.md` - Implementation details with before/after code
+- API surface: `docs/API.md`
+- Per-version changelogs: `docs/CHANGELOG-v0.3.6.md`, `docs/CHANGELOG-v0.4.0.md`, `docs/CHANGELOG-2026-05-02.md`
+- System library setup: `docs/SYSTEM_LIBRARIES.md`
+- Python 3.14 compliance audit: `docs/PEP758_PEP765_COMPLIANCE.md`
+- Code review history: `docs/CODE_REVIEW_FIXES_2026-03-31_v2.md`, `docs/IMPROVEMENTS_2026-03-31_v2.md`
