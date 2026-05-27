@@ -525,6 +525,7 @@ class Context {
     // Pre-allocate single-token batch for decode_one to avoid per-token
     // allocations
     single_batch_ = llama_batch_init(1, 0, 1);
+    multi_batch_ = llama_batch_init(kMultiBatchCapacity, 0, 1);
     llama_set_n_threads(ctx_, params_.raw.n_threads, params_.raw.n_threads_batch);
   }
 
@@ -535,6 +536,10 @@ class Context {
     if (single_batch_.token) {
       llama_batch_free(single_batch_);
       single_batch_ = {};
+    }
+    if (multi_batch_.token) {
+      llama_batch_free(multi_batch_);
+      multi_batch_ = {};
     }
     if (ctx_) {
       llama_free(ctx_);
@@ -580,6 +585,9 @@ class Context {
     // freed only in close()). Reinitialize only if it was freed.
     if (!single_batch_.token) {
       single_batch_ = llama_batch_init(1, 0, 1);
+    }
+    if (!multi_batch_.token) {
+      multi_batch_ = llama_batch_init(kMultiBatchCapacity, 0, 1);
     }
   }
 
@@ -627,6 +635,31 @@ class Context {
       throw std::runtime_error("llama_decode (single) failed with code " + std::to_string(rc));
     }
     ++cur_pos_;
+  }
+
+  // Decode multiple tokens into a single forward pass. All positions request
+  // logits (the speculative verify step needs them). Reuses multi_batch_.
+  int32_t decode_multi(const std::vector<llama_token>& tokens) {
+    check_ctx();
+    if (tokens.empty()) return 0;
+    if (static_cast<int32_t>(tokens.size()) > kMultiBatchCapacity) {
+      throw std::runtime_error("decode_multi: batch size " + std::to_string(tokens.size()) +
+                               " exceeds capacity " + std::to_string(kMultiBatchCapacity));
+    }
+    multi_batch_.n_tokens = static_cast<int32_t>(tokens.size());
+    for (int32_t i = 0; i < multi_batch_.n_tokens; ++i) {
+      multi_batch_.token[i] = tokens[static_cast<size_t>(i)];
+      multi_batch_.pos[i] = cur_pos_ + i;
+      multi_batch_.n_seq_id[i] = 1;
+      multi_batch_.seq_id[i][0] = 0;
+      multi_batch_.logits[i] = 1;
+    }
+    int32_t const rc = llama_decode(ctx_, multi_batch_);
+    if (rc < 0) {
+      throw std::runtime_error("llama_decode (multi) failed with code " + std::to_string(rc));
+    }
+    cur_pos_ += static_cast<int32_t>(tokens.size());
+    return multi_batch_.n_tokens;
   }
 
   std::vector<float> logits() const {
@@ -961,6 +994,10 @@ class Context {
   ContextParams params_;
   int32_t cur_pos_ = 0;
   llama_batch single_batch_ = {};  // Reusable single-token batch for decode_one
+  // Reusable multi-token batch for the speculative draft-verify loop. Sized
+  // for `1 + max(n_draft_max)` = 1 + 8 = 9. n_tokens is set per call.
+  static constexpr int32_t kMultiBatchCapacity = 9;
+  llama_batch multi_batch_ = {};
 
   void check_ctx() const {
     if (!ctx_) {
@@ -1884,6 +1921,10 @@ NB_MODULE(_llama, m) {
            nb::call_guard<nb::gil_scoped_release>(), "Process tokens through model")
       .def("decode_one", &Context::decode_one, "token"_a, nb::arg("request_logits") = true,
            nb::call_guard<nb::gil_scoped_release>())
+      .def("decode_multi", &Context::decode_multi, "tokens"_a,
+           nb::call_guard<nb::gil_scoped_release>(),
+           "Decode multiple tokens in a single forward pass; all positions "
+           "request logits.")
       .def("logits", &Context::logits, "Get logits from last decode")
       .def("embeddings", &Context::embeddings, "Get embeddings from last decode")
       .def("generate_next", &Context::generate_next, "sampler"_a, nb::arg("idx") = -1,

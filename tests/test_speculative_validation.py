@@ -99,3 +99,23 @@ def test_validate_speculative_with_embeddings_raises():
             llm._validate_speculative(speculative=True)
     finally:
         llm.close()
+
+
+@requires_model
+def test_decode_multi_smoke():
+    """Decode 3 tokens at once via the new multi-token batch helper.
+    cur_pos_ must advance by exactly the number of tokens decoded.
+    """
+    cfg = LlamaConfig(
+        model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False
+    )
+    llm = Llama(MODEL_PATH, config=cfg)
+    try:
+        # Tokenize a few BOS-free tokens; semantic content doesn't matter
+        toks = llm.tokenize("Hi there friend", add_special=False)[:3]
+        # cur_pos starts at 0
+        llm.ctx.decode_multi(toks)
+        # No public cur_pos getter — check via kv_cache_seq_pos_max
+        assert llm.ctx.kv_cache_seq_pos_max(0) == len(toks) - 1
+    finally:
+        llm.close()
