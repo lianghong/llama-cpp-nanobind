@@ -58,6 +58,27 @@ handle calls `ggml_abort` (process termination); the C API performs no
 validation. Treat the handle as a short-lived in-session reference, not
 a persistent snapshot. For durable state use `get_state()`.
 
+### Logit bias (OpenAI-API parity)
+
+Per-token additive bias on the logits, applied before all other samplers
+so the biased values flow through DRY / penalties / truncation. Mirrors
+the `logit_bias` field in the OpenAI chat/completions API and in
+`llama-cpp-python`. Common uses: ban a token (`-inf`), encourage specific
+completions, suppress profanity.
+
+**C++ bindings**
+- `SamplerChain::Params::logit_bias` is
+  `std::vector<std::pair<llama_token, float>>`. Empty = disabled.
+- `llama_sampler_init_logit_bias` is added first in the chain.
+- Token-id range is validated at chain construction; out-of-range raises
+  `std::out_of_range`, surfaced as `IndexError` in Python.
+
+**Python wrapper**
+- `SamplingParams.logit_bias: dict[int, float] | None = None`.
+- Validation: keys are non-negative ints; values are real numbers
+  (rejects `NaN` and non-numeric). `-inf` is accepted (ban semantics).
+- `to_native()` converts the dict to `list[tuple[int, float]]`.
+
 ### Forward-compat ggml type constants
 
 Exported but **not** added to `_VALID_CACHE_TYPES` — these are weight-only
@@ -85,10 +106,15 @@ Importable from `llama_cpp` package root.
 - Intentionally **no** "garbage handle raises" test for the on-device
   path — `ggml_abort` terminates the process, and the opaque handle
   format has no public layout to pre-validate.
+- `tests/test_logit_bias.py` — 10 tests. Validation edges (default
+  disabled, dict round-trip, empty dict, `-inf` accepted, negative key /
+  NaN / non-numeric rejected); end-to-end behavior (`None`/empty matches
+  baseline, banning the baseline token via `-inf` changes the output,
+  out-of-range token id raises `IndexError`).
 
 ## Verification
 
-- 187/187 tests pass
+- 197/197 tests pass
 - `ruff check`: clean on modified files
 - `clang-format --dry-run -Werror` on `llama_cpp.cpp`: clean
 
