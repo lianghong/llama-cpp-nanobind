@@ -211,7 +211,7 @@ On macOS: `brew install llama.cpp`. Update C++ bindings if the upstream API chan
 ## Reference
 
 - API surface: `docs/API.md`
-- Per-version changelogs: `docs/CHANGELOG-v0.3.6.md`, `docs/CHANGELOG-v0.4.0.md`, `docs/CHANGELOG-2026-05-02.md`
+- Per-version changelogs: `docs/CHANGELOG-v0.3.6.md`, `docs/CHANGELOG-v0.4.0.md`, `docs/CHANGELOG-2026-05-02.md`, `docs/CHANGELOG-2026-05-27.md`
 - System library setup: `docs/SYSTEM_LIBRARIES.md`
 - Python 3.14 compliance audit: `docs/PEP758_PEP765_COMPLIANCE.md`
 - Code review history: `docs/CODE_REVIEW_FIXES_2026-03-31_v2.md`, `docs/IMPROVEMENTS_2026-03-31_v2.md`
