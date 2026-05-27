@@ -14,6 +14,9 @@ from .llama import GGML_TYPE_BF16
 from .llama import GGML_TYPE_F16
 from .llama import GGML_TYPE_F32
 from .llama import GGML_TYPE_IQ4_NL
+from .llama import GGML_TYPE_MXFP4
+from .llama import GGML_TYPE_NVFP4
+from .llama import GGML_TYPE_Q1_0
 from .llama import GGML_TYPE_Q4_0
 from .llama import GGML_TYPE_Q4_1
 from .llama import GGML_TYPE_Q5_0
@@ -48,6 +51,9 @@ __all__ = [
     "GGML_TYPE_Q5_1",
     "GGML_TYPE_Q8_0",
     "GGML_TYPE_IQ4_NL",
+    "GGML_TYPE_MXFP4",
+    "GGML_TYPE_NVFP4",
+    "GGML_TYPE_Q1_0",
     "set_log_level",
     "disable_logging",
     "reset_logging",

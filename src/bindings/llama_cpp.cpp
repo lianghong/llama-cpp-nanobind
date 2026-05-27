@@ -358,6 +358,11 @@ class SamplerChain {
     int32_t dry_allowed_length = 2;
     int32_t dry_penalty_last_n = -1;
     std::vector<std::string> dry_seq_breakers = {"\n", ":", "\"", "*"};
+    // Adaptive-P (terminal sampler; replaces dist when enabled).
+    // target < 0 = disabled. Range: [0.0, 1.0] when enabled.
+    // decay: EMA decay; valid range [0.0, 0.99]; history ≈ 1/(1-decay) tokens.
+    float adaptive_p_target = -1.0F;
+    float adaptive_p_decay = 0.85F;
   };
 
   SamplerChain(const Model& model, const Params& params) {
@@ -430,11 +435,18 @@ class SamplerChain {
       llama_sampler_chain_add(sampler_, llama_sampler_init_temp(params.temp));
     }
 
-    // 9. Dist (final sampling)
+    // 9. Terminal sampler: adaptive-p (if enabled) replaces dist; otherwise dist.
+    // Both produce a single token id; only one may be the chain terminator.
     uint32_t const rng_seed = params.seed >= 0
                                   ? static_cast<uint32_t>(params.seed)
                                   : static_cast<uint32_t>(llama_time_us() & 0xFFFFFFFF);
-    llama_sampler_chain_add(sampler_, llama_sampler_init_dist(rng_seed));
+    if (params.adaptive_p_target >= 0.0F) {
+      llama_sampler_chain_add(sampler_,
+                              llama_sampler_init_adaptive_p(params.adaptive_p_target,
+                                                            params.adaptive_p_decay, rng_seed));
+    } else {
+      llama_sampler_chain_add(sampler_, llama_sampler_init_dist(rng_seed));
+    }
 
     // Note: BOS is NOT pre-accepted here. All generation functions accept
     // prompt tokens (including BOS) into the sampler before generating,
@@ -1711,7 +1723,11 @@ NB_MODULE(_llama, m) {
       .def_rw("dry_penalty_last_n", &SamplerChain::Params::dry_penalty_last_n,
               "DRY window size (-1 = context size)")
       .def_rw("dry_seq_breakers", &SamplerChain::Params::dry_seq_breakers,
-              "DRY sequence breaker strings");
+              "DRY sequence breaker strings")
+      .def_rw("adaptive_p_target", &SamplerChain::Params::adaptive_p_target,
+              "Adaptive-P target probability (negative = disabled, replaces dist when enabled)")
+      .def_rw("adaptive_p_decay", &SamplerChain::Params::adaptive_p_decay,
+              "Adaptive-P EMA decay; history ~ 1/(1-decay) tokens (range 0.0-0.99)");
 
   nb::class_<SamplerChain>(m, "SamplerChain", "Sampler chain for token selection")
       .def(nb::init<const Model&, const SamplerChain::Params&>(), "model"_a, "params"_a,

@@ -49,6 +49,11 @@ GGML_TYPE_Q5_1 = 7
 GGML_TYPE_Q8_0 = 8
 GGML_TYPE_IQ4_NL = 20
 GGML_TYPE_BF16 = 30
+# Newer ggml weight types (NOT valid for KV cache, but exposed for forward
+# compatibility with newer GGUFs that may quantize tensors with these types).
+GGML_TYPE_MXFP4 = 39
+GGML_TYPE_NVFP4 = 40
+GGML_TYPE_Q1_0 = 41
 
 # ggml_types accepted by llama.cpp for KV cache (k/v). Used for validation in
 # LlamaConfig. Keep in sync with llama.cpp's llama_kv_cache_unified; unsupported
@@ -200,6 +205,12 @@ class SamplingParams:
     dry_allowed_length: int = 2
     dry_penalty_last_n: int = -1
     dry_seq_breakers: list[str] | None = None
+    # Adaptive-P (llama.cpp PR #17927): terminal sampler that selects tokens near
+    # a target probability over time. When enabled (target >= 0), it REPLACES the
+    # dist sampler at the end of the chain. Recommended: combine with mild
+    # truncation (e.g. min_p) only, and disable temperature.
+    adaptive_p_target: float = -1.0
+    adaptive_p_decay: float = 0.85
 
     def __post_init__(self) -> None:
         """Validate sampling parameters."""
@@ -231,6 +242,13 @@ class SamplingParams:
             raise ValidationError("dry_allowed_length must be at least 1")
         if self.dry_seq_breakers is None:
             self.dry_seq_breakers = ["\n", ":", '"', "*"]
+        # adaptive-p: target < 0 disables; otherwise must be in [0, 1].
+        if self.adaptive_p_target >= 0.0 and self.adaptive_p_target > 1.0:
+            raise ValidationError(
+                "adaptive_p_target must be in [0.0, 1.0] when enabled (or negative to disable)"
+            )
+        if not 0.0 <= self.adaptive_p_decay <= 0.99:
+            raise ValidationError("adaptive_p_decay must be in [0.0, 0.99]")
 
     def to_native(self) -> _llama.SamplerParams:
         native = _llama.SamplerParams()
@@ -254,6 +272,8 @@ class SamplingParams:
         native.dry_allowed_length = int(self.dry_allowed_length)
         native.dry_penalty_last_n = int(self.dry_penalty_last_n)
         native.dry_seq_breakers = list(self.dry_seq_breakers or [])
+        native.adaptive_p_target = float(self.adaptive_p_target)
+        native.adaptive_p_decay = float(self.adaptive_p_decay)
         return native
 
 
