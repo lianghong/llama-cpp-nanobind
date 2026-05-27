@@ -5,7 +5,10 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include "common.h"
+#include "llama-ext.h"
 #include "llama.h"
+#include "speculative.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1694,6 +1697,35 @@ int32_t generate_tokens_streaming(Context& ctx, SamplerChain& sampler,
   return static_cast<int32_t>(output.size());
 }
 
+// Speculative draft-MTP generation. Builds a `common_speculative_*` instance
+// over an MTP context, draws up to n_draft_max draft tokens per round, batches
+// them through `decode_multi`, and verifies via the existing sampler chain.
+//
+// The exit/cleanup contract mirrors generate_tokens_multi_stop: stop tokens
+// are NOT emitted to output, sampler accepts the full priming + verified
+// tokens for penalty tracking, KV cache is left in a state where the next
+// call can append.
+//
+// Streaming is signaled by a non-null callback. Returns the generated token
+// vector when callback is null; when callback is non-null, returns an empty
+// vector after the streaming loop ends (the consumer reads via the callback).
+std::vector<llama_token> generate_tokens_speculative_mtp(
+    Context& ctx, SamplerChain& sampler, GrammarSampler* grammar,
+    const std::vector<llama_token>& prompt, int32_t max_new_tokens, bool add_bos,
+    llama_token eos_token, int32_t n_draft_max,
+    const std::vector<std::vector<llama_token>>& stop_sequences,
+    const std::function<bool(llama_token)>* callback, int32_t skip_decode_prefix) {
+  // Skeleton: implemented incrementally in subsequent tasks.
+  (void)grammar;
+  (void)max_new_tokens;
+  (void)eos_token;
+  (void)n_draft_max;
+  (void)stop_sequences;
+  (void)callback;
+  prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
+  return {};
+}
+
 }  // namespace
 
 // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
@@ -2042,6 +2074,12 @@ NB_MODULE(_llama, m) {
         "skip_decode_prefix"_a = 0,
         "Streaming generation with callback. Callback receives token, returns "
         "False to stop.");
+
+  m.def("generate_tokens_speculative_mtp", &generate_tokens_speculative_mtp, "ctx"_a, "sampler"_a,
+        "grammar"_a.none(), "prompt"_a, "max_new_tokens"_a, "add_bos"_a, "eos_token"_a,
+        "n_draft_max"_a, "stop_sequences"_a = std::vector<std::vector<llama_token>>{},
+        "callback"_a.none(), "skip_decode_prefix"_a = 0, nb::call_guard<nb::gil_scoped_release>(),
+        "Speculative draft-MTP generation. grammar/callback may be None.");
 
   // Backend cleanup - call before interpreter shutdown to prevent segfault
   m.def(

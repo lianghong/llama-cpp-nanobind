@@ -119,3 +119,10 @@ def test_decode_multi_smoke():
         assert llm.ctx.kv_cache_seq_pos_max(0) == len(toks) - 1
     finally:
         llm.close()
+
+
+def test_generate_tokens_speculative_mtp_symbol_exists():
+    """The new C++ entry point must be importable as a module-level binding."""
+    from llama_cpp import _llama
+
+    assert hasattr(_llama, "generate_tokens_speculative_mtp")
