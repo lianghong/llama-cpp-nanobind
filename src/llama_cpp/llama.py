@@ -641,6 +641,26 @@ class Llama:
                 "Reduce prompt length or increase n_ctx."
             )
 
+    def _validate_speculative(self, speculative: bool) -> None:
+        """Validate the precondition for ``speculative=True`` calls.
+
+        Speculative decoding is only valid when the context was constructed
+        with ``ctx_type=LLAMA_CONTEXT_TYPE_MTP`` and is **not** an
+        embeddings-only context.
+        """
+        if not speculative:
+            return
+        if self.config.embeddings:
+            raise ValidationError(
+                "speculative=True is incompatible with embeddings-only contexts"
+            )
+        if not self.ctx.supports_speculative_mtp():
+            raise ValidationError(
+                f"speculative=True requires LlamaConfig("
+                f"ctx_type=LLAMA_CONTEXT_TYPE_MTP); got "
+                f"ctx_type={self.config.ctx_type}"
+            )
+
     def close(self) -> None:
         """Release model and context resources."""
         # _closed is set in __init__ before any operation that can fail, so

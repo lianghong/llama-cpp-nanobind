@@ -54,3 +54,48 @@ def test_n_draft_max_eight_accepted():
 def test_n_draft_max_one_accepted():
     sp = SamplingParams(n_draft_max=1)
     assert sp.n_draft_max == 1
+
+
+@requires_model
+def test_validate_speculative_default_ctx_raises():
+    cfg = LlamaConfig(
+        model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False
+    )
+    llm = Llama(MODEL_PATH, config=cfg)
+    try:
+        with pytest.raises(ValidationError, match="ctx_type=LLAMA_CONTEXT_TYPE_MTP"):
+            llm._validate_speculative(speculative=True)
+    finally:
+        llm.close()
+
+
+@requires_model
+def test_validate_speculative_false_is_noop():
+    cfg = LlamaConfig(
+        model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False
+    )
+    llm = Llama(MODEL_PATH, config=cfg)
+    try:
+        llm._validate_speculative(speculative=False)  # must not raise
+    finally:
+        llm.close()
+
+
+@requires_model
+def test_validate_speculative_with_embeddings_raises():
+    cfg = LlamaConfig(
+        model_path=MODEL_PATH,
+        n_ctx=512,
+        n_gpu_layers=0,
+        verbose=False,
+        embeddings=True,
+        ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT,
+    )
+    llm = Llama(MODEL_PATH, config=cfg)
+    try:
+        # Two failures possible: ctx_type wrong AND embeddings on. Either
+        # message wins; we accept either substring.
+        with pytest.raises(ValidationError):
+            llm._validate_speculative(speculative=True)
+    finally:
+        llm.close()
