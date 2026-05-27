@@ -363,6 +363,10 @@ class SamplerChain {
     // decay: EMA decay; valid range [0.0, 0.99]; history ≈ 1/(1-decay) tokens.
     float adaptive_p_target = -1.0F;
     float adaptive_p_decay = 0.85F;
+    // Logit bias: list of (token_id, bias) entries. Empty = disabled.
+    // Applied first in the chain so penalties/truncation see the biased logits.
+    // Use -INFINITY (or a large negative) to ban a token.
+    std::vector<std::pair<llama_token, float>> logit_bias;
   };
 
   SamplerChain(const Model& model, const Params& params) {
@@ -373,6 +377,23 @@ class SamplerChain {
     }
 
     // Canonical sampler ordering:
+    // 0. Logit bias (mutates raw logits; runs before everything else so the
+    //    biased values propagate through penalties / truncation / sampling)
+    if (!params.logit_bias.empty()) {
+      const int32_t n_vocab = model.n_vocab();
+      std::vector<llama_logit_bias> entries;
+      entries.reserve(params.logit_bias.size());
+      for (const auto& [token, bias] : params.logit_bias) {
+        if (token < 0 || token >= n_vocab) {
+          throw std::out_of_range("logit_bias token id out of range [0, n_vocab)");
+        }
+        entries.push_back({token, bias});
+      }
+      llama_sampler_chain_add(
+          sampler_, llama_sampler_init_logit_bias(n_vocab, static_cast<int32_t>(entries.size()),
+                                                  entries.data()));
+    }
+
     // 1. DRY (anti-repetition on raw logits)
     if (params.dry_multiplier > 0.0F) {
       // Convert breaker strings to C-style array
@@ -441,9 +462,9 @@ class SamplerChain {
                                   ? static_cast<uint32_t>(params.seed)
                                   : static_cast<uint32_t>(llama_time_us() & 0xFFFFFFFF);
     if (params.adaptive_p_target >= 0.0F) {
-      llama_sampler_chain_add(sampler_,
-                              llama_sampler_init_adaptive_p(params.adaptive_p_target,
-                                                            params.adaptive_p_decay, rng_seed));
+      llama_sampler_chain_add(
+          sampler_, llama_sampler_init_adaptive_p(params.adaptive_p_target, params.adaptive_p_decay,
+                                                  rng_seed));
     } else {
       llama_sampler_chain_add(sampler_, llama_sampler_init_dist(rng_seed));
     }
@@ -779,8 +800,8 @@ class Context {
     size_t written = 0;
     {
       nb::gil_scoped_release const release;
-      written = llama_state_seq_get_data_ext(ctx_, reinterpret_cast<uint8_t*>(buf), size, seq_id,
-                                             flag);
+      written =
+          llama_state_seq_get_data_ext(ctx_, reinterpret_cast<uint8_t*>(buf), size, seq_id, flag);
     }
     if (written < size) {
       if (_PyBytes_Resize(&py_obj, static_cast<Py_ssize_t>(written)) != 0) {
@@ -1799,7 +1820,10 @@ NB_MODULE(_llama, m) {
       .def_rw("adaptive_p_target", &SamplerChain::Params::adaptive_p_target,
               "Adaptive-P target probability (negative = disabled, replaces dist when enabled)")
       .def_rw("adaptive_p_decay", &SamplerChain::Params::adaptive_p_decay,
-              "Adaptive-P EMA decay; history ~ 1/(1-decay) tokens (range 0.0-0.99)");
+              "Adaptive-P EMA decay; history ~ 1/(1-decay) tokens (range 0.0-0.99)")
+      .def_rw("logit_bias", &SamplerChain::Params::logit_bias,
+              "List of (token_id, bias) pairs. Empty = disabled. "
+              "Use -inf (or a large negative) to ban a token.");
 
   nb::class_<SamplerChain>(m, "SamplerChain", "Sampler chain for token selection")
       .def(nb::init<const Model&, const SamplerChain::Params&>(), "model"_a, "params"_a,

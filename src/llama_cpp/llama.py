@@ -12,6 +12,7 @@ from dataclasses import replace as dc_replace
 import gc
 import json
 import logging
+import math
 import os
 import queue
 import threading
@@ -211,6 +212,10 @@ class SamplingParams:
     # truncation (e.g. min_p) only, and disable temperature.
     adaptive_p_target: float = -1.0
     adaptive_p_decay: float = 0.85
+    # Logit bias: per-token additive bias applied before all other samplers.
+    # Maps token_id -> bias (use float("-inf") or a large negative to ban).
+    # OpenAI-API parity (mirrors `logit_bias` in chat/completions).
+    logit_bias: dict[int, float] | None = None
 
     def __post_init__(self) -> None:
         """Validate sampling parameters."""
@@ -249,6 +254,16 @@ class SamplingParams:
             )
         if not 0.0 <= self.adaptive_p_decay <= 0.99:
             raise ValidationError("adaptive_p_decay must be in [0.0, 0.99]")
+        if self.logit_bias is not None:
+            for token_id, bias in self.logit_bias.items():
+                if not isinstance(token_id, int) or token_id < 0:
+                    raise ValidationError(
+                        f"logit_bias token id must be a non-negative int, got {token_id!r}"
+                    )
+                if not isinstance(bias, (int, float)) or math.isnan(float(bias)):
+                    raise ValidationError(
+                        f"logit_bias[{token_id}] must be a real number, got {bias!r}"
+                    )
 
     def to_native(self) -> _llama.SamplerParams:
         native = _llama.SamplerParams()
@@ -274,6 +289,10 @@ class SamplingParams:
         native.dry_seq_breakers = list(self.dry_seq_breakers or [])
         native.adaptive_p_target = float(self.adaptive_p_target)
         native.adaptive_p_decay = float(self.adaptive_p_decay)
+        if self.logit_bias:
+            native.logit_bias = [
+                (int(tok), float(bias)) for tok, bias in self.logit_bias.items()
+            ]
         return native
 
 
