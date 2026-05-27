@@ -943,6 +943,8 @@ class Context {
     return llama_memory_can_shift(mem);
   }
 
+  bool supports_speculative_mtp() const { return params_.raw.ctx_type == LLAMA_CONTEXT_TYPE_MTP; }
+
   void set_embeddings(bool enabled) {
     check_ctx();
     llama_set_embeddings(ctx_, enabled);
@@ -1922,6 +1924,8 @@ NB_MODULE(_llama, m) {
            "Get min position in sequence")
       .def("memory_can_shift", &Context::memory_can_shift,
            "Whether memory supports KV cache shifting")
+      .def("supports_speculative_mtp", &Context::supports_speculative_mtp,
+           "True iff the context was constructed with ctx_type=LLAMA_CONTEXT_TYPE_MTP")
       .def("set_embeddings", &Context::set_embeddings, "enabled"_a,
            "Enable or disable embedding extraction at runtime")
       .def("set_causal_attn", &Context::set_causal_attn, "enabled"_a,
