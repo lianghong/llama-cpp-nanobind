@@ -216,6 +216,7 @@ if __name__ == "__main__":
 | `use_mlock` | False | mlock model into RAM |
 | `offload_kqv` | True | Offload K/Q/V to GPU |
 | `flash_attn` | 1 | Flash-attention mode (required for quantized V cache) |
+| `ctx_type` | `LLAMA_CONTEXT_TYPE_DEFAULT` (0) | Context graph variant — set to `LLAMA_CONTEXT_TYPE_MTP` (1) on MTP-capable checkpoints. See "MTP context type" below |
 | `cache_type_k` | `GGML_TYPE_F16` (1) | ggml_type for K cache — see "Quantized KV cache" below |
 | `cache_type_v` | `GGML_TYPE_F16` (1) | ggml_type for V cache — see "Quantized KV cache" below |
 | `embeddings` | False | Enable embeddings (required for `embed()` and `create_embedding()`) |
@@ -227,6 +228,7 @@ if __name__ == "__main__":
 
 Raises `ValidationError` if:
 - `n_ctx < 1`, `n_batch < 1`, `n_seq_max < 1`, or `n_gpu_layers < -1`
+- `ctx_type` is not `LLAMA_CONTEXT_TYPE_DEFAULT` (0) or `LLAMA_CONTEXT_TYPE_MTP` (1)
 - `cache_type_k` / `cache_type_v` is not one of the supported ggml_types listed below
 - `cache_type_v` is quantized (not F32/F16/BF16) and `flash_attn == 0` — quantized V without flash attention produces NaN/garbage output in llama.cpp
 
@@ -315,8 +317,12 @@ llm = Llama(
 | `temp_delta` | 0.0 | Dynamic temperature range delta |
 | `temp_exponent` | 1.0 | Dynamic temperature exponent |
 | `top_n_sigma` | -1.0 | Top-n-sigma cutoff (negative = disabled) |
+| `typical_p` | 1.0 | Locally-typical sampling cutoff (1.0 = disabled, range `(0, 1]`) |
+| `logit_bias` | None | `dict[int, float]` of per-token additive bias (applied first; `-inf` bans a token). Out-of-range token ids raise `IndexError` |
+| `adaptive_p_target` | -1.0 | Adaptive-p target (≥ 0 enables; replaces `dist`). Range `[0, 1]` |
+| `adaptive_p_decay` | 0.85 | Adaptive-p decay. Range `[0, 0.99]` |
 
-Sampler chain ordering: DRY → penalties → top_n_sigma → top_k → top_p → min_p → XTC → temp → dist
+Sampler chain ordering: logit_bias → DRY → penalties → top_n_sigma → top_k → top_p → min_p → typical_p → XTC → temp → dist (or adaptive_p when enabled)
 
 ## llama_cpp.LlamaGrammar
 
@@ -333,6 +339,21 @@ grammar = LlamaGrammar.from_json_schema({"type": "object", "properties": {"name"
 
 response = llm.create_chat_completion(messages=[...], grammar=grammar)
 ```
+
+### Lazy (trigger-activated) grammar
+
+Bind `llama_sampler_init_grammar_lazy_patterns` (llama.cpp PR #9639). The grammar stays inactive until the model emits text matching one of the trigger patterns (regex anchored at the start of generated output) or one of the trigger token ids — useful for tool-calling and mixed free-form / structured output.
+
+```python
+grammar = LlamaGrammar.lazy(
+    'root ::= "{" "}"',
+    trigger_patterns=[r"<tool_call>"],
+    trigger_tokens=[12345],          # optional
+)
+assert grammar.is_lazy is True
+```
+
+`LlamaGrammar.lazy(...)` raises `ValidationError` if no triggers are supplied (a lazy grammar with no triggers would never activate). Eager grammars (the legacy constructor / `from_string` / `from_json_schema`) report `is_lazy is False` and are unaffected.
 
 ## llama_cpp.unified.UnifiedLLM
 

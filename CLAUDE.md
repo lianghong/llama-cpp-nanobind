@@ -73,7 +73,7 @@ models/                        GGUF files (not committed)
 
 **State management** — `cur_pos_` tracks KV position; updated by `load_state`, `set_state_data`, and `kv_cache_seq_*` ops. `set_state_data` rolls back `cur_pos_` on load failure. State save/load uses `nb::bytes` buffer protocol (single memcpy, no per-element conversion).
 
-**Sampler chain** — Grammar applies *before* sampler chain. Canonical order: DRY → penalties → top_n_sigma → top_k → top_p → min_p → XTC → temp_ext/temp → dist. Always read `cur_p.selected` from sampler, never argmax. In `generate_tokens_with_details`, `llama_sampler_apply` is called explicitly for logprobs — do **not** then call `generate_next`/`llama_sampler_sample`, which would re-apply the chain and advance the dist sampler's RNG.
+**Sampler chain** — Grammar applies *before* sampler chain. Canonical order: logit_bias → DRY → penalties → top_n_sigma → top_k → top_p → min_p → typical_p → XTC → temp_ext/temp → dist (or adaptive_p when `adaptive_p_target ≥ 0`, replacing `dist`). Always read `cur_p.selected` from sampler, never argmax. In `generate_tokens_with_details`, `llama_sampler_apply` is called explicitly for logprobs — do **not** then call `generate_next`/`llama_sampler_sample`, which would re-apply the chain and advance the dist sampler's RNG.
 
 **Streaming** — `generate_stream()` is true incremental (background thread + queue, GIL released during decode/sample, re-acquired only for the Python callback). `generate(..., stream=True)` is buffered (simpler, higher latency). All paths share `_token_to_text_incremental()` for UTF-8 decode across token boundaries (emoji, CJK).
 
@@ -84,6 +84,10 @@ models/                        GGUF files (not committed)
 **LlamaPool** — `pool_size` independent `Llama` instances (Llama is not thread-safe), `asyncio.Queue` checkout. `close()` is immediate; `close_graceful(timeout=30)` waits for in-flight returns. Records the binding event loop on first use; cross-loop reuse raises. VRAM ≈ `model_size × pool_size`. Optional `warmup=True` runs 3-token dummy inference per instance (compiles CUDA kernels, removes cold-start variance).
 
 **Prompt-prefix KV reuse (`cache_prompt=True`, default)** — When paired with `reset_kv_cache=False`, `_apply_prefix_reuse` computes the LCP between cached and new prompts, calls `kv_cache_seq_rm(0, n_match, -1)`, and the C++ generator decodes only `priming[n_match:]` via `skip_decode_prefix`. Mirror invariant: `len(_cached_prompt_tokens) == kv_pos_max + 1`. Hybrid models (Qwen 3.5, Granite 4 hybrid, some flash-attn configs) report `memory_can_shift()=False`; for them `seq_rm` returns `False` and we fall back to `kv_cache_clear` + full re-prime — correctness preserved, speedup lost.
+
+**MTP (Multi-Token Prediction)** — `LlamaConfig.ctx_type=LLAMA_CONTEXT_TYPE_MTP` (1) selects the MTP graph variant in llama.cpp at context-construction time. Requires a checkpoint that ships MTP layers (`*.nextn_predict_layers > 0` metadata + `blk.*.nextn.*` tensors); currently produced for Qwen3.5 / Qwen3.5-MoE / Qwen3.6-MoE MTP variants. On a non-MTP model, libllama errors with `"context type MTP requested but model doesn't contain MTP layers"`, surfaced here as `ModelLoadError`. **Scaffold only — no throughput benefit in this binding.** The generate loop is strictly per-token (`llama_decode` with `n_tokens = 1`); MTP heads compute and their output is discarded, so enabling `LLAMA_CONTEXT_TYPE_MTP` is a net regression on the same model. Real acceleration (1.4–2.2× dense, 1.15–1.2× MoE per unsloth) requires draft-verify (`common_speculative_impl_draft_mtp` in upstream `common/speculative.cpp`), which calls `llama-ext.h` staging APIs (`llama_set_embeddings_pre_norm`) and links `libllama-common` — neither exposed by the system-installed llama.cpp today. Wiring retained as the trigger point for when those APIs are promoted to public `llama.h`. Until then: leave at `LLAMA_CONTEXT_TYPE_DEFAULT`.
+
+**On-device per-seq state** — `Context::save_seq_state_on_device(seq_id) -> nb::bytes` and `Context::load_seq_state_on_device(handle, dest_seq_id)` wrap `llama_state_seq_{get,set}_data_ext` with `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE`. The handle is invalidated by any KV-clearing op (`reset()`, `kv_cache_clear()`, `set_state_data()`, `load_state()`, re-saving the same seq); loading a stale handle calls `ggml_abort` (process termination) — the C API performs no validation. Treat as a short-lived in-session reference; for durable snapshots use `get_state()`. Python wrapper invalidates the prompt-cache mirror only when `dest_seq_id == 0`.
 
 ## Implementation Rules
 
@@ -125,6 +129,8 @@ models/                        GGUF files (not committed)
 
 Default: `./models/Qwen3.5-4B-Q4_K_M.gguf` (override via `LLAMA_TEST_MODEL`; update `conftest.py` for different paths).
 
+**MTP-capable model** (used by `tests/test_mtp.py` for the positive end-to-end MTP path): `./models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf` (override via `LLAMA_MTP_TEST_MODEL`). Tests skip cleanly when the file is absent.
+
 ## Performance
 
 **Build (Release)**: `-O3 -march=native -mtune=native -flto=auto -funroll-loops -fno-plt`. `-ffast-math` is **off by default** (alters softmax/sampling numerics, sets FTZ/DAZ process-wide); opt in with `-DLLAMA_FAST_MATH=ON` or `--fast-math`. LTO if supported. Compiler: `gcc-15`/`g++-15` then `gcc`/`g++` on Linux, `clang`/`clang++` on macOS.
@@ -148,6 +154,12 @@ Default: `./models/Qwen3.5-4B-Q4_K_M.gguf` (override via `LLAMA_TEST_MODEL`; upd
 | `test_pool_close.py` | Pool shutdown semantics |
 | `test_partial_init.py` | `close()` after failed `__init__` |
 | `test_validation.py` | Sampling override validation |
+| `test_adaptive_p.py` | Adaptive-p terminal sampler |
+| `test_logit_bias.py` | Per-token logit bias (OpenAI-API parity) |
+| `test_typical_p.py` | Locally-typical sampling |
+| `test_lazy_grammar.py` | Trigger-activated GBNF |
+| `test_state_on_device.py` | On-device per-seq state save/load |
+| `test_mtp.py` | MTP context type (`ctx_type=LLAMA_CONTEXT_TYPE_MTP`) — needs MTP-capable model |
 
 `conftest.py` provides `model_path` and `test_model` fixtures.
 
@@ -172,6 +184,9 @@ MALLOC_CHECK_=3 python examples/verify_double_free.py
 12. **Streaming thread leak** — early termination during stuck C++ gen logs a warning; don't reuse the instance until the worker returns.
 13. **Quantized KV cache** — only F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL allowed. K-quants (Q4_K, …) rejected by `LlamaConfig`. Quantized V (anything besides F32/F16/BF16) requires `flash_attn=1` — `LlamaConfig` raises `ValidationError` otherwise.
 14. **`reset_kv_cache=False` semantics** — with default `cache_prompt=True`, divergent prompts trim KV to LCP, not append. For "stitch arbitrary prompts", pass `cache_prompt=False`.
+15. **MTP on non-MTP models** — `ctx_type=LLAMA_CONTEXT_TYPE_MTP` is rejected at context construction (raises `ModelLoadError`) for any model without `nextn_predict_layers > 0` metadata. There's no fallback — match the constant to the checkpoint.
+16. **Stale on-device state handle** — invalidated by `reset()` / `kv_cache_clear()` / `set_state_data()` / `load_state()` / re-saving the same seq. Loading a stale handle calls `ggml_abort` (process termination); the C API performs no validation. Use `get_state()` for durable snapshots.
+17. **Lazy grammar with no triggers** — `LlamaGrammar.lazy(...)` rejects empty `trigger_patterns` and `trigger_tokens` (would never activate). Eager grammars use the regular constructor and report `is_lazy is False`.
 
 ## Model Support (UnifiedLLM)
 

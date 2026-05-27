@@ -136,6 +136,50 @@ config time.
 
 Importable from `llama_cpp` package root.
 
+### MTP (Multi-Token Prediction) context type
+
+Bind the `llama_context_type` enum and the `ctx_type` field on
+`llama_context_params`. Setting `ctx_type = LLAMA_CONTEXT_TYPE_MTP`
+selects the MTP graph variant in llama.cpp (currently implemented for
+Qwen3.5 / Qwen3.5-MoE checkpoints that ship `nextn_predict_layers > 0`
+metadata and `blk.*.nextn.*` tensors). Default remains
+`LLAMA_CONTEXT_TYPE_DEFAULT` — no behavior change for existing users.
+
+**C++ bindings (`src/bindings/llama_cpp.cpp`)**
+- New `ContextParams.ctx_type` property (read/write `int`, mapped onto
+  `llama_context_type`).
+- Echoed in `as_dict()`.
+
+**Python (`src/llama_cpp/llama.py`)**
+- `LLAMA_CONTEXT_TYPE_DEFAULT = 0` and `LLAMA_CONTEXT_TYPE_MTP = 1`
+  module-level constants; importable from `llama_cpp` package root.
+- `LlamaConfig.ctx_type: int = LLAMA_CONTEXT_TYPE_DEFAULT`.
+- Validation: rejects values outside `_VALID_CONTEXT_TYPES = {0, 1}`
+  with `ValidationError`.
+- Wired into `Context` construction via `ctx_params.ctx_type`.
+
+**Behavior on incompatible models:** llama.cpp raises at context
+construction with `"context type MTP requested but model doesn't
+contain MTP layers"`; surfaced as `ModelLoadError` here. There is no
+runtime/sampler-level surface — MTP is a graph-time decision and the
+generation loop is unchanged.
+
+**Scope — scaffold only, no acceleration today.** The bindings'
+generate loop is strictly per-token (`llama_decode` with
+`n_tokens = 1`). With no draft-verify consumer, enabling
+`LLAMA_CONTEXT_TYPE_MTP` runs the auxiliary MTP heads each step and
+discards their output — a **net throughput regression** on the same
+model, plus extra VRAM. The acceleration unsloth advertises via
+`--spec-type draft-mtp --spec-draft-n-max 2` (renamed from
+`--spec-type mtp` on 2026-05-13) is implemented in upstream
+`common/speculative.cpp` as `COMMON_SPECULATIVE_TYPE_DRAFT_MTP`,
+which requires a separate draft context, calls `llama-ext.h` staging
+APIs (`llama_set_embeddings_pre_norm`), and links against
+`libllama-common` — none of which are reachable from the
+system-installed llama.cpp today. The `ctx_type` plumbing and
+`tests/test_mtp.py` are retained as the trigger point for when the
+upstream consumer API is promoted to public `llama.h`.
+
 ## Tests
 
 - `tests/test_adaptive_p.py` — 11 tests. Default-off behavior, validation
@@ -163,10 +207,20 @@ Importable from `llama_cpp` package root.
   NaN / non-numeric rejected); end-to-end behavior (`None`/empty matches
   baseline, banning the baseline token via `-inf` changes the output,
   out-of-range token id raises `IndexError`).
+- `tests/test_mtp.py` — 9 tests. Constants exposed; default ctx_type;
+  MTP value accepted by `LlamaConfig`; out-of-range / negative
+  `ctx_type` rejected; default ctx_type loads on the standard test
+  model; **MTP on a non-MTP model raises `ModelLoadError`**;
+  **positive end-to-end on a Qwen3.6-MoE MTP checkpoint** (loads,
+  generates non-empty output, default ctx also loads on the same
+  model). The MTP-capable model defaults to
+  `models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf`; override with the
+  `LLAMA_MTP_TEST_MODEL` env var. Tests skip cleanly when the file
+  is absent.
 
 ## Verification
 
-- 214/214 tests pass
+- 223/223 tests pass
 - `ruff check`: clean on modified files
 - `clang-format --dry-run -Werror` on `llama_cpp.cpp`: clean
 
