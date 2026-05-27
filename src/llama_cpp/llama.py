@@ -186,6 +186,9 @@ class SamplingParams:
     top_k: int = 40
     top_p: float = 0.95
     min_p: float = 0.0
+    # Locally-typical sampling (Meister et al., arXiv:2202.00666).
+    # 1.0 = disabled (matches llama.cpp convention).
+    typical_p: float = 1.0
     min_keep: int = 1
     repeat_penalty: float = 1.1
     repeat_last_n: int = 64
@@ -225,6 +228,8 @@ class SamplingParams:
             raise ValidationError("top_p must be between 0.0 and 1.0")
         if not 0.0 <= self.min_p <= 1.0:
             raise ValidationError("min_p must be between 0.0 and 1.0")
+        if not 0.0 < self.typical_p <= 1.0:
+            raise ValidationError("typical_p must be in (0.0, 1.0] (1.0 = disabled)")
         if self.top_k < 0:
             raise ValidationError("top_k must be non-negative (0 = disabled)")
         if self.repeat_penalty < 0:
@@ -270,6 +275,7 @@ class SamplingParams:
         native.top_k = self.top_k
         native.top_p = float(self.top_p)
         native.min_p = float(self.min_p)
+        native.typical_p = float(self.typical_p)
         native.min_keep = int(self.min_keep)
         native.temp = float(self.temperature)
         native.penalty_last_n = int(self.repeat_last_n)

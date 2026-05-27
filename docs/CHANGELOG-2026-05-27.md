@@ -79,6 +79,24 @@ completions, suppress profanity.
   (rejects `NaN` and non-numeric). `-inf` is accepted (ban semantics).
 - `to_native()` converts the dict to `list[tuple[int, float]]`.
 
+### Locally-typical sampling
+
+Bind `llama_sampler_init_typical` (Meister et al.,
+[arXiv:2202.00666](https://arxiv.org/abs/2202.00666)). Truncates by
+local typicality (entropy distance) instead of cumulative probability;
+slots into the chain right after `min_p`.
+
+**C++ bindings**
+- `SamplerChain::Params::typical_p`, default `1.0` (disabled — matches
+  llama.cpp convention). When `< 1.0` the chain inserts
+  `llama_sampler_init_typical(typical_p, min_keep)`.
+
+**Python wrapper**
+- `SamplingParams.typical_p: float = 1.0`.
+- Validation: `(0.0, 1.0]` (zero would discard everything; > 1.0 is
+  meaningless).
+- `to_native()` passes the float through.
+
 ### Forward-compat ggml type constants
 
 Exported but **not** added to `_VALID_CACHE_TYPES` — these are weight-only
@@ -106,6 +124,10 @@ Importable from `llama_cpp` package root.
 - Intentionally **no** "garbage handle raises" test for the on-device
   path — `ggml_abort` terminates the process, and the opaque handle
   format has no public layout to pre-validate.
+- `tests/test_typical_p.py` — 8 tests. Default-disabled, `to_native`
+  pass-through, validation edges (zero / negative / > 1 rejected, 1.0
+  allowed as the disabled sentinel), end-to-end equivalence-when-disabled
+  and smoke-generation-when-enabled.
 - `tests/test_logit_bias.py` — 10 tests. Validation edges (default
   disabled, dict round-trip, empty dict, `-inf` accepted, negative key /
   NaN / non-numeric rejected); end-to-end behavior (`None`/empty matches
@@ -114,7 +136,7 @@ Importable from `llama_cpp` package root.
 
 ## Verification
 
-- 197/197 tests pass
+- 205/205 tests pass
 - `ruff check`: clean on modified files
 - `clang-format --dry-run -Werror` on `llama_cpp.cpp`: clean
 

@@ -337,6 +337,9 @@ class SamplerChain {
     int32_t top_k = 40;
     float top_p = 0.95F;
     float min_p = 0.0F;
+    // Locally-typical sampling (Meister et al., arXiv:2202.00666).
+    // 1.0 = disabled (matches llama.cpp convention).
+    float typical_p = 1.0F;
     size_t min_keep = 1;
     float temp = 0.8F;
     int32_t penalty_last_n = 64;
@@ -436,6 +439,12 @@ class SamplerChain {
     // 6. Min-P
     if (params.min_p > 0.0F) {
       llama_sampler_chain_add(sampler_, llama_sampler_init_min_p(params.min_p, params.min_keep));
+    }
+
+    // 6b. Typical-p (locally-typical sampling). 1.0 = disabled.
+    if (params.typical_p < 1.0F) {
+      llama_sampler_chain_add(sampler_,
+                              llama_sampler_init_typical(params.typical_p, params.min_keep));
     }
 
     // 7. XTC (on filtered candidates)
@@ -1791,6 +1800,8 @@ NB_MODULE(_llama, m) {
       .def_rw("top_k", &SamplerChain::Params::top_k, "Top-K sampling (0 = disabled)")
       .def_rw("top_p", &SamplerChain::Params::top_p, "Top-P (nucleus) sampling")
       .def_rw("min_p", &SamplerChain::Params::min_p, "Min-P sampling threshold")
+      .def_rw("typical_p", &SamplerChain::Params::typical_p,
+              "Locally-typical sampling threshold (1.0 = disabled)")
       .def_rw("min_keep", &SamplerChain::Params::min_keep, "Minimum tokens to keep")
       .def_rw("temp", &SamplerChain::Params::temp, "Temperature (1.0 = neutral)")
       .def_rw("penalty_last_n", &SamplerChain::Params::penalty_last_n,
