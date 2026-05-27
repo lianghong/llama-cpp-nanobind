@@ -493,7 +493,69 @@ from llama_cpp import LlamaGrammar
 
 grammar = LlamaGrammar.from_string('root ::= "yes" | "no"')
 response = llm.create_chat_completion(messages=[...], grammar=grammar)
+
+# Lazy (trigger-activated) grammar — stays inactive until the model
+# emits a matching pattern or token. Useful for tool-calling: free-form
+# until "<tool_call>" appears, then constrained to the JSON schema.
+lazy = LlamaGrammar.lazy(
+    'root ::= "{" "}"',
+    trigger_patterns=[r"<tool_call>"],
+)
 ```
+
+### Advanced Sampling
+
+Recent additions (see [`docs/CHANGELOG-2026-05-27.md`](docs/CHANGELOG-2026-05-27.md)):
+
+```python
+from llama_cpp import SamplingParams
+
+# Logit bias (OpenAI-API parity): per-token additive bias applied first.
+# `-inf` bans a token; positive values encourage it.
+params = SamplingParams(logit_bias={50256: float("-inf")})
+
+# Locally-typical sampling (Meister et al., arXiv:2202.00666).
+# Truncates by entropy distance instead of cumulative probability.
+params = SamplingParams(typical_p=0.7)
+
+# Adaptive-p terminal sampler (replaces `dist` when enabled).
+params = SamplingParams(adaptive_p_target=0.5, adaptive_p_decay=0.85)
+```
+
+### MTP (Multi-Token Prediction)
+
+`LlamaConfig.ctx_type=LLAMA_CONTEXT_TYPE_MTP` selects the MTP graph variant in llama.cpp at context-construction time, for Qwen3.5 / Qwen3.5-MoE / Qwen3.6-MoE checkpoints that ship MTP layers (`*.nextn_predict_layers > 0` metadata + `blk.*.nextn.*` tensors).
+
+> **This does not accelerate generation today.** The bindings' generate loop is strictly per-token (`llama_decode` with `n_tokens = 1`). Without a draft-verify consumer, setting `ctx_type=LLAMA_CONTEXT_TYPE_MTP` runs the auxiliary MTP heads each step and discards their output — extra compute and extra VRAM for no throughput benefit. Leave it at the default (`LLAMA_CONTEXT_TYPE_DEFAULT`) unless you are deliberately exercising the graph path.
+
+```python
+from llama_cpp import Llama, LlamaConfig, LLAMA_CONTEXT_TYPE_MTP
+
+llm = Llama(
+    "models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+    config=LlamaConfig(
+        model_path="models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+        n_ctx=4096,
+        ctx_type=LLAMA_CONTEXT_TYPE_MTP,
+    ),
+)
+```
+
+Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError`.
+
+The acceleration that upstream's `--spec-type draft-mtp` flag delivers (1.4–2.2× dense, 1.15–1.2× MoE per unsloth) is implemented in `common/speculative.cpp` and depends on staging APIs (`llama-ext.h`) not yet promoted to public `llama.h`. Tracked for a future revision once those APIs stabilize and ship in the installed headers.
+
+### On-Device State Save/Load
+
+Wraps `llama_state_seq_{get,set}_data_ext(LLAMA_STATE_SEQ_FLAGS_ON_DEVICE)` — tensor data stays in GPU buffers instead of round-tripping through host memory. Useful for fast in-process branching (speculative continuations, beam-style exploration) within a single generation session.
+
+```python
+handle = llm.save_seq_state_on_device(seq_id=0)
+# ... generate further tokens ...
+llm.load_seq_state_on_device(handle, dest_seq_id=0)  # rewind
+```
+
+The opaque handle is invalidated by any KV-clearing op (`reset()`, `kv_cache_clear()`, `set_state_data()`, `load_state()`, re-saving the same seq) — treat it as a short-lived in-session reference. For durable snapshots use `get_state()` / `set_state_data()`.
 
 ## Tests & Code Quality
 
@@ -536,8 +598,8 @@ The script tests 20 scenarios across both `Llama` and `UnifiedLLM`: double `clos
 - `Llama` – main class for model loading and inference (supports context manager)
 - `LlamaPool` – pool manager for parallel inference with multiple instances
 - `LlamaConfig` – configuration (chat_format, embeddings, GPU settings, n_seq_max)
-- `SamplingParams` – temperature, top_k, top_p, penalties, DRY, XTC, dynamic temp, top-n-sigma
-- `LlamaGrammar` – constrained generation via GBNF or JSON schema
+- `SamplingParams` – temperature, top_k, top_p, penalties, DRY, XTC, dynamic temp, top-n-sigma, typical_p, logit_bias, adaptive_p
+- `LlamaGrammar` – constrained generation via GBNF or JSON schema (eager + lazy/trigger-activated)
 - `UnifiedLLM` – multi-model wrapper with auto-detection
 
 **Exceptions:**
