@@ -22,6 +22,8 @@ from .llama import GGML_TYPE_Q4_1
 from .llama import GGML_TYPE_Q5_0
 from .llama import GGML_TYPE_Q5_1
 from .llama import GGML_TYPE_Q8_0
+from .llama import LLAMA_CONTEXT_TYPE_DEFAULT
+from .llama import LLAMA_CONTEXT_TYPE_MTP
 from .llama import Llama
 from .llama import LlamaConfig
 from .llama import LlamaError
@@ -54,6 +56,8 @@ __all__ = [
     "GGML_TYPE_MXFP4",
     "GGML_TYPE_NVFP4",
     "GGML_TYPE_Q1_0",
+    "LLAMA_CONTEXT_TYPE_DEFAULT",
+    "LLAMA_CONTEXT_TYPE_MTP",
     "set_log_level",
     "disable_logging",
     "reset_logging",

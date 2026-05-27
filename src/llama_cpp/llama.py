@@ -56,6 +56,16 @@ GGML_TYPE_MXFP4 = 39
 GGML_TYPE_NVFP4 = 40
 GGML_TYPE_Q1_0 = 41
 
+# llama_context_type — selects the graph variant a context constructs.
+# MTP (Multi-Token Prediction) requires a model that ships MTP layers
+# (currently Qwen3.5 and Qwen3.5-MoE MTP checkpoints); on a model without
+# MTP layers, context construction fails.
+LLAMA_CONTEXT_TYPE_DEFAULT = 0
+LLAMA_CONTEXT_TYPE_MTP = 1
+_VALID_CONTEXT_TYPES: frozenset[int] = frozenset(
+    {LLAMA_CONTEXT_TYPE_DEFAULT, LLAMA_CONTEXT_TYPE_MTP}
+)
+
 # ggml_types accepted by llama.cpp for KV cache (k/v). Used for validation in
 # LlamaConfig. Keep in sync with llama.cpp's llama_kv_cache_unified; unsupported
 # types (e.g. k-quants like Q4_K) crash context construction.
@@ -319,6 +329,9 @@ class LlamaConfig:
     check_tensors: bool = False
     no_host: bool = False
     flash_attn: int = 1
+    ctx_type: int = (
+        LLAMA_CONTEXT_TYPE_DEFAULT  # 0=default, 1=MTP (Multi-Token Prediction)
+    )
     offload_kqv: bool = True
     embeddings: bool = False
     rope_freq_base: float = 0.0
@@ -345,6 +358,11 @@ class LlamaConfig:
             raise ValidationError("n_gpu_layers must be >= -1 (-1 means all layers)")
         if self.n_seq_max < 1:
             raise ValidationError("n_seq_max must be at least 1")
+        if self.ctx_type not in _VALID_CONTEXT_TYPES:
+            raise ValidationError(
+                f"ctx_type={self.ctx_type} is not a supported llama_context_type. "
+                f"Use LLAMA_CONTEXT_TYPE_DEFAULT (0) or LLAMA_CONTEXT_TYPE_MTP (1)."
+            )
         if self.cache_type_k not in _VALID_CACHE_TYPES:
             raise ValidationError(
                 f"cache_type_k={self.cache_type_k} is not a supported ggml_type "
@@ -469,6 +487,7 @@ class Llama:
         ctx_params.n_threads = int(cfg.n_threads or os.cpu_count() or 1)
         ctx_params.n_threads_batch = int(cfg.n_threads_batch or ctx_params.n_threads)
         ctx_params.flash_attn_type = int(cfg.flash_attn)
+        ctx_params.ctx_type = int(cfg.ctx_type)
         ctx_params.offload_kqv = bool(cfg.offload_kqv)
         ctx_params.embeddings = bool(cfg.embeddings)
         ctx_params.rope_freq_base = float(cfg.rope_freq_base)

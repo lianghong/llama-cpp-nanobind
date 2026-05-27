@@ -1748,6 +1748,12 @@ NB_MODULE(_llama, m) {
           },
           "Flash attention type (0=disabled)")
       .def_prop_rw(
+          "ctx_type", [](ContextParams& p) { return static_cast<int>(p.raw.ctx_type); },
+          [](ContextParams& p, int v) { p.raw.ctx_type = static_cast<llama_context_type>(v); },
+          "Context type (0=default, 1=MTP). MTP requires a model that ships "
+          "Multi-Token Prediction layers (e.g. Qwen3.5 MTP variants); other "
+          "models will fail context construction.")
+      .def_prop_rw(
           "type_k", [](ContextParams& p) { return static_cast<int>(p.raw.type_k); },
           [](ContextParams& p, int v) { p.raw.type_k = static_cast<ggml_type>(v); },
           "Data type for K cache (ggml_type enum, e.g. 1=f16, 3=q4_1)")
@@ -1770,6 +1776,7 @@ NB_MODULE(_llama, m) {
             d["embeddings"] = p.raw.embeddings;
             d["offload_kqv"] = p.raw.offload_kqv;
             d["flash_attn_type"] = p.raw.flash_attn_type;
+            d["ctx_type"] = static_cast<int>(p.raw.ctx_type);
             d["type_k"] = static_cast<int>(p.raw.type_k);
             d["type_v"] = static_cast<int>(p.raw.type_v);
             return d;
