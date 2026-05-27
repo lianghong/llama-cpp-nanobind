@@ -748,6 +748,78 @@ class Context {
     return result;
   }
 
+  // Per-sequence on-device state save/load (llama.cpp 2026-04+).
+  //
+  // Uses LLAMA_STATE_SEQ_FLAGS_ON_DEVICE: tensor data stays in device buffers
+  // (GPU memory) instead of being copied to host. The returned bytes are an
+  // opaque handle/header that references the device-resident slot — they are
+  // NOT a host-serializable copy of the KV cache.
+  //
+  // CRITICAL invariant from llama.h:
+  //   "Getting the state for a seq_id with this flag invalidates all prior
+  //    states gotten for that seq_id with this flag."
+  // Only one on-device snapshot per seq_id may be live at a time. Using a
+  // stale handle after a re-save for the same seq_id is undefined behavior.
+  //
+  // For host-serializable / multi-snapshot state, use get_state_data /
+  // set_state_data (whole context, returns real bytes).
+  nb::bytes save_seq_state_on_device(int32_t seq_id) {
+    check_ctx();
+    constexpr llama_state_seq_flags flag = LLAMA_STATE_SEQ_FLAGS_ON_DEVICE;
+    size_t const size = llama_state_seq_get_size_ext(ctx_, seq_id, flag);
+    PyObject* py_obj = PyBytes_FromStringAndSize(nullptr, static_cast<Py_ssize_t>(size));
+    if (!py_obj) {
+      throw std::runtime_error("failed to allocate Python bytes buffer for on-device state");
+    }
+    char* buf = PyBytes_AsString(py_obj);
+    if (!buf) {
+      Py_DECREF(py_obj);
+      throw std::runtime_error("failed to access Python bytes buffer");
+    }
+    size_t written = 0;
+    {
+      nb::gil_scoped_release const release;
+      written = llama_state_seq_get_data_ext(ctx_, reinterpret_cast<uint8_t*>(buf), size, seq_id,
+                                             flag);
+    }
+    if (written < size) {
+      if (_PyBytes_Resize(&py_obj, static_cast<Py_ssize_t>(written)) != 0) {
+        throw std::runtime_error("failed to resize Python bytes buffer");
+      }
+    }
+    return nb::steal<nb::bytes>(py_obj);
+  }
+
+  // Restore an on-device snapshot previously produced by save_seq_state_on_device.
+  // Same lifetime argument as set_state_data: `data` is kept alive by the
+  // calling Python frame for the duration of this call.
+  size_t load_seq_state_on_device(const nb::bytes& data, int32_t dest_seq_id) {
+    check_ctx();
+    constexpr llama_state_seq_flags flag = LLAMA_STATE_SEQ_FLAGS_ON_DEVICE;
+    const auto* ptr = static_cast<const uint8_t*>(data.data());
+    size_t const len = data.size();
+    size_t result = 0;
+    int32_t const old_pos = cur_pos_;
+    {
+      nb::gil_scoped_release const release;
+      result = llama_state_seq_set_data_ext(ctx_, ptr, len, dest_seq_id, flag);
+      if (result == 0 || result > len) {
+        cur_pos_ = old_pos;
+      } else if (dest_seq_id == 0) {
+        // Same bookkeeping as load_state / set_state_data: only seq 0 is
+        // tracked by cur_pos_.
+        cur_pos_ = kv_cache_seq_pos_max(0) + 1;
+        cur_pos_ = std::max(cur_pos_, 0);
+      }
+    }
+    if (result == 0 || result > len) {
+      throw std::runtime_error(
+          "failed to load on-device sequence state (KV cache may be in an "
+          "indeterminate state; call reset() before reuse)");
+    }
+    return result;
+  }
+
   // LoRA adapter management - defined after LoraAdapter class
   int32_t set_adapters_lora(const nb::list& py_adapters, const nb::list& py_scales);
 
@@ -1761,6 +1833,13 @@ NB_MODULE(_llama, m) {
            "Get state as bytes (returns Python bytes directly)")
       .def("set_state_data", &Context::set_state_data, "data"_a,
            "Set state from bytes (accepts Python bytes directly)")
+      .def("save_seq_state_on_device", &Context::save_seq_state_on_device, "seq_id"_a = 0,
+           "Save per-sequence state with ON_DEVICE flag (opaque handle; "
+           "previous on-device snapshot for the same seq_id is invalidated)")
+      .def("load_seq_state_on_device", &Context::load_seq_state_on_device, "data"_a,
+           "dest_seq_id"_a = 0,
+           "Restore per-sequence on-device state (only valid for handles "
+           "produced by save_seq_state_on_device on this context)")
       .def("set_adapters_lora", &Context::set_adapters_lora, "adapters"_a, "scales"_a,
            "Set LoRA adapters with scales (replaces all)")
       .def("clear_lora", &Context::clear_lora, "Remove all LoRA adapters")

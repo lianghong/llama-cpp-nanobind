@@ -2073,6 +2073,66 @@ class Llama:
         self._invalidate_prompt_cache()
         return result
 
+    def save_seq_state_on_device(self, seq_id: int = 0) -> bytes:
+        """Save per-sequence state with the ON_DEVICE flag (llama.cpp 2026-04+).
+
+        Tensor data stays in device buffers (GPU memory) instead of being
+        copied to host. The returned ``bytes`` is an opaque handle/header
+        that references the device-resident slot — it is **not** a host-
+        serializable copy of the KV cache.
+
+        For host-serializable / multi-snapshot state, use ``get_state()``
+        (whole-context, returns real bytes).
+
+        Invariant from llama.h:
+            "Getting the state for a seq_id with this flag invalidates all
+             prior states gotten for that seq_id with this flag."
+
+        Only one on-device snapshot per ``seq_id`` may be live at a time;
+        using a stale handle after re-saving the same ``seq_id`` is
+        undefined behavior.
+
+        Handle lifetime: the snapshot is also invalidated by any operation
+        that clears KV memory (``reset()``, ``kv_cache_clear()``, or
+        ``set_state_data()`` / ``load_state()``). Loading a stale handle
+        terminates the process via ``ggml_abort`` — the C API performs no
+        validation. Treat the handle as a short-lived reference, not a
+        persistent snapshot; for durable state use ``get_state()``.
+
+        Args:
+            seq_id: Sequence id to snapshot (default 0, the only sequence
+                used by single-stream Llama).
+
+        Returns:
+            Opaque handle bytes; pass to ``load_seq_state_on_device``.
+        """
+        self._check_closed()
+        result: bytes = self.ctx.save_seq_state_on_device(seq_id)
+        return result
+
+    def load_seq_state_on_device(self, data: bytes, dest_seq_id: int = 0) -> int:
+        """Restore an on-device snapshot from ``save_seq_state_on_device``.
+
+        The handle is only valid on the same ``Llama`` instance that produced
+        it (it references device buffers owned by that context). Using a
+        handle from a different instance, after a context reset, or after a
+        later save_seq_state_on_device for the same seq_id, is undefined.
+
+        Invalidates the prompt-cache mirror when restoring into seq 0.
+
+        Args:
+            data: Opaque handle from ``save_seq_state_on_device``.
+            dest_seq_id: Destination sequence id (default 0).
+
+        Returns:
+            Bytes read from the handle.
+        """
+        self._check_closed()
+        result: int = self.ctx.load_seq_state_on_device(data, dest_seq_id)
+        if dest_seq_id == 0:
+            self._invalidate_prompt_cache()
+        return result
+
     def load_lora(self, path: str, scale: float = 1.0) -> Any:
         """Load and apply a LoRA adapter.
 
