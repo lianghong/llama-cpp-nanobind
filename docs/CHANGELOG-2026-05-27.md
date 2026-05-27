@@ -97,6 +97,31 @@ slots into the chain right after `min_p`.
   meaningless).
 - `to_native()` passes the float through.
 
+### Lazy grammar (trigger-activated GBNF)
+
+Bind `llama_sampler_init_grammar_lazy_patterns` (llama.cpp PR #9639).
+The grammar stays inactive until the model emits text matching one of
+the trigger patterns (regex anchored at the start of generated output)
+or one of the trigger token ids — useful for tool-calling and mixed
+free-form / structured output (e.g. emit `<tool_call>` then be
+constrained to a JSON schema).
+
+**C++ bindings**
+- New `GrammarSampler` constructor overload taking
+  `(grammar_str, grammar_root, trigger_patterns, trigger_tokens)`
+  alongside the existing eager constructor. Nanobind dispatches on
+  signature.
+
+**Python wrapper**
+- `LlamaGrammar(..., trigger_patterns=..., trigger_tokens=...)` and a
+  new classmethod `LlamaGrammar.lazy(grammar_str, root, *,
+  trigger_patterns, trigger_tokens)`.
+- Validation: `LlamaGrammar.lazy` rejects empty triggers (would never
+  activate).
+- New read-only `LlamaGrammar.is_lazy` property.
+- `_ensure_sampler()` picks the eager or lazy native constructor based
+  on whether triggers are present — eager grammars are unaffected.
+
 ### Forward-compat ggml type constants
 
 Exported but **not** added to `_VALID_CACHE_TYPES` — these are weight-only
@@ -124,6 +149,11 @@ Importable from `llama_cpp` package root.
 - Intentionally **no** "garbage handle raises" test for the on-device
   path — `ggml_abort` terminates the process, and the opaque handle
   format has no public layout to pre-validate.
+- `tests/test_lazy_grammar.py` — 9 tests. Eager-grammar `is_lazy`
+  remains `False`; lazy construction with patterns / tokens / both;
+  validation rejects empty triggers; constructor-kwargs path; native
+  lazy-sampler construction; end-to-end "no-trigger-no-constraint"
+  generation.
 - `tests/test_typical_p.py` — 8 tests. Default-disabled, `to_native`
   pass-through, validation edges (zero / negative / > 1 rejected, 1.0
   allowed as the disabled sentinel), end-to-end equivalence-when-disabled
@@ -136,7 +166,7 @@ Importable from `llama_cpp` package root.
 
 ## Verification
 
-- 205/205 tests pass
+- 214/214 tests pass
 - `ruff check`: clean on modified files
 - `clang-format --dry-run -Werror` on `llama_cpp.cpp`: clean
 

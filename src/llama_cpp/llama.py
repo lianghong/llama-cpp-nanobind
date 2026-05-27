@@ -2629,12 +2629,36 @@ def _create_grammar_sampler(model: Any, grammar_str: str, root: str = "root") ->
 
 
 class LlamaGrammar:
-    """Grammar for constrained text generation."""
+    """Grammar for constrained text generation.
 
-    def __init__(self, grammar_str: str, root: str = "root") -> None:
+    Eager mode (default): the grammar constrains every sampled token from
+    the first one — use for "pure" structured output.
+
+    Lazy mode (``trigger_patterns`` / ``trigger_tokens``): the grammar
+    stays inactive until the model emits text matching one of the trigger
+    patterns (regex anchored at the start of the generated output) or one
+    of the trigger token ids. Useful for tool-calling and mixed
+    free-form/structured output where the model should emit a sentinel
+    like ``<tool_call>`` before being constrained to a JSON schema.
+    """
+
+    def __init__(
+        self,
+        grammar_str: str,
+        root: str = "root",
+        *,
+        trigger_patterns: list[str] | None = None,
+        trigger_tokens: list[int] | None = None,
+    ) -> None:
         self._grammar_str = grammar_str
         self._root = root
+        self._trigger_patterns: list[str] = list(trigger_patterns or [])
+        self._trigger_tokens: list[int] = list(trigger_tokens or [])
         self._sampler: Any | None = None  # Created lazily with model
+
+    @property
+    def is_lazy(self) -> bool:
+        return bool(self._trigger_patterns or self._trigger_tokens)
 
     @classmethod
     def from_string(cls, grammar_str: str, root: str = "root") -> LlamaGrammar:
@@ -2650,10 +2674,44 @@ class LlamaGrammar:
         grammar_str = _json_schema_to_grammar(schema_dict)
         return cls(grammar_str, "root")
 
+    @classmethod
+    def lazy(
+        cls,
+        grammar_str: str,
+        root: str = "root",
+        *,
+        trigger_patterns: list[str] | None = None,
+        trigger_tokens: list[int] | None = None,
+    ) -> LlamaGrammar:
+        """Create a lazy grammar that activates on a pattern or token trigger.
+
+        At least one of ``trigger_patterns`` or ``trigger_tokens`` must be
+        non-empty; otherwise the grammar would never activate.
+        """
+        if not (trigger_patterns or trigger_tokens):
+            raise ValidationError(
+                "lazy grammar requires at least one trigger_pattern or trigger_token"
+            )
+        return cls(
+            grammar_str,
+            root,
+            trigger_patterns=trigger_patterns,
+            trigger_tokens=trigger_tokens,
+        )
+
     def _ensure_sampler(self, model: Any) -> None:
         """Create a fresh native sampler for this generation.
 
         Grammar samplers are stateful, so a new instance is created each time
         to avoid cross-generation state leakage.
         """
-        self._sampler = _llama.GrammarSampler(model, self._grammar_str, self._root)
+        if self.is_lazy:
+            self._sampler = _llama.GrammarSampler(
+                model,
+                self._grammar_str,
+                self._root,
+                self._trigger_patterns,
+                self._trigger_tokens,
+            )
+        else:
+            self._sampler = _llama.GrammarSampler(model, self._grammar_str, self._root)

@@ -1116,6 +1116,26 @@ class GrammarSampler {
     }
   }
 
+  // Lazy-grammar constructor: grammar activates on the first match of any
+  // trigger pattern (regex against generated text from the start) or any
+  // trigger token. Until activation, all tokens pass through unconstrained.
+  // See llama.cpp PR #9639 / llama_sampler_init_grammar_lazy_patterns.
+  GrammarSampler(const Model& model, const std::string& grammar_str,
+                 const std::string& grammar_root, const std::vector<std::string>& trigger_patterns,
+                 const std::vector<llama_token>& trigger_tokens) {
+    std::vector<const char*> pattern_ptrs;
+    pattern_ptrs.reserve(trigger_patterns.size());
+    for (const auto& p : trigger_patterns) {
+      pattern_ptrs.push_back(p.c_str());
+    }
+    sampler_ = llama_sampler_init_grammar_lazy_patterns(
+        model.vocab(), grammar_str.c_str(), grammar_root.c_str(), pattern_ptrs.data(),
+        pattern_ptrs.size(), trigger_tokens.data(), trigger_tokens.size());
+    if (!sampler_) {
+      throw std::runtime_error("failed to create lazy grammar sampler - check grammar syntax");
+    }
+  }
+
   ~GrammarSampler() {
     if (sampler_) {
       llama_sampler_free(sampler_);
@@ -1940,6 +1960,11 @@ NB_MODULE(_llama, m) {
   nb::class_<GrammarSampler>(m, "GrammarSampler")
       .def(nb::init<const Model&, const std::string&, const std::string&>(), "model"_a,
            "grammar_str"_a, "grammar_root"_a = "root")
+      .def(nb::init<const Model&, const std::string&, const std::string&,
+                    const std::vector<std::string>&, const std::vector<llama_token>&>(),
+           "model"_a, "grammar_str"_a, "grammar_root"_a, "trigger_patterns"_a, "trigger_tokens"_a,
+           "Lazy grammar: activates on the first match of any trigger pattern "
+           "(regex against generated text from the start) or trigger token id.")
       .def("accept", &GrammarSampler::accept, "token"_a)
       .def("reset", &GrammarSampler::reset);
 
