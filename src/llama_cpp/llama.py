@@ -229,6 +229,10 @@ class SamplingParams:
     # Maps token_id -> bias (use float("-inf") or a large negative to ban).
     # OpenAI-API parity (mirrors `logit_bias` in chat/completions).
     logit_bias: dict[int, float] | None = None
+    # Draft-MTP speculative decoding: max number of draft tokens proposed per
+    # verify step. Active only when generate(..., speculative=True) is set on
+    # an MTP-capable context. Range [1, 8]; default 2 follows unsloth.
+    n_draft_max: int = 2
 
     def __post_init__(self) -> None:
         """Validate sampling parameters."""
@@ -279,6 +283,10 @@ class SamplingParams:
                     raise ValidationError(
                         f"logit_bias[{token_id}] must be a real number, got {bias!r}"
                     )
+        if not isinstance(self.n_draft_max, int) or not 1 <= self.n_draft_max <= 8:
+            raise ValidationError(
+                f"n_draft_max must be an int in [1, 8]; got {self.n_draft_max!r}"
+            )
 
     def to_native(self) -> _llama.SamplerParams:
         native = _llama.SamplerParams()
