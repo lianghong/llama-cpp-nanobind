@@ -1197,6 +1197,8 @@ class Llama:
         reset_kv_cache: bool = True,
         add_bos: bool | None = None,
         cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int = 2,
     ) -> list[int]:
         """Internal generation from pre-tokenized input.
 
@@ -1273,7 +1275,23 @@ class Llama:
             self._invalidate_prompt_cache()
 
         try:
-            if grammar is not None:
+            if speculative:
+                generated = list(
+                    _llama.generate_tokens_speculative_mtp(
+                        self.ctx,
+                        sampler,
+                        grammar,
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        int(n_draft_max),
+                        stop_seqs,
+                        None,  # no streaming callback in this entry point
+                        skip_decode_prefix,
+                    )
+                )
+            elif grammar is not None:
                 generated = list(
                     _llama.generate_tokens_grammar_multi_stop(
                         self.ctx,
@@ -1574,6 +1592,8 @@ class Llama:
         seed: int | None = None,
         reset_kv_cache: bool = True,
         cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
     ) -> str | Iterator[str] | dict[str, Any]:
         """Generate text for ``prompt``.
 
@@ -1610,6 +1630,19 @@ class Llama:
                 f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
             )
         self._validate_stop_sequences(stop)
+        self._validate_speculative(speculative)
+        if speculative and logprobs is not None:
+            raise ValidationError("logprobs is not supported on the speculative path")
+        # Default n_draft_max from sampling params if caller didn't override.
+        effective_n_draft_max = (
+            int(n_draft_max)
+            if n_draft_max is not None
+            else (
+                sampling.n_draft_max
+                if sampling is not None
+                else self.sampling.n_draft_max
+            )
+        )
 
         sampler_params = sampling or self.sampling
         if seed is not None:
@@ -1700,6 +1733,8 @@ class Llama:
                 grammar=None,
                 reset_kv_cache=reset_kv_cache,
                 cache_prompt=cache_prompt,
+                speculative=speculative,
+                n_draft_max=effective_n_draft_max,
             )
             if echo:
                 output_tokens = list(prompt_tokens) + output_tokens
@@ -1907,6 +1942,8 @@ class Llama:
         tool_choice: str | dict[str, Any] | None = None,
         reset_kv_cache: bool = True,
         cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
         **sampling_overrides: Any,
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         """Chat completions endpoint compatible with llama-cpp-python.
@@ -1954,6 +1991,12 @@ class Llama:
         # "logprobs") surfaces as a clear ValidationError here, not as a
         # confusing TypeError deep in SamplingParams.__init__.
         self._validate_sampling_overrides(sampling_overrides)
+        self._validate_speculative(speculative)
+        effective_n_draft_max = (
+            int(n_draft_max)
+            if n_draft_max is not None
+            else int(sampling_overrides.get("n_draft_max", self.sampling.n_draft_max))
+        )
 
         # Tokenize without BOS — the chat template may already include BOS
         # as a literal, and _generate_from_tokens applies its BOS rule based
@@ -1991,6 +2034,8 @@ class Llama:
             grammar=use_grammar,
             reset_kv_cache=reset_kv_cache,
             cache_prompt=cache_prompt,
+            speculative=speculative,
+            n_draft_max=effective_n_draft_max,
         )
 
         created = int(time.time())

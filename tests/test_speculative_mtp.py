@@ -76,10 +76,33 @@ def test_speculative_matches_baseline_greedy():
 
     llm = _make_mtp_llm()
     try:
-        spec = llm.generate(
-            prompt, max_tokens=24, sampling=sampling, speculative=True
-        )
+        spec = llm.generate(prompt, max_tokens=24, sampling=sampling, speculative=True)
     finally:
         llm.close()
 
     assert spec == baseline
+
+
+@requires_mtp_model
+def test_speculative_with_grammar():
+    """Grammar + speculative must produce grammar-valid output."""
+    from llama_cpp import LlamaGrammar
+
+    json_grammar = LlamaGrammar.from_str(
+        'root ::= "{" ws "\\"ok\\"" ws ":" ws "true" ws "}" ws\nws ::= [ \\t\\n]*\n'
+    )
+    llm = _make_mtp_llm()
+    try:
+        out = llm.create_chat_completion(
+            messages=[{"role": "user", "content": "Reply only valid JSON."}],
+            max_tokens=32,
+            grammar=json_grammar,
+            speculative=True,
+            n_draft_max=2,
+            temperature=0.0,
+            seed=0,
+        )
+        text = out["choices"][0]["message"]["content"]
+        assert "{" in text and "}" in text
+    finally:
+        llm.close()
