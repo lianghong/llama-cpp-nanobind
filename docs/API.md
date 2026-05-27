@@ -263,6 +263,34 @@ llm = Llama(
 
 k-quants (Q4_K, Q5_K, Q6_K, etc.) are NOT supported by llama.cpp for KV cache and are rejected by validation.
 
+#### MTP context type
+
+**Status:** Scaffold only. No throughput benefit in v0.4.x — the generate loop is per-token and there is no draft-verify consumer. See the warning below.
+
+Constants exported from `llama_cpp` (mirror `llama.h`'s `enum llama_context_type`):
+
+| Constant | Value | Notes |
+| --- | --- | --- |
+| `LLAMA_CONTEXT_TYPE_DEFAULT` | 0 | Default graph (current behavior) |
+| `LLAMA_CONTEXT_TYPE_MTP` | 1 | Multi-Token Prediction graph variant |
+
+MTP requires a checkpoint that ships MTP layers — currently Qwen3.5 / Qwen3.5-MoE / Qwen3.6-MoE MTP variants (metadata `*.nextn_predict_layers > 0`, plus `blk.*.nextn.*` tensors). Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError` (`"context type MTP requested but model doesn't contain MTP layers"`). The generation API is otherwise unchanged — MTP is a graph-construction-time decision, not a runtime sampler.
+
+> **No acceleration consumer in this binding.** Setting `LLAMA_CONTEXT_TYPE_MTP` runs the MTP auxiliary heads on every step and discards their output, because the generate loop calls `llama_decode` with `n_tokens = 1` and never verifies a draft batch. Net effect today is **lower** throughput than the default. Acceleration of the kind unsloth's `--spec-type draft-mtp` advertises (1.4–2.2× dense, 1.15–1.2× MoE) lives in upstream `common/speculative.cpp` and depends on `llama-ext.h` staging APIs (`llama_set_embeddings_pre_norm`) and `libllama-common`, neither of which is exposed by the system-installed llama.cpp today. The wiring here is retained as a graph-variant probe and as the trigger point for when those APIs are promoted.
+
+```python
+from llama_cpp import Llama, LlamaConfig, LLAMA_CONTEXT_TYPE_MTP
+
+llm = Llama(
+    "models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+    config=LlamaConfig(
+        model_path="models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+        n_ctx=4096,
+        ctx_type=LLAMA_CONTEXT_TYPE_MTP,
+    ),
+)
+```
+
 ### SamplingParams
 
 | Field | Default |
