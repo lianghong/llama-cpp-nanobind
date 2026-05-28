@@ -427,17 +427,34 @@ class Backend(ABC):
         n_ctx: Context size for this instance.
     """
 
-    def __init__(self, llm: Llama, config: ModelConfig, n_ctx: int) -> None:
+    def __init__(
+        self,
+        llm: Llama,
+        config: ModelConfig,
+        n_ctx: int,
+        *,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
+    ) -> None:
         """Initialize backend.
 
         Args:
             llm: Llama instance for inference.
             config: Model configuration.
             n_ctx: Context size.
+            speculative: When True, all generations forward
+                ``speculative=True`` to ``Llama.create_chat_completion`` to
+                use the draft-MTP path. UnifiedLLM resolves this at
+                construction from ``Context.supports_speculative_mtp()``.
+            n_draft_max: Optional override for the number of draft tokens
+                proposed per verify step. None defers to the SamplingParams
+                default (2).
         """
         self.llm = llm
         self.config = config
         self.n_ctx = n_ctx
+        self.speculative = speculative
+        self.n_draft_max = n_draft_max
 
     @abstractmethod
     def generate(
@@ -586,6 +603,10 @@ class Backend(ABC):
             all_stop.extend(stop)
         if all_stop:
             kwargs["stop"] = all_stop
+        if self.speculative:
+            kwargs["speculative"] = True
+            if self.n_draft_max is not None:
+                kwargs["n_draft_max"] = self.n_draft_max
         return kwargs
 
 
@@ -848,6 +869,8 @@ class UnifiedLLM:
         family: str | ModelFamily | None = None,
         cache_type_k: int = 1,
         cache_type_v: int = 1,
+        speculative: bool | str = "auto",
+        n_draft_max: int | None = None,
     ) -> None:
         """Initialize UnifiedLLM.
 
@@ -864,9 +887,23 @@ class UnifiedLLM:
                 ``GGML_TYPE_Q8_0`` etc. from ``llama_cpp`` to quantize.
             cache_type_v: ggml_type for V cache (default 1=f16). Quantized V
                 typically requires flash attention, which is enabled by default.
+            speculative: Draft-MTP speculative decoding mode. ``"auto"``
+                (default) probes ``Context.supports_speculative_mtp()`` after
+                the model loads and enables speculative iff the checkpoint
+                exposes an MTP graph (e.g. Qwen3.6 *-MTP.gguf). ``True``
+                forces it on and raises if the model lacks an MTP graph.
+                ``False`` disables it unconditionally. Speculative requires
+                the user-facing context to use the DEFAULT graph variant —
+                UnifiedLLM always loads with ``LLAMA_CONTEXT_TYPE_DEFAULT``
+                so this is satisfied by construction.
+            n_draft_max: Number of draft tokens proposed per verify step
+                (range [1, 8]). None defers to the SamplingParams default
+                (2). Has no effect when speculative is disabled.
 
         Raises:
-            ValueError: If model family cannot be detected.
+            ValueError: If model family cannot be detected, or
+                ``speculative=True`` was forced but the model lacks an MTP
+                graph.
         """
         # Initialize close-state FIRST, before any operation that can raise.
         # If __init__ fails partway through, close() (including the atexit
@@ -952,9 +989,21 @@ class UnifiedLLM:
                 model_train_ctx,
             )
 
+        # Resolve speculative mode. "auto" probes the model's MTP support
+        # after load; True/False are forced. supports_speculative_mtp() is
+        # cheap (a single bool check on the loaded model).
+        self.speculative = self._resolve_speculative(speculative)
+        self.n_draft_max = n_draft_max
+
         try:
             backend_cls = self.BACKEND_MAP[self.model_config.family]
-            self.backend = backend_cls(self.llm, self.model_config, n_ctx)
+            self.backend = backend_cls(
+                self.llm,
+                self.model_config,
+                n_ctx,
+                speculative=self.speculative,
+                n_draft_max=n_draft_max,
+            )
         except Exception:
             self.llm.close()
             self.llm = None  # type: ignore[assignment]
@@ -964,6 +1013,34 @@ class UnifiedLLM:
         _register_unified_cleanup()
         self._ref = weakref.ref(self, lambda r: _unified_instances.discard(r))
         _unified_instances.add(self._ref)
+
+    def _resolve_speculative(self, mode: bool | str) -> bool:
+        """Resolve the ``speculative`` constructor argument to a bool.
+
+        ``"auto"`` enables speculative iff the model exposes an MTP graph;
+        ``True`` requires it (raises if missing); ``False`` disables it.
+        Logs the decision so operators can confirm whether the speedup is
+        actually engaged at startup.
+        """
+        has_mtp = self.llm.ctx.supports_speculative_mtp()
+        if mode == "auto":
+            if has_mtp:
+                logging.info(
+                    "UnifiedLLM: MTP graph detected, enabling speculative decoding"
+                )
+                return True
+            return False
+        if mode is True:
+            if not has_mtp:
+                raise ValueError(
+                    "speculative=True was requested but the loaded model does "
+                    "not expose an MTP graph variant. Use a *-MTP.gguf "
+                    "checkpoint (e.g. Qwen3.6-MoE) or speculative='auto'."
+                )
+            return True
+        if mode is False:
+            return False
+        raise ValueError(f"speculative must be True, False, or 'auto'; got {mode!r}")
 
     def _check_closed(self) -> None:
         """Raise LlamaError if instance has been closed."""
@@ -979,6 +1056,11 @@ class UnifiedLLM:
     def supports_thinking(self) -> bool:
         """Check if model supports thinking/reasoning mode."""
         return self.model_config.supports_thinking
+
+    @property
+    def speculative_enabled(self) -> bool:
+        """Whether draft-MTP speculative decoding is engaged for this instance."""
+        return self.speculative
 
     def generate(
         self,

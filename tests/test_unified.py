@@ -352,3 +352,50 @@ def test_unified_llm_invalid_max_tokens():
             llm.backend._calc_max_tokens("test", 0)
         with pytest.raises(ValueError, match="must be positive"):
             llm.backend._calc_max_tokens("test", -5)
+
+
+# ---------------------------------------------------------------------------
+# Speculative decoding (Option B: auto-detect from MTP capability).
+# Pure tests run against the regular test model, which doesn't expose an
+# MTP graph — the auto path therefore resolves to disabled, and force=True
+# must raise.
+# ---------------------------------------------------------------------------
+
+
+@requires_model
+def test_unified_llm_speculative_auto_disabled_on_non_mtp():
+    """speculative='auto' on a non-MTP checkpoint must resolve to False."""
+    with UnifiedLLM(MODEL_PATH, verbose=False) as llm:
+        assert llm.speculative_enabled is False
+        # _sampling_kwargs must NOT inject speculative when disabled.
+        kwargs = llm.backend._sampling_kwargs(None)
+        assert "speculative" not in kwargs
+        assert "n_draft_max" not in kwargs
+
+
+@requires_model
+def test_unified_llm_speculative_force_true_rejects_non_mtp():
+    """speculative=True on a non-MTP checkpoint must raise at construction."""
+    with pytest.raises(ValueError, match="MTP graph"):
+        UnifiedLLM(MODEL_PATH, verbose=False, speculative=True)
+
+
+@requires_model
+def test_unified_llm_speculative_explicit_false():
+    """speculative=False must disable even if MTP would be available."""
+    with UnifiedLLM(MODEL_PATH, verbose=False, speculative=False) as llm:
+        assert llm.speculative_enabled is False
+
+
+@requires_model
+def test_unified_llm_speculative_invalid_mode():
+    """Garbage values must raise a clear error."""
+    with pytest.raises(ValueError, match="speculative must be"):
+        UnifiedLLM(MODEL_PATH, verbose=False, speculative="yes")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Positive speculative path lives in tests/test_unified_speculative.py — that
+# file is isolated so the module-scoped `unified_llm` fixture above does not
+# hold the small test model in VRAM while the large MTP model is loaded.
+# ---------------------------------------------------------------------------
