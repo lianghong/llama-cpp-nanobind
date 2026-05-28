@@ -101,3 +101,44 @@ def test_generate_stream_vs_generate_consistency(model_path):
     assert streamed == normal, f"Streamed: {streamed!r}\nNormal: {normal!r}"
 
     llm.close()
+
+
+@requires_model
+def test_create_chat_completion_stream_is_incremental(model_path):
+    """``create_chat_completion(stream=True)`` must yield chunks as tokens
+    are produced, not after full generation. Regression for the chat-stream
+    path that previously buffered the entire completion before yielding.
+    """
+    llm = Llama(model_path)
+
+    first_chunk_time = None
+    last_chunk_time = None
+    content_chunks = 0
+    start = time.time()
+
+    for chunk in llm.create_chat_completion(
+        [{"role": "user", "content": "Count to ten."}],
+        max_tokens=32,
+        stream=True,
+    ):
+        assert chunk["object"] == "chat.completion.chunk"
+        delta = chunk["choices"][0]["delta"]
+        if delta.get("content"):
+            if first_chunk_time is None:
+                first_chunk_time = time.time()
+            last_chunk_time = time.time()
+            content_chunks += 1
+
+    llm.close()
+
+    assert content_chunks > 0, "expected at least one content chunk"
+
+    # If truly incremental, the first content chunk must arrive well before
+    # the final one. We use the same heuristic as test_generate_stream_incremental
+    # (ratio < 0.8) so noisy CI machines are unlikely to flake.
+    if content_chunks > 1 and last_chunk_time - start > 0.1:
+        ratio = (first_chunk_time - start) / (last_chunk_time - start)
+        assert ratio < 0.8, (
+            f"First content chunk arrived at {ratio:.1%} of total streaming "
+            "time; chat streaming appears to buffer the full completion."
+        )

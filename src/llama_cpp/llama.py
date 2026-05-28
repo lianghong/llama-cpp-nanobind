@@ -2148,7 +2148,7 @@ class Llama:
         # Tokenize without BOS — the chat template may already include BOS
         # as a literal, and _generate_from_tokens applies its BOS rule based
         # on (reset_kv_cache, cache_prompt). Avoid double-tokenizing BOS here.
-        _, prompt_tokens, n_prompt_tokens = self._prepare_chat(
+        prompt_text, prompt_tokens, n_prompt_tokens = self._prepare_chat(
             effective_messages, add_bos=False
         )
         # Same DoS guard as generate() / generate_stream(): reject high-
@@ -2172,7 +2172,66 @@ class Llama:
                 )
                 use_grammar = _create_grammar_sampler(self.model, grammar_str, "root")
 
-        # Use unified generation path
+        created = int(time.time())
+        cmpl_id = f"chatcmpl-{_uuid7_hex()}"
+        model_id = os.path.basename(self.config.model_path)
+
+        # Streaming via generate_stream is incompatible with grammar-constrained
+        # decoding (the C++ streaming entry point does not accept a grammar) and
+        # with tool-call parsing (which needs the complete assistant message).
+        # For those cases we fall back to the eager-buffer path below.
+        needs_eager_buffer = use_grammar is not None or bool(
+            tools is not None and tool_choice != "none"
+        )
+
+        if stream and not needs_eager_buffer:
+            # True incremental streaming: each chunk reaches the caller as soon
+            # as the worker emits it, instead of waiting for full generation.
+            # generate_stream re-tokenizes and re-validates the prompt; that's
+            # cheap relative to decode, so the duplication is acceptable.
+            stream_sampling = SamplingParams(
+                **{
+                    **asdict(self.sampling),
+                    **{k: v for k, v in sampling_overrides.items() if v is not None},
+                }
+            )
+
+            def stream_chunks() -> Iterator[dict[str, Any]]:
+                for text_piece in self.generate_stream(
+                    prompt_text,
+                    max_tokens=max_tokens,
+                    sampling=stream_sampling,
+                    stop=stop,
+                    reset_kv_cache=reset_kv_cache,
+                    cache_prompt=cache_prompt,
+                    speculative=speculative,
+                    n_draft_max=effective_n_draft_max,
+                ):
+                    yield {
+                        "id": cmpl_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_id,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": text_piece},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                # Final chunk with finish_reason.
+                yield {
+                    "id": cmpl_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_id,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+
+            return stream_chunks()
+
+        # Eager path: non-streaming, OR streaming with grammar/tools.
         generated = self._generate_from_tokens(
             prompt_tokens,
             max_tokens=max_tokens,
@@ -2185,14 +2244,11 @@ class Llama:
             n_draft_max=effective_n_draft_max,
         )
 
-        created = int(time.time())
-        cmpl_id = f"chatcmpl-{_uuid7_hex()}"
-        model_id = os.path.basename(self.config.model_path)
-
         if stream:
 
-            def stream_chunks() -> Iterator[dict[str, Any]]:
-                # Stream text pieces with incremental UTF-8 decoding
+            def buffered_stream_chunks() -> Iterator[dict[str, Any]]:
+                # Stream text pieces with incremental UTF-8 decoding from the
+                # already-materialized token list.
                 for text_piece in self._token_to_text_incremental(iter(generated)):
                     yield {
                         "id": cmpl_id,
@@ -2207,22 +2263,15 @@ class Llama:
                             }
                         ],
                     }
-                # Final chunk with finish_reason
                 yield {
                     "id": cmpl_id,
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": model_id,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {},
-                            "finish_reason": "stop",
-                        }
-                    ],
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 }
 
-            return stream_chunks()
+            return buffered_stream_chunks()
 
         text = self.detokenize(generated, remove_special=True, unparse_special=False)
         prompt_tok_count = len(prompt_tokens)
@@ -2648,24 +2697,77 @@ class Llama:
         For true parallelism, use multiple Llama instances.
         """
         if stream:
+            # Grammar / tool-call paths require a fully materialized completion
+            # before chunks can be emitted; route them through _chat_locked
+            # under self._lock and re-yield the buffered chunks. Otherwise we
+            # bridge the synchronous generator through a queue so each chunk
+            # crosses the asyncio boundary as soon as it is produced (matching
+            # generate_async's incremental streaming contract).
+            needs_eager_buffer = grammar is not None or bool(
+                tools is not None and tool_choice != "none"
+            )
+            if needs_eager_buffer:
+
+                async def async_buffered_stream() -> AsyncIterator[dict[str, Any]]:
+                    chunks = await asyncio.to_thread(
+                        self._chat_locked,
+                        messages,
+                        max_tokens=max_tokens,
+                        stream=True,
+                        stop=stop,
+                        response_format=response_format,
+                        grammar=grammar,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        reset_kv_cache=reset_kv_cache,
+                        cache_prompt=cache_prompt,
+                        **sampling_overrides,
+                    )
+                    for chunk in chunks:
+                        yield chunk
+
+                return async_buffered_stream()
+
+            loop = asyncio.get_running_loop()
+            out_queue: asyncio.Queue[dict[str, Any] | None | BaseException] = (
+                asyncio.Queue()
+            )
+
+            def run_chat_stream() -> None:
+                try:
+                    iterator = self.create_chat_completion(
+                        messages,
+                        max_tokens=max_tokens,
+                        stream=True,
+                        stop=stop,
+                        response_format=response_format,
+                        grammar=grammar,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        reset_kv_cache=reset_kv_cache,
+                        cache_prompt=cache_prompt,
+                        **sampling_overrides,
+                    )
+                    assert not isinstance(iterator, dict)
+                    for chunk in iterator:
+                        asyncio.run_coroutine_threadsafe(out_queue.put(chunk), loop)
+                    asyncio.run_coroutine_threadsafe(out_queue.put(None), loop)
+                except BaseException as exc:  # noqa: BLE001
+                    asyncio.run_coroutine_threadsafe(out_queue.put(exc), loop)
 
             async def async_stream() -> AsyncIterator[dict[str, Any]]:
-                chunks = await asyncio.to_thread(
-                    self._chat_locked,
-                    messages,
-                    max_tokens=max_tokens,
-                    stream=True,
-                    stop=stop,
-                    response_format=response_format,
-                    grammar=grammar,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    reset_kv_cache=reset_kv_cache,
-                    cache_prompt=cache_prompt,
-                    **sampling_overrides,
-                )
-                for chunk in chunks:
-                    yield chunk
+                pump = loop.run_in_executor(None, run_chat_stream)
+                try:
+                    while True:
+                        item = await out_queue.get()
+                        if item is None:
+                            break
+                        if isinstance(item, BaseException):
+                            raise item
+                        yield item
+                finally:
+                    with contextlib.suppress(Exception):
+                        await pump
 
             return async_stream()
 
