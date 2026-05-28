@@ -135,6 +135,70 @@ def test_grammar_from_json_schema():
     assert "root" in grammar._grammar_str
 
 
+def test_grammar_from_json_schema_warns_on_top_level_unsupported(caplog):
+    """Top-level unsupported keys (anyOf, enum, ...) must surface a warning."""
+    import logging
+
+    schema = {
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+        "required": ["x"],
+        "anyOf": [{"type": "string"}, {"type": "number"}],
+    }
+    with caplog.at_level(logging.WARNING, logger="root"):
+        LlamaGrammar.from_json_schema(schema)
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "anyOf" in msgs
+    assert "required" in msgs
+
+
+def test_grammar_from_json_schema_warns_on_nested_unsupported(caplog):
+    """Unsupported keys inside `properties.<name>` must surface a warning."""
+    import logging
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "color": {"type": "string", "enum": ["red", "blue"]},
+        },
+    }
+    with caplog.at_level(logging.WARNING, logger="root"):
+        LlamaGrammar.from_json_schema(schema)
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "color" in msgs
+    assert "enum" in msgs
+
+
+def test_grammar_from_json_schema_warns_on_generic_fallback(caplog):
+    """Schemas without typed properties fall back to JSON_GRAMMAR with a warning."""
+    import logging
+
+    schema = {"anyOf": [{"type": "string"}, {"type": "number"}]}
+    with caplog.at_level(logging.WARNING, logger="root"):
+        LlamaGrammar.from_json_schema(schema)
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "fall" in msgs.lower()  # "falling back" / "fallback"
+
+
+def test_grammar_from_json_schema_quiet_for_supported(caplog):
+    """A clean, fully-supported schema must not emit any warnings."""
+    import logging
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "age": {"type": "integer"},
+            "active": {"type": "boolean"},
+        },
+    }
+    with caplog.at_level(logging.WARNING, logger="root"):
+        LlamaGrammar.from_json_schema(schema)
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records), (
+        "supported schema should not emit warnings"
+    )
+
+
 @requires_model
 def test_json_mode(llm):
     resp = llm.create_chat_completion(

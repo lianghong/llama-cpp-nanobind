@@ -2975,6 +2975,32 @@ ws ::= ([ \t\n] ws)?
 """
 
 
+# Schema keys this simplified converter cannot represent in GBNF. Their
+# presence means the generated grammar is *less* constraining than the
+# original schema — operators relying on the LLM to honor them will be
+# disappointed silently unless we tell them. Used by the warning path in
+# _json_schema_to_grammar.
+_UNSUPPORTED_SCHEMA_KEYS: frozenset[str] = frozenset(
+    {
+        "$ref",
+        "anyOf",
+        "oneOf",
+        "allOf",
+        "enum",
+        "const",
+        "pattern",
+        "required",
+        "additionalProperties",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+    }
+)
+
+
 def _json_schema_to_grammar(schema: dict[str, Any]) -> str:
     """Convert JSON schema to GBNF grammar (simplified).
 
@@ -2985,7 +3011,9 @@ def _json_schema_to_grammar(schema: dict[str, Any]) -> str:
     nested array item types, enum, const, pattern, min/max constraints,
     additionalProperties. For complex schemas, use LlamaGrammar.from_string()
     with a hand-written GBNF grammar or llama.cpp's built-in JSON schema
-    support.
+    support. The converter logs a warning whenever it drops an unsupported
+    feature, so callers know constrained generation is less precise than
+    requested.
     """
 
     def _type_to_rule(t: str, props: dict[str, Any] | None = None) -> str:
@@ -3015,7 +3043,33 @@ def _json_schema_to_grammar(schema: dict[str, Any]) -> str:
     schema_type = schema.get("type", "object")
     properties = schema.get("properties")
 
+    # Surface any top-level keys we'll silently drop. We warn once per call;
+    # a noisy log is preferable to silent precision loss.
+    dropped_top = sorted(_UNSUPPORTED_SCHEMA_KEYS & schema.keys())
+    if dropped_top:
+        logging.warning(
+            "JSON schema contains unsupported keys %s — they will be ignored "
+            "by the simplified GBNF converter. Constrained generation will be "
+            "less precise than the schema specifies. Use "
+            "LlamaGrammar.from_string() with a hand-written GBNF grammar for "
+            "full schema fidelity.",
+            dropped_top,
+        )
+
     if schema_type == "object" and properties:
+        # Walk one level into properties for the same warning — many real-
+        # world schemas hide `required` / `enum` / `pattern` here.
+        for prop_name, prop_schema in properties.items():
+            if not isinstance(prop_schema, dict):
+                continue
+            dropped_prop = sorted(_UNSUPPORTED_SCHEMA_KEYS & prop_schema.keys())
+            if dropped_prop:
+                logging.warning(
+                    "JSON schema property %r contains unsupported keys %s — "
+                    "they will be ignored by the simplified GBNF converter.",
+                    prop_name,
+                    dropped_prop,
+                )
         root_rule = _type_to_rule("object", properties)
         return f"""
 root   ::= {root_rule}
@@ -3026,6 +3080,18 @@ string ::= "\\"" ([^"\\\\\\x7F\\x00-\\x1F] | "\\\\" (["\\\\/bfnrt] | "u" [0-9a-f
 number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
 ws ::= ([ \\t\\n] ws)?
 """
+    # Either the schema isn't a typed object or it has no properties — we
+    # can't emit a structured grammar and fall back to the generic JSON one,
+    # which loses *all* schema-level constraints.
+    logging.warning(
+        "JSON schema cannot be converted to a structured GBNF grammar "
+        "(schema_type=%r, has_properties=%s); falling back to the generic "
+        "JSON grammar. Constrained generation will accept any valid JSON "
+        "regardless of the schema. Use LlamaGrammar.from_string() with a "
+        "hand-written GBNF grammar for schema-aware constraints.",
+        schema_type,
+        bool(properties),
+    )
     return JSON_GRAMMAR
 
 
