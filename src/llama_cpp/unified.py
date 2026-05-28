@@ -133,8 +133,19 @@ class ModelConfig:
 # emits them.
 
 _QWEN_CHATML_STOPS = ["<|im_end|>", "<|endoftext|>"]
+# Gemma 4 emits "<end_of_turn>" per the upstream tokenizer (chatml-derived
+# template). "<turn|>" is kept as a defensive belt-and-suspenders entry: it
+# was observed in an early GGUF re-encoding and harmlessly never matches if
+# the model never emits it. Drop only after confirming via raw verbose=True
+# output across all 4 supported Gemma-4 variants (E2B/E4B/26B-A4B/31B).
 _GEMMA4_STOPS = ["<turn|>", "<end_of_turn>"]
 _GRANITE_STOPS = ["<|end_of_text|>", "<|endoftext|>"]
+
+# Headroom subtracted from n_ctx when computing the auto max_tokens budget.
+# Reserves space for any post-prompt control tokens the chat template may
+# emit (assistant turn-start markers, BOS variants) and avoids a hard
+# context-overflow on the very last token.
+_CTX_HEADROOM_TOKENS = 10
 
 
 # Maps config key -> ModelConfig.  Used for auto-detection by filename.
@@ -541,7 +552,7 @@ class Backend(ABC):
             raise ValueError(f"invalid token count: {token_count}")
         if requested is not None and requested <= 0:
             raise ValueError(f"max_tokens must be positive, got {requested}")
-        available = self.n_ctx - token_count - 10
+        available = self.n_ctx - token_count - _CTX_HEADROOM_TOKENS
         if available <= 0:
             raise ValueError(
                 f"Prompt ({token_count} tokens) exceeds context ({self.n_ctx}). "
@@ -598,6 +609,34 @@ class ChatTemplateBackend(Backend):
         r"<\|im_end\|>|<\|im_start\|>\w*\n?|<\|im_sep\|>|<end_of_turn>|<start_of_turn>\w*\n?"
         r"|<turn\|>|<\|think\|>",
         re.DOTALL,
+    )
+    # _clean_response patterns — pre-compiled here so each call avoids the
+    # implicit re-module LRU cache lookup and stays compile-free even when
+    # the module-level cache is evicted under churn.
+    _CLEAN_THINK_BLOCK: ClassVar[re.Pattern[str]] = re.compile(
+        r"<think(?:ing)?>.*?</think(?:ing)?>\s*", re.DOTALL
+    )
+    _CLEAN_THINK_BRACKET: ClassVar[re.Pattern[str]] = re.compile(
+        r"\[THINK\].*?\[/THINK\]\s*", re.DOTALL | re.IGNORECASE
+    )
+    _CLEAN_GEMMA_CHANNEL: ClassVar[re.Pattern[str]] = re.compile(
+        r"<\|channel>.*?<channel\|>\s*", re.DOTALL
+    )
+    _CLEAN_THINK_OPEN: ClassVar[re.Pattern[str]] = re.compile(
+        r"<think(?:ing)?>.*", re.DOTALL
+    )
+    _CLEAN_THINK_BRACKET_OPEN: ClassVar[re.Pattern[str]] = re.compile(
+        r"\[THINK\].*", re.DOTALL | re.IGNORECASE
+    )
+    _CLEAN_GEMMA_CHANNEL_OPEN: ClassVar[re.Pattern[str]] = re.compile(
+        r"<\|channel>.*", re.DOTALL
+    )
+    _CLEAN_THINK_TAG_LEAD: ClassVar[re.Pattern[str]] = re.compile(r"^/(?:no_)?think\n?")
+    _CLEAN_TURN_SPLIT: ClassVar[re.Pattern[str]] = re.compile(
+        r"<(?:start|end)_of_turn>(?:user|model)?\n?"
+    )
+    _THINK_BRACKET_SPLIT: ClassVar[re.Pattern[str]] = re.compile(
+        r"\[THINK\]", re.IGNORECASE
     )
     # Thinking tag constants
     _THINKING_TAG_VARIANTS: ClassVar[tuple[str, ...]] = ("<thinking>", "<think>")
@@ -707,23 +746,19 @@ class ChatTemplateBackend(Backend):
     def _clean_response(self, text: str) -> str:
         """Strip thinking tags and control tokens from response."""
         # Handle complete thinking blocks
-        text = re.sub(
-            r"<think(?:ing)?>.*?</think(?:ing)?>\s*", "", text, flags=re.DOTALL
-        )
-        text = re.sub(
-            r"\[THINK\].*?\[/THINK\]\s*", "", text, flags=re.DOTALL | re.IGNORECASE
-        )
+        text = self._CLEAN_THINK_BLOCK.sub("", text)
+        text = self._CLEAN_THINK_BRACKET.sub("", text)
         # Gemma 4 thinking block
-        text = re.sub(r"<\|channel>.*?<channel\|>\s*", "", text, flags=re.DOTALL)
+        text = self._CLEAN_GEMMA_CHANNEL.sub("", text)
         # Handle unclosed thinking tags (truncated output)
-        text = re.sub(r"<think(?:ing)?>.*", "", text, flags=re.DOTALL)
-        text = re.sub(r"\[THINK\].*", "", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<\|channel>.*", "", text, flags=re.DOTALL)
-        text = re.sub(r"^/(?:no_)?think\n?", "", text)
+        text = self._CLEAN_THINK_OPEN.sub("", text)
+        text = self._CLEAN_THINK_BRACKET_OPEN.sub("", text)
+        text = self._CLEAN_GEMMA_CHANNEL_OPEN.sub("", text)
+        text = self._CLEAN_THINK_TAG_LEAD.sub("", text)
         if "/response" in text:
             text = text.split("/response", 1)[1]
         if "<start_of_turn>" in text or "<end_of_turn>" in text:
-            parts = re.split(r"<(?:start|end)_of_turn>(?:user|model)?\n?", text)
+            parts = self._CLEAN_TURN_SPLIT.split(text)
             for part in parts:
                 part = part.strip()
                 if part and not part.startswith("<"):
@@ -760,7 +795,7 @@ class ChatTemplateBackend(Backend):
             if tag in text:
                 return text.split(tag, 1)[1].strip(), ""
         if "[THINK]" in text.upper():
-            return re.split(r"\[THINK\]", text, flags=re.IGNORECASE)[1].strip(), ""
+            return self._THINK_BRACKET_SPLIT.split(text)[1].strip(), ""
         return "", text.strip()
 
 
@@ -1083,10 +1118,14 @@ class UnifiedLLM:
         )
 
         # Apply family-specific thinking-mode plumbing on the *last user turn*.
-        # We mutate a copy, never the caller's list.
+        # We mutate a copy, never the caller's list. The helper is called
+        # for both thinking=True and thinking=False on supports_thinking
+        # families because Qwen 3.5 / 3.6 default to reasoning-on at the
+        # model level — without an explicit /no_think suffix the model
+        # ignores thinking=False and reasons anyway.
         effective_messages = [dict(m) for m in effective_messages]
-        if thinking and self.model_config.supports_thinking:
-            self._apply_thinking_to_last_user(effective_messages)
+        if self.model_config.supports_thinking:
+            self._apply_thinking_to_last_user(effective_messages, thinking)
 
         # Tokenize once via _prepare_chat — Llama.create_chat_completion will
         # also tokenize inside, but token-count budgeting needs the value
@@ -1137,21 +1176,28 @@ class UnifiedLLM:
             if piece:
                 yield piece
 
-    def _apply_thinking_to_last_user(self, messages: list[dict[str, Any]]) -> None:
-        """Mutate ``messages`` in place to enable thinking on the last user turn.
+    def _apply_thinking_to_last_user(
+        self, messages: list[dict[str, Any]], thinking: bool
+    ) -> None:
+        """Mutate ``messages`` in place to set thinking-mode on the last user turn.
 
         Family-specific:
-        - Qwen 3.5 / 3.6: append ``/think`` to the last user content.
-        - Gemma 4: prepend ``<|think|>`` to the system message (or insert one).
+        - Qwen 3.5 / 3.6: append ``/think`` or ``/no_think`` based on flag.
+          Both suffixes are explicit because Qwen defaults to reasoning-on;
+          ``thinking=False`` without ``/no_think`` is silently ignored.
+        - Gemma 4: prepend ``<|think|>`` to the system message (or insert one)
+          only when ``thinking=True``. Gemma defaults to non-thinking, so
+          ``thinking=False`` is the no-op path.
         - Granite: no thinking spec from upstream; no-op.
         """
         family = self.model_config.family
         if family in (ModelFamily.QWEN3_5, ModelFamily.QWEN3_6):
+            suffix = " /think" if thinking else " /no_think"
             for m in reversed(messages):
                 if m.get("role") == "user" and isinstance(m.get("content"), str):
-                    m["content"] = f"{m['content']} /think"
+                    m["content"] = f"{m['content']}{suffix}"
                     return
-        elif family is ModelFamily.GEMMA4:
+        elif family is ModelFamily.GEMMA4 and thinking:
             # Find an existing system message and prepend the prefix.
             for m in messages:
                 if m.get("role") == "system" and isinstance(m.get("content"), str):
@@ -1267,5 +1313,3 @@ class UnifiedLLM:
             # a less clear message).
             self.backend.llm = None  # type: ignore[assignment]
             self.backend = None  # type: ignore[assignment]
-        # Force GC to collect any reference cycles while interpreter is safe
-        gc.collect()
