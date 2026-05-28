@@ -2400,9 +2400,7 @@ class Llama:
         # the post-save epoch so a subsequent load matches.
         self._state_epoch += 1
         payload: bytes = self.ctx.save_seq_state_on_device(seq_id)
-        header = self._ON_DEVICE_HANDLE_MAGIC + struct.pack(
-            "<Q", self._state_epoch
-        )
+        header = self._ON_DEVICE_HANDLE_MAGIC + struct.pack("<Q", self._state_epoch)
         return header + payload
 
     def load_seq_state_on_device(self, data: bytes, dest_seq_id: int = 0) -> int:

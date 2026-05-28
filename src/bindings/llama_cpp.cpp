@@ -622,9 +622,7 @@ class Context {
     // rejected drafts from its KV. Mirror the target's n_rs_seq (set on the
     // user-facing context via LlamaConfig.n_rs_seq); if it's zero (the
     // pre-MTP default), bump to 2 to match the default SamplingParams.n_draft_max.
-    if (dparams.n_rs_seq < 2) {
-      dparams.n_rs_seq = 2;
-    }
+    dparams.n_rs_seq = std::max<uint32_t>(dparams.n_rs_seq, 2);
     // Cap ctx_dft's worst-case graph size. The verify batch is at most
     // n_draft_max+1 (≤ 9 tokens), and prefill can chunk through ubatches.
     // common_speculative_init enables backend top-k sampling on ctx_dft, which
@@ -637,9 +635,7 @@ class Context {
     if (dparams.n_ubatch == 0 || dparams.n_ubatch > kDraftUBatch) {
       dparams.n_ubatch = kDraftUBatch;
     }
-    if (dparams.n_batch < dparams.n_ubatch) {
-      dparams.n_batch = dparams.n_ubatch;
-    }
+    dparams.n_batch = std::max(dparams.n_batch, dparams.n_ubatch);
     ctx_dft_ = llama_init_from_model(model_->get(), dparams);
     if (!ctx_dft_) {
       throw std::runtime_error(
@@ -1826,7 +1822,7 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
   }
 
   llama_context* const ctx_dft = ctx.ensure_mtp_draft_context();
-  llama_memory_t const mem_dft = llama_get_memory(ctx_dft);
+  llama_memory_t mem_dft = llama_get_memory(ctx_dft);
 
   common_params_speculative spec_params;
   spec_params.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
@@ -1834,7 +1830,7 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
   spec_params.draft.ctx_tgt = ctx_tgt;
   spec_params.draft.ctx_dft = ctx_dft;
 
-  common_speculative_ptr spec(common_speculative_init(spec_params, /*n_seq=*/1));
+  common_speculative_ptr const spec(common_speculative_init(spec_params, /*n_seq=*/1));
   if (!spec) {
     throw std::runtime_error(
         "common_speculative_init returned null (model has MTP graph but "
@@ -1896,7 +1892,7 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     prime_batch.n_tokens = n_prime;
     const int32_t pos_start = ctx.cur_pos();
     for (int32_t i = 0; i < n_prime; ++i) {
-      prime_batch.token[i] = priming[static_cast<size_t>(skip + i)];
+      prime_batch.token[i] = priming[static_cast<size_t>(skip) + static_cast<size_t>(i)];
       prime_batch.pos[i] = pos_start + i;
       prime_batch.n_seq_id[i] = 1;
       prime_batch.seq_id[i][0] = 0;
