@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import queue
+import struct
 import threading
 import time
 from typing import Any
@@ -475,6 +476,14 @@ class Llama:
         # kv_cache_seq_*, set_state_data, load_state, reset) must call
         # _invalidate_prompt_cache() to keep this mirror consistent.
         self._cached_prompt_tokens: list[int] = []
+        # Monotonically increasing counter bumped by every KV-clearing op
+        # (kv_cache_clear, kv_cache_seq_*, set_state, load_state, reset, embed,
+        # close, and re-saving the same seq with save_seq_state_on_device).
+        # Embedded in on-device handles by save_seq_state_on_device and
+        # validated by load_seq_state_on_device — a stale handle (epoch
+        # mismatch) raises LlamaError instead of letting llama.cpp's
+        # ggml_abort terminate the process.
+        self._state_epoch: int = 0
 
         # Apply verbose setting with class-level synchronization
         # WARNING: This affects logging globally, not per-instance.
@@ -706,6 +715,17 @@ class Llama:
                 "variant (e.g. Qwen3.6-MoE *-MTP.gguf checkpoints). The "
                 "loaded model does not expose one."
             )
+
+    @property
+    def is_stuck(self) -> bool:
+        """True iff a prior ``generate_stream`` timed out and left the worker
+        thread alive. Once true the instance must not be reused — ``close()``
+        will short-circuit (intentionally leaking ctx/model), all other
+        methods will block on ``self._lock``, and process restart is the only
+        recovery. Cheap to read; no lock acquired. Suitable for ``LlamaPool``
+        health checks and external monitoring.
+        """
+        return self._zombie
 
     def close(self) -> None:
         """Release model and context resources."""
@@ -1002,12 +1022,33 @@ class Llama:
         return self._metadata_cache
 
     def _invalidate_prompt_cache(self) -> None:
-        """Drop the mirror of KV-cached prompt tokens.
+        """Drop the mirror of KV-cached prompt tokens and bump the state
+        epoch (which invalidates any outstanding on-device handles).
 
-        Call after any operation that mutates seq 0 outside of the normal
-        generation flow (full kv_cache_clear, direct kv_cache_seq_*,
-        set_state_data, load_state, ctx.reset). Subsequent generations will
-        fall back to a full prompt decode until the mirror is rebuilt.
+        Call after any operation that *clears or partially overwrites* KV
+        memory (full kv_cache_clear, direct kv_cache_seq_*, set_state_data,
+        load_state, ctx.reset, embed, close, or a failed generate where KV
+        state is unknown). Subsequent generations will fall back to a full
+        prompt decode until the mirror is rebuilt; any on-device handle
+        saved before this call will be rejected by
+        ``load_seq_state_on_device`` with ``LlamaError`` instead of allowing
+        llama.cpp's ``ggml_abort`` to terminate the process.
+
+        Use ``_drop_mirror_only`` instead when the mirror needs to be
+        cleared but KV memory is *unchanged* (e.g. caller opted out of
+        cache_prompt mid-session — KV is extended in place, on-device
+        snapshots taken earlier are still valid).
+        """
+        self._cached_prompt_tokens = []
+        self._state_epoch += 1
+
+    def _drop_mirror_only(self) -> None:
+        """Drop the prompt-cache mirror without bumping the state epoch.
+
+        For paths where KV memory is unchanged but the mirror's
+        "matches KV exactly" invariant no longer holds (specifically:
+        ``cache_prompt=False`` mid-session — KV is extended in place,
+        on-device snapshots taken earlier are still valid).
         """
         self._cached_prompt_tokens = []
 
@@ -1047,6 +1088,9 @@ class Llama:
             # mid-sequence trim; fall back to a full clear so KV doesn't end
             # up with stale tokens past the new prefix.
             ok = self.ctx.kv_cache_seq_rm(0, n_match, -1)
+            # Either branch here mutates KV memory — bump the state epoch so
+            # any outstanding on-device handle is invalidated.
+            self._state_epoch += 1
             if not ok:
                 self.ctx.kv_cache_clear()
                 self._cached_prompt_tokens = list(new_tokens)
@@ -1054,6 +1098,60 @@ class Llama:
         # Mirror the new prompt; generation extends it as tokens arrive.
         self._cached_prompt_tokens = list(new_tokens)
         return n_match
+
+    def _prepare_prompt_for_kv(
+        self,
+        prompt_tokens: list[int],
+        *,
+        reset_kv_cache: bool,
+        cache_prompt: bool,
+        effective_add_bos: bool,
+    ) -> tuple[list[int], int]:
+        """Single source of truth for prompt-cache bookkeeping before a C++
+        generate call.
+
+        Returns ``(primed, skip_decode_prefix)`` where ``primed`` is the
+        priming sequence the C++ generator will see (BOS-prepended when
+        appropriate), and ``skip_decode_prefix`` is the number of leading
+        primed tokens that are already in KV (always 0 with
+        ``reset_kv_cache=True`` or no prior mirror).
+
+        Side effects: updates ``self._cached_prompt_tokens`` to track the new
+        priming, or clears it when caching is off. Callers must:
+
+        1. Have already done ``ctx.kv_cache_clear()`` when ``reset_kv_cache``
+           is True (this matches existing call order — the clear happens
+           before tokenization for the streaming path).
+        2. Wrap the C++ generate call in ``try/except`` and call
+           ``self._invalidate_prompt_cache()`` on failure (KV state is
+           unknown after a partial decode).
+        3. Call ``self._commit_generation_to_cache(tail)`` on success when
+           ``cache_prompt or reset_kv_cache``.
+
+        See the per-method comments at the original three callsites for the
+        BOS rules; this helper just executes them.
+        """
+        primed = (
+            [self.model.bos(), *prompt_tokens]
+            if effective_add_bos
+            and (not prompt_tokens or prompt_tokens[0] != self.model.bos())
+            else list(prompt_tokens)
+        )
+        skip_decode_prefix = 0
+        if reset_kv_cache:
+            self._cached_prompt_tokens = list(primed)
+        elif cache_prompt and self._cached_prompt_tokens:
+            skip_decode_prefix = self._apply_prefix_reuse(primed)
+        elif cache_prompt:
+            self._cached_prompt_tokens = list(primed)
+        else:
+            # cache_prompt=False mid-session: KV is unchanged (the C++
+            # generator extends in place), only the mirror's "matches KV
+            # exactly" invariant is broken. Drop the mirror without bumping
+            # the state epoch — on-device snapshots taken earlier are
+            # still valid against the current KV memory.
+            self._drop_mirror_only()
+        return primed, skip_decode_prefix
 
     def _commit_generation_to_cache(self, generated: Sequence[int]) -> None:
         """Append generated tokens to the prompt-cache mirror.
@@ -1303,32 +1401,12 @@ class Llama:
         else:
             effective_add_bos = add_bos
 
-        # Build the priming sequence the C++ generator will see, so we can
-        # compute skip_decode_prefix against the mirror. C++ prepends BOS
-        # itself when add_bos=True; mirror it here so the LCP comparison
-        # operates on identical sequences.
-        primed = (
-            [self.model.bos(), *prompt_tokens]
-            if effective_add_bos
-            and (not prompt_tokens or prompt_tokens[0] != self.model.bos())
-            else list(prompt_tokens)
+        _, skip_decode_prefix = self._prepare_prompt_for_kv(
+            prompt_tokens,
+            reset_kv_cache=reset_kv_cache,
+            cache_prompt=cache_prompt,
+            effective_add_bos=effective_add_bos,
         )
-
-        skip_decode_prefix = 0
-        if reset_kv_cache:
-            # Fresh KV: priming will be the entire seq 0 after this call.
-            self._cached_prompt_tokens = list(primed)
-        elif cache_prompt and self._cached_prompt_tokens:
-            # Trim divergent suffix and reuse the matching prefix.
-            skip_decode_prefix = self._apply_prefix_reuse(primed)
-        elif cache_prompt:
-            # Empty mirror but caching enabled: full prime, then track.
-            self._cached_prompt_tokens = list(primed)
-        else:
-            # Caller opted out of caching mid-session — KV state is whatever
-            # they were managing. Drop the mirror so the next cache_prompt
-            # call falls back to a clean full prime.
-            self._invalidate_prompt_cache()
 
         try:
             if speculative:
@@ -1498,26 +1576,15 @@ class Llama:
 
         eos = self.model.eos()
 
-        # Compute prefix reuse before spawning the worker. Mirror must reflect
-        # the priming sequence the C++ generator sees: BOS-prepended when
-        # add_bos is True. We compute skip_decode_prefix here under the lock
-        # acquired below; appending generated tokens to the mirror happens in
-        # finally on success.
-        primed_for_mirror = (
-            [self.model.bos(), *prompt_tokens]
-            if effective_add_bos
-            and (not prompt_tokens or prompt_tokens[0] != self.model.bos())
-            else list(prompt_tokens)
+        # Compute prefix reuse before spawning the worker. The helper updates
+        # the mirror to reflect the priming sequence; generated tokens are
+        # appended in the finally block on clean exit.
+        _, skip_decode_prefix = self._prepare_prompt_for_kv(
+            prompt_tokens,
+            reset_kv_cache=reset_kv_cache,
+            cache_prompt=cache_prompt,
+            effective_add_bos=effective_add_bos,
         )
-        skip_decode_prefix = 0
-        if reset_kv_cache:
-            self._cached_prompt_tokens = list(primed_for_mirror)
-        elif cache_prompt and self._cached_prompt_tokens:
-            skip_decode_prefix = self._apply_prefix_reuse(primed_for_mirror)
-        elif cache_prompt:
-            self._cached_prompt_tokens = list(primed_for_mirror)
-        else:
-            self._invalidate_prompt_cache()
         # Tokens generated in this stream — appended to mirror on success,
         # discarded if the worker dies. Lives outside the worker closure so
         # the finally block can read it.
@@ -1763,24 +1830,16 @@ class Llama:
         token_probs = None
         if logprobs is not None:
             # Logprobs path: dispatch directly so we can pull TokenProb structs
-            # back out. Replicate the prefix-reuse + KV-clear bookkeeping that
-            # _generate_from_tokens does for the non-logprobs paths.
-            primed = (
-                [self.model.bos(), *prompt_tokens]
-                if effective_add_bos
-                and (not prompt_tokens or prompt_tokens[0] != self.model.bos())
-                else list(prompt_tokens)
-            )
-            skip_decode_prefix = 0
+            # back out. The shared helper handles BOS prepending, prefix reuse,
+            # and mirror updates — same contract as the non-logprobs paths.
             if reset_kv_cache:
                 self.ctx.kv_cache_clear()
-                self._cached_prompt_tokens = list(primed)
-            elif cache_prompt and self._cached_prompt_tokens:
-                skip_decode_prefix = self._apply_prefix_reuse(primed)
-            elif cache_prompt:
-                self._cached_prompt_tokens = list(primed)
-            else:
-                self._invalidate_prompt_cache()
+            primed, skip_decode_prefix = self._prepare_prompt_for_kv(
+                prompt_tokens,
+                reset_kv_cache=reset_kv_cache,
+                cache_prompt=cache_prompt,
+                effective_add_bos=effective_add_bos,
+            )
             try:
                 token_probs = _llama.generate_tokens_with_details(
                     self.ctx,
@@ -2288,13 +2347,23 @@ class Llama:
         self._invalidate_prompt_cache()
         return result
 
+    # On-device handle envelope: 4-byte magic + uint64 epoch (little-endian)
+    # prefixed onto the raw llama.cpp handle bytes. The Python wrapper validates
+    # the magic and epoch before passing the inner payload to the C++ load,
+    # which converts the C API's ggml_abort-on-invalid-handle behavior into a
+    # recoverable LlamaError on the most common failure mode (stale handle
+    # after a KV-clearing op).
+    _ON_DEVICE_HANDLE_MAGIC = b"LCNH"  # llama-cpp-nanobind handle
+    _ON_DEVICE_HANDLE_HEADER_LEN = 4 + 8
+
     def save_seq_state_on_device(self, seq_id: int = 0) -> bytes:
         """Save per-sequence state with the ON_DEVICE flag (llama.cpp 2026-04+).
 
         Tensor data stays in device buffers (GPU memory) instead of being
-        copied to host. The returned ``bytes`` is an opaque handle/header
-        that references the device-resident slot — it is **not** a host-
-        serializable copy of the KV cache.
+        copied to host. The returned ``bytes`` is an opaque handle that
+        embeds a 12-byte validation header (magic + state-epoch) followed
+        by the device-resident reference — it is **not** a host-serializable
+        copy of the KV cache. Treat the bytes as opaque.
 
         For host-serializable / multi-snapshot state, use ``get_state()``
         (whole-context, returns real bytes).
@@ -2304,15 +2373,19 @@ class Llama:
              prior states gotten for that seq_id with this flag."
 
         Only one on-device snapshot per ``seq_id`` may be live at a time;
-        using a stale handle after re-saving the same ``seq_id`` is
-        undefined behavior.
+        re-saving the same ``seq_id`` invalidates prior handles. The
+        wrapper bumps the state epoch on save so the prior handle's epoch
+        stops matching and ``load_seq_state_on_device`` rejects it cleanly.
 
         Handle lifetime: the snapshot is also invalidated by any operation
         that clears KV memory (``reset()``, ``kv_cache_clear()``, or
-        ``set_state_data()`` / ``load_state()``). Loading a stale handle
-        terminates the process via ``ggml_abort`` — the C API performs no
-        validation. Treat the handle as a short-lived reference, not a
-        persistent snapshot; for durable state use ``get_state()``.
+        ``set_state_data()`` / ``load_state()`` / ``embed()`` / ``close()``).
+        Stale handles are validated in Python and rejected with
+        ``LlamaError`` instead of letting llama.cpp's ``ggml_abort``
+        terminate the process. Garbage handles or handles from a different
+        ``Llama`` instance still have undefined behavior past the magic
+        check, so treat the handle as a short-lived in-session reference;
+        for durable state use ``get_state()``.
 
         Args:
             seq_id: Sequence id to snapshot (default 0, the only sequence
@@ -2322,16 +2395,23 @@ class Llama:
             Opaque handle bytes; pass to ``load_seq_state_on_device``.
         """
         self._check_closed()
-        result: bytes = self.ctx.save_seq_state_on_device(seq_id)
-        return result
+        # Bump the epoch BEFORE the C++ save: any prior handle for this seq
+        # is now invalidated upstream, and we want our header to reflect
+        # the post-save epoch so a subsequent load matches.
+        self._state_epoch += 1
+        payload: bytes = self.ctx.save_seq_state_on_device(seq_id)
+        header = self._ON_DEVICE_HANDLE_MAGIC + struct.pack(
+            "<Q", self._state_epoch
+        )
+        return header + payload
 
     def load_seq_state_on_device(self, data: bytes, dest_seq_id: int = 0) -> int:
         """Restore an on-device snapshot from ``save_seq_state_on_device``.
 
         The handle is only valid on the same ``Llama`` instance that produced
         it (it references device buffers owned by that context). Using a
-        handle from a different instance, after a context reset, or after a
-        later save_seq_state_on_device for the same seq_id, is undefined.
+        handle from a different instance, or one that pre-dates a KV-clearing
+        op, raises ``LlamaError`` instead of calling ``ggml_abort``.
 
         Invalidates the prompt-cache mirror when restoring into seq 0.
         On C++ failure for ``dest_seq_id == 0`` the KV cache for seq 0 may
@@ -2344,10 +2424,35 @@ class Llama:
 
         Returns:
             Bytes read from the handle.
+
+        Raises:
+            LlamaError: handle is missing the magic prefix, has the wrong
+                epoch (a KV-clearing op happened since save), or is too
+                short. This converts the upstream ``ggml_abort`` failure
+                mode into a recoverable Python exception.
         """
         self._check_closed()
+        if (
+            not isinstance(data, (bytes, bytearray))
+            or len(data) < self._ON_DEVICE_HANDLE_HEADER_LEN
+            or data[:4] != self._ON_DEVICE_HANDLE_MAGIC
+        ):
+            raise LlamaError(
+                "load_seq_state_on_device: handle is not a valid on-device "
+                "snapshot (missing magic prefix or truncated)"
+            )
+        (handle_epoch,) = struct.unpack("<Q", data[4:12])
+        if handle_epoch != self._state_epoch:
+            raise LlamaError(
+                "load_seq_state_on_device: handle is stale "
+                f"(epoch={handle_epoch}, current={self._state_epoch}). "
+                "A KV-clearing op (reset, kv_cache_clear, set_state, "
+                "load_state, embed, or another save_seq_state_on_device) "
+                "ran since save. Re-save the snapshot before loading."
+            )
+        payload = bytes(data[self._ON_DEVICE_HANDLE_HEADER_LEN :])
         try:
-            result: int = self.ctx.load_seq_state_on_device(data, dest_seq_id)
+            result: int = self.ctx.load_seq_state_on_device(payload, dest_seq_id)
         except Exception:
             if dest_seq_id == 0:
                 self._invalidate_prompt_cache()

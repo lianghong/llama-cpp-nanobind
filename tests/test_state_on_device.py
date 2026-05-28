@@ -95,10 +95,48 @@ def test_on_device_state_after_close_raises(model_path):
         llm.load_seq_state_on_device(b"x")
 
 
-# NOTE: there is intentionally no "garbage handle raises" test for the
-# on-device path. Upstream `llama_state_seq_set_data_ext` with the
-# LLAMA_STATE_SEQ_FLAGS_ON_DEVICE flag calls ggml_abort() on invalid handle
-# bytes rather than returning 0, which terminates the process. The opaque
-# handle has no public format we could pre-validate in the binding either,
-# so this failure mode is unreachable from a well-behaved caller. Round-trip
-# integrity is covered by test_on_device_round_trip_preserves_generation.
+@requires_model
+def test_stale_handle_after_kv_clear_raises(llm):
+    """A handle saved before ``kv_cache_clear()`` must raise ``LlamaError``
+    on load (not abort the process). The Python wrapper validates the
+    handle's embedded epoch against the current ``_state_epoch``; any
+    KV-clearing op bumps the epoch and turns the otherwise-fatal
+    ``ggml_abort`` into a recoverable Python exception.
+    """
+    llm.reset()
+    llm.generate("Stale handle prefix", max_tokens=2)
+    handle = llm.save_seq_state_on_device(seq_id=0)
+
+    # Any of these KV-clearing ops invalidates the handle:
+    llm.kv_cache_clear()
+
+    with pytest.raises(LlamaError, match="stale"):
+        llm.load_seq_state_on_device(handle, dest_seq_id=0)
+
+
+@requires_model
+def test_stale_handle_after_resave_raises(llm):
+    """Re-saving the same seq_id invalidates the prior handle (per
+    llama.h). The wrapper bumps the epoch on save, so the old handle's
+    embedded epoch no longer matches.
+    """
+    llm.reset()
+    llm.generate("Resave handle prefix", max_tokens=2)
+    handle_a = llm.save_seq_state_on_device(seq_id=0)
+    llm.save_seq_state_on_device(seq_id=0)  # invalidates handle_a
+
+    with pytest.raises(LlamaError, match="stale"):
+        llm.load_seq_state_on_device(handle_a, dest_seq_id=0)
+
+
+@requires_model
+def test_load_rejects_garbage_handle(llm):
+    """Bytes without the magic prefix raise ``LlamaError`` instead of
+    falling through to the C++ load (which would ``ggml_abort``).
+    """
+    llm.reset()
+    llm.generate("garbage probe", max_tokens=2)
+    with pytest.raises(LlamaError, match="not a valid on-device snapshot"):
+        llm.load_seq_state_on_device(b"\x00" * 64, dest_seq_id=0)
+    with pytest.raises(LlamaError, match="not a valid on-device snapshot"):
+        llm.load_seq_state_on_device(b"x", dest_seq_id=0)
