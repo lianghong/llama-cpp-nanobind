@@ -629,7 +629,6 @@ class ChatTemplateBackend(Backend):
     _CONTROL_TOKENS: ClassVar[re.Pattern[str]] = re.compile(
         r"<\|im_end\|>|<\|im_start\|>\w*\n?|<\|im_sep\|>|<end_of_turn>|<start_of_turn>\w*\n?"
         r"|<turn\|>|<\|think\|>",
-        re.DOTALL,
     )
     # _clean_response patterns — pre-compiled here so each call avoids the
     # implicit re-module LRU cache lookup and stays compile-free even when

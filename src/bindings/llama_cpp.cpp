@@ -814,6 +814,14 @@ class Context {
       nb::gil_scoped_release const release;
       written = llama_state_get_data(ctx_, reinterpret_cast<uint8_t*>(buf), size);
     }
+    // llama.cpp signals failure by returning 0. The bytes buffer was
+    // allocated uninitialized; without this guard we'd hand uninitialized
+    // memory to Python (and round-tripping it through set_state_data would
+    // silently corrupt the KV cache).
+    if (written == 0) {
+      Py_DECREF(py_obj);
+      throw std::runtime_error("llama_state_get_data returned 0 bytes");
+    }
     // Shrink the bytes object if the serializer wrote fewer bytes than the
     // reserved size. _PyBytes_Resize requires GIL (which we hold here).
     if (written < size) {
@@ -857,24 +865,30 @@ class Context {
     size_t const len = data.size();
     size_t result = 0;
     int32_t const old_pos = cur_pos_;  // Best-effort restore on failure
+    int32_t new_pos = old_pos;
     {
       nb::gil_scoped_release const release;
       result = llama_state_set_data(ctx_, ptr, len);
-      if (result == 0 || result > len) {
-        // Failure - restore Python-side position. Note: the llama KV cache
-        // itself may be partially overwritten; this only resets bookkeeping.
-        cur_pos_ = old_pos;
-      } else {
-        // Success - update cur_pos_ from KV cache to maintain correct position bookkeeping
-        cur_pos_ = kv_cache_seq_pos_max(0) + 1;
-        cur_pos_ = std::max(cur_pos_, 0);
+      if (result != 0 && result <= len) {
+        // Compute the post-load position into a local — assigning to
+        // cur_pos_ here would race with another Python thread that may be
+        // reading it (cur_pos_ is unsynchronized, the GIL is what serializes
+        // it).
+        llama_memory_t const mem = llama_get_memory(ctx_);
+        new_pos = llama_memory_seq_pos_max(mem, 0) + 1;
+        if (new_pos < 0) new_pos = 0;
       }
     }
+    // GIL re-acquired: safe to mutate cur_pos_ (Python-visible state).
     if (result == 0 || result > len) {
+      // Failure — restore Python-side position. The llama KV cache itself
+      // may be partially overwritten; this only resets bookkeeping.
+      cur_pos_ = old_pos;
       throw std::runtime_error(
           "failed to load state data (KV cache may be in an indeterminate "
           "state; call reset() before reuse)");
     }
+    cur_pos_ = new_pos;
     return result;
   }
 
@@ -912,6 +926,12 @@ class Context {
       written =
           llama_state_seq_get_data_ext(ctx_, reinterpret_cast<uint8_t*>(buf), size, seq_id, flag);
     }
+    // llama.cpp signals failure by returning 0; the buffer is uninitialized
+    // — never hand that to Python.
+    if (written == 0) {
+      Py_DECREF(py_obj);
+      throw std::runtime_error("llama_state_seq_get_data_ext returned 0 bytes");
+    }
     if (written < size) {
       if (_PyBytes_Resize(&py_obj, static_cast<Py_ssize_t>(written)) != 0) {
         throw std::runtime_error("failed to resize Python bytes buffer");
@@ -930,22 +950,30 @@ class Context {
     size_t const len = data.size();
     size_t result = 0;
     int32_t const old_pos = cur_pos_;
+    int32_t new_pos = old_pos;
+    bool update_pos = false;
     {
       nb::gil_scoped_release const release;
       result = llama_state_seq_set_data_ext(ctx_, ptr, len, dest_seq_id, flag);
-      if (result == 0 || result > len) {
-        cur_pos_ = old_pos;
-      } else if (dest_seq_id == 0) {
+      if (result != 0 && result <= len && dest_seq_id == 0) {
         // Same bookkeeping as load_state / set_state_data: only seq 0 is
-        // tracked by cur_pos_.
-        cur_pos_ = kv_cache_seq_pos_max(0) + 1;
-        cur_pos_ = std::max(cur_pos_, 0);
+        // tracked by cur_pos_. Compute into a local — assigning to cur_pos_
+        // here would race with another Python thread reading it.
+        llama_memory_t const mem = llama_get_memory(ctx_);
+        new_pos = llama_memory_seq_pos_max(mem, 0) + 1;
+        if (new_pos < 0) new_pos = 0;
+        update_pos = true;
       }
     }
+    // GIL re-acquired: safe to touch cur_pos_.
     if (result == 0 || result > len) {
+      cur_pos_ = old_pos;
       throw std::runtime_error(
           "failed to load on-device sequence state (KV cache may be in an "
           "indeterminate state; call reset() before reuse)");
+    }
+    if (update_pos) {
+      cur_pos_ = new_pos;
     }
     return result;
   }
@@ -1078,7 +1106,14 @@ class Context {
   llama_batch single_batch_ = {};  // Reusable single-token batch for decode_one
   // Reusable multi-token batch for the speculative draft-verify loop. Sized
   // for `1 + max(n_draft_max)` = 1 + 8 = 9. n_tokens is set per call.
-  static constexpr int32_t kMultiBatchCapacity = 9;
+  // The Python wrapper validates n_draft_max ∈ [1, 8] (SamplingParams);
+  // this static_assert ensures the two constants stay in sync — bumping
+  // the Python max without updating this capacity would cause a runtime
+  // throw mid-generation in decode_multi.
+  static constexpr int32_t kSpeculativeMaxDraftMax = 8;
+  static constexpr int32_t kMultiBatchCapacity = 1 + kSpeculativeMaxDraftMax;
+  static_assert(kMultiBatchCapacity >= 1 + kSpeculativeMaxDraftMax,
+                "kMultiBatchCapacity must be >= 1 + max(n_draft_max)");
   llama_batch multi_batch_ = {};
 
   void check_ctx() const {
@@ -2069,6 +2104,10 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
       }
       if (matched) {
         output.erase(output.end() - static_cast<std::ptrdiff_t>(remove_n), output.end());
+        // Stop tokens were counted toward n_emitted but aren't in `output`;
+        // restore the budget so max_new_tokens reflects emitted tokens, not
+        // tokens consumed by the stop match.
+        n_emitted -= static_cast<int32_t>(remove_n);
         // Mirror keeps the stop tokens because they're in KV; Python will
         // handle the mirror invalidation/commit accordingly.
         return false;

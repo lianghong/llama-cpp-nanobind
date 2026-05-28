@@ -95,10 +95,12 @@ _MAX_PROMPT_MULTIPLIER = 2  # Maximum multiplier for tokenized prompt validation
 
 
 def _register_cleanup() -> None:
-    """Register cleanup handlers only after a model is successfully loaded."""
+    """Register cleanup handlers only after a model is successfully loaded.
+
+    Always takes the lock — under PEP 703 free-threaded mode the unsynchronized
+    outer read would be a data race against the write under the lock.
+    """
     global _cleanup_registered
-    if _cleanup_registered:
-        return
     with _cleanup_lock:
         if _cleanup_registered:
             return
@@ -2750,7 +2752,12 @@ class Llama:
                         cache_prompt=cache_prompt,
                         **sampling_overrides,
                     )
-                    assert not isinstance(iterator, dict)
+                    if isinstance(iterator, dict):
+                        raise TypeError(
+                            "create_chat_completion returned a dict instead of "
+                            "an iterator (stream=True was passed but a "
+                            "non-streaming response was returned)"
+                        )
                     for chunk in iterator:
                         asyncio.run_coroutine_threadsafe(out_queue.put(chunk), loop)
                     asyncio.run_coroutine_threadsafe(out_queue.put(None), loop)
