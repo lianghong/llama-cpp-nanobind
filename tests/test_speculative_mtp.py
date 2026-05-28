@@ -131,3 +131,73 @@ def test_speculative_streaming():
         llm.close()
 
     assert "".join(chunks) == non_stream
+
+
+@requires_mtp_model
+def test_speculative_with_cache_prompt():
+    """Two-turn chat with cache_prompt=True + speculative=True must extend
+    the prompt-cache mirror correctly.
+    """
+    llm = _make_mtp_llm()
+    try:
+        sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=2)
+        llm.generate(
+            "Hello",
+            max_tokens=8,
+            sampling=sp,
+            speculative=True,
+            reset_kv_cache=True,
+            cache_prompt=True,
+        )
+        # Mirror should be non-empty and aligned to KV.
+        assert len(llm._cached_prompt_tokens) > 0
+        kv_max = llm.ctx.kv_cache_seq_pos_max(0)
+        assert len(llm._cached_prompt_tokens) == kv_max + 1
+        # Continuation reuses the prefix.
+        out2 = llm.generate(
+            "Hello world",
+            max_tokens=8,
+            sampling=sp,
+            speculative=True,
+            reset_kv_cache=False,
+            cache_prompt=True,
+        )
+        assert isinstance(out2, str) and out2.strip()
+    finally:
+        llm.close()
+
+
+@requires_mtp_model
+def test_speculative_n_draft_max_bounds():
+    """Both n_draft_max=1 and n_draft_max=8 must work end-to-end."""
+    for n in (1, 8):
+        llm = _make_mtp_llm()
+        try:
+            out = llm.generate(
+                "Hi",
+                max_tokens=12,
+                sampling=SamplingParams(seed=0, temperature=0.0, n_draft_max=n),
+                speculative=True,
+            )
+            assert isinstance(out, str)
+        finally:
+            llm.close()
+
+
+@requires_mtp_model
+def test_speculative_stop_sequence():
+    """A multi-token stop must be honored under speculative; the stop string
+    must NOT appear in the returned text.
+    """
+    llm = _make_mtp_llm()
+    try:
+        out = llm.generate(
+            "Counting: 1 2 3 STOPHERE 4 5",
+            max_tokens=64,
+            sampling=SamplingParams(seed=0, temperature=0.0, n_draft_max=2),
+            stop=["STOPHERE"],
+            speculative=True,
+        )
+        assert "STOPHERE" not in out
+    finally:
+        llm.close()
