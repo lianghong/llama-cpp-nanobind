@@ -275,11 +275,21 @@ class SamplingParams:
             raise ValidationError("adaptive_p_decay must be in [0.0, 0.99]")
         if self.logit_bias is not None:
             for token_id, bias in self.logit_bias.items():
-                if not isinstance(token_id, int) or token_id < 0:
+                # bool is a subclass of int — reject explicitly so {0: True}
+                # doesn't silently coerce to bias=1.0.
+                if (
+                    isinstance(token_id, bool)
+                    or not isinstance(token_id, int)
+                    or token_id < 0
+                ):
                     raise ValidationError(
                         f"logit_bias token id must be a non-negative int, got {token_id!r}"
                     )
-                if not isinstance(bias, (int, float)) or math.isnan(float(bias)):
+                if (
+                    isinstance(bias, bool)
+                    or not isinstance(bias, (int, float))
+                    or math.isnan(float(bias))
+                ):
                     raise ValidationError(
                         f"logit_bias[{token_id}] must be a real number, got {bias!r}"
                     )
@@ -446,6 +456,12 @@ class Llama:
         self.sampling = sampling or SamplingParams()
         self._metadata_cache: dict[str, str] | None = None
         self._closed = False
+        # Set when generate_stream's worker thread fails to exit within the
+        # join timeout. The C++ generation call has not returned, KV state is
+        # unknown, and self._lock is intentionally left held. close() and
+        # _cleanup_all must short-circuit on this flag instead of acquiring
+        # the lock — otherwise the atexit handler hangs the interpreter.
+        self._zombie = False
         self._lock = threading.Lock()  # Thread safety for async methods
         self._lora_adapters: list[Any] = []  # Keep adapters alive
         self._lora_configs: list[
@@ -697,6 +713,16 @@ class Llama:
         # direct access is safe and makes init-time bugs visible instead of
         # swallowing them as a no-op close.
         if self._closed:
+            return
+
+        # Zombie path: a prior generate_stream timed out with self._lock
+        # intentionally held; the C++ generation call never returned, so we
+        # cannot safely free ctx/model. Mark closed without acquiring the
+        # lock or touching native state. This intentionally leaks ctx/model
+        # — process restart is the documented recovery — but lets atexit
+        # complete instead of hanging the interpreter.
+        if getattr(self, "_zombie", False):
+            self._closed = True
             return
 
         # Serialize shutdown with active generation/async paths
@@ -1624,6 +1650,11 @@ class Llama:
                 # Worker is stuck in C++; KV state is unknown. Drop the mirror
                 # so any future call (after lock recovery) starts clean.
                 self._invalidate_prompt_cache()
+                # Mark zombie so close() / _cleanup_all skip the lock and
+                # the C++ free (ctx/model state is unknown). Without this
+                # flag the atexit handler would deadlock on self._lock at
+                # interpreter shutdown.
+                self._zombie = True
                 # Intentionally leave self._lock held and raise so the caller
                 # learns of the problem. Do NOT release — another call
                 # entering generation concurrently with a zombie worker would
@@ -2214,11 +2245,13 @@ class Llama:
         result: int = self.ctx.kv_cache_seq_pos_max(seq_id)
         return result
 
-    def save_state(self, path: str) -> bool:
-        """Save KV cache state to file."""
+    def save_state(self, path: str) -> None:
+        """Save KV cache state to file. Raises ``LlamaError`` on failure."""
         self._check_closed()
-        result: bool = self.ctx.save_state(path)
-        return result
+        try:
+            self.ctx.save_state(path)
+        except RuntimeError as e:
+            raise LlamaError(str(e)) from e
 
     def load_state(self, path: str) -> int:
         """Load KV cache state from file. Returns token count.
@@ -2240,10 +2273,18 @@ class Llama:
     def set_state(self, data: bytes) -> int:
         """Set KV cache state from bytes. Returns bytes read.
 
-        Invalidates the prompt-cache mirror.
+        Invalidates the prompt-cache mirror. On C++ failure the KV cache
+        may have been partially overwritten (per ``set_state_data``
+        contract), so we drop the mirror in the failure path too — a
+        subsequent ``cache_prompt=True`` call must fall back to a clean
+        prime instead of trusting a stale mirror.
         """
         self._check_closed()
-        result: int = self.ctx.set_state_data(data)
+        try:
+            result: int = self.ctx.set_state_data(data)
+        except Exception:
+            self._invalidate_prompt_cache()
+            raise
         self._invalidate_prompt_cache()
         return result
 
@@ -2293,6 +2334,9 @@ class Llama:
         later save_seq_state_on_device for the same seq_id, is undefined.
 
         Invalidates the prompt-cache mirror when restoring into seq 0.
+        On C++ failure for ``dest_seq_id == 0`` the KV cache for seq 0 may
+        have been partially overwritten (same contract as ``set_state``);
+        we drop the mirror in the failure path too.
 
         Args:
             data: Opaque handle from ``save_seq_state_on_device``.
@@ -2302,7 +2346,12 @@ class Llama:
             Bytes read from the handle.
         """
         self._check_closed()
-        result: int = self.ctx.load_seq_state_on_device(data, dest_seq_id)
+        try:
+            result: int = self.ctx.load_seq_state_on_device(data, dest_seq_id)
+        except Exception:
+            if dest_seq_id == 0:
+                self._invalidate_prompt_cache()
+            raise
         if dest_seq_id == 0:
             self._invalidate_prompt_cache()
         return result
@@ -2450,10 +2499,13 @@ class Llama:
                         yield item
                 finally:
                     # Await the pump task so exceptions surface and the
-                    # lock-release path in generate_stream runs. Swallow any
-                    # exception here because the main yield loop already
-                    # re-raised the meaningful error from the queue.
-                    with contextlib.suppress(BaseException):
+                    # lock-release path in generate_stream runs. The main
+                    # yield loop already re-raised the meaningful error from
+                    # the queue; suppress only ordinary exceptions here so
+                    # KeyboardInterrupt / SystemExit still propagate cleanly
+                    # (a Ctrl-C while iterating an async stream must not be
+                    # swallowed across the await boundary).
+                    with contextlib.suppress(Exception):
                         await pump
 
             return async_stream()
@@ -2671,7 +2723,10 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
                         )
     except json.JSONDecodeError as e:
         logging.debug("Failed to parse tool calls from response: %s", e)
-    except (KeyError, TypeError, ValueError) as e:
+    except (KeyError, TypeError, ValueError, RecursionError) as e:
+        # RecursionError: a deeply nested but small `arguments` object can pass
+        # the upstream 1MB cap and still blow the recursion limit during
+        # json.dumps re-serialization. Treat the same as a structural error.
         logging.debug("Invalid tool call structure: %s", e)
 
     return tool_calls

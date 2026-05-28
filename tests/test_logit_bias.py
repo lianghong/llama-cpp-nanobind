@@ -56,6 +56,18 @@ def test_logit_bias_non_numeric_rejected():
         SamplingParams(logit_bias={1: "high"})  # type: ignore[dict-item]
 
 
+def test_logit_bias_bool_value_rejected():
+    """bool is a subclass of int — must NOT silently coerce to 1.0 / 0.0."""
+    with pytest.raises(ValidationError, match="logit_bias"):
+        SamplingParams(logit_bias={1: True})  # type: ignore[dict-item]
+
+
+def test_logit_bias_bool_token_id_rejected():
+    """Same for the key side — {True: 1.0} would otherwise mean token id 1."""
+    with pytest.raises(ValidationError, match="logit_bias token id"):
+        SamplingParams(logit_bias={True: 1.0})  # type: ignore[dict-item]
+
+
 # --- End-to-end with a model ---
 
 

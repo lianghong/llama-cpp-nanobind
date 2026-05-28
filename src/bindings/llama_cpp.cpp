@@ -771,9 +771,12 @@ class Context {
   }
 
   // State save/load
-  bool save_state(const std::string& path) {
+  void save_state(const std::string& path) {
     check_ctx();
-    return llama_state_save_file(ctx_, path.c_str(), nullptr, 0);
+    bool const ok = llama_state_save_file(ctx_, path.c_str(), nullptr, 0);
+    if (!ok) {
+      throw std::runtime_error("failed to save state to: " + path);
+    }
   }
 
   size_t load_state(const std::string& path) {
