@@ -180,6 +180,54 @@ system-installed llama.cpp today. The `ctx_type` plumbing and
 `tests/test_mtp.py` are retained as the trigger point for when the
 upstream consumer API is promoted to public `llama.h`.
 
+### Draft-MTP speculative decoding (active path)
+
+Promotes the previously scaffold-only MTP context type to a real
+throughput improvement. Adds `speculative=True` and `n_draft_max=N`
+kwargs on `generate()`, `generate_stream()`, and
+`create_chat_completion()`. When the context is constructed with
+`ctx_type=LLAMA_CONTEXT_TYPE_MTP`, setting `speculative=True` runs the
+draft-verify loop in `common_speculative_*` (upstream
+`COMMON_SPECULATIVE_TYPE_DRAFT_MTP`), targeting Qwen3.6-MoE MTP
+checkpoints.
+
+**C++ bindings (`src/bindings/llama_cpp.cpp`)**
+- `Context::supports_speculative_mtp() -> bool` — predicate on
+  `ctx_type == LLAMA_CONTEXT_TYPE_MTP`.
+- `Context::decode_multi(tokens) -> int` — single forward pass over
+  multiple tokens; reuses a per-`Context` `multi_batch_` of capacity 9.
+- `generate_tokens_speculative_mtp(...)` — module-level free function
+  shared by all three Python entry points; initializes
+  `common_speculative_ptr`, drafts via `common_speculative_draft`,
+  verifies via the existing sampler chain, trims rejected drafts via
+  `kv_cache_seq_rm`, supports an optional grammar and an optional
+  streaming callback.
+
+**Python (`src/llama_cpp/llama.py`)**
+- `SamplingParams.n_draft_max: int = 2` (validated `[1, 8]`).
+- `Llama._validate_speculative(speculative)` — single source of truth
+  for the precondition check (`ctx_type=MTP`, `embeddings=False`).
+- `speculative` and `n_draft_max` kwargs threaded through `generate`,
+  `generate_stream`, `create_chat_completion`, and the internal
+  `_generate_from_tokens`.
+- `logprobs` is incompatible with `speculative=True` and raises.
+
+**Build (`CMakeLists.txt`)**
+- New required link: `find_library(LLAMA_COMMON_LIB llama-common REQUIRED)`.
+  Build fails with a clear message on machines without
+  `libllama-common.so`.
+
+**Behavior notes**
+- Greedy (`temperature=0.0`) outputs are bit-exact with the per-token
+  path.
+- Non-greedy seeded runs may diverge from the per-token trajectory
+  (RNG advances per position rather than per step); the *distribution*
+  is identical.
+- Acceptance floor: ≥ 1.10x tok/s on Qwen3.6-MoE at `n_draft_max=2`
+  (unsloth claims 1.15–1.2x MoE, 1.4–2.2x dense).
+- Hybrid-attention models (`memory_can_shift()=False`) cannot run
+  speculative; the per-token path remains supported.
+
 ## Tests
 
 - `tests/test_adaptive_p.py` — 11 tests. Default-off behavior, validation
@@ -217,6 +265,13 @@ upstream consumer API is promoted to public `llama.h`.
   `models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf`; override with the
   `LLAMA_MTP_TEST_MODEL` env var. Tests skip cleanly when the file
   is absent.
+- `tests/test_speculative_validation.py` — ~10 unit tests
+  (`n_draft_max` bounds, `_validate_speculative` precondition,
+  `supports_speculative_mtp` predicate, `decode_multi` smoke,
+  `generate_tokens_speculative_mtp` symbol presence).
+- `tests/test_speculative_mtp.py` — ~7 e2e tests gated on
+  `LLAMA_MTP_TEST_MODEL` (smoke, greedy equivalence, streaming,
+  grammar, `cache_prompt`, `n_draft_max` bounds, stop sequences).
 
 ## Verification
 

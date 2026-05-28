@@ -9,7 +9,6 @@ import pytest
 
 from llama_cpp import (
     LLAMA_CONTEXT_TYPE_DEFAULT,
-    LLAMA_CONTEXT_TYPE_MTP,
     Llama,
     LlamaConfig,
     SamplingParams,

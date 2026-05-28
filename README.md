@@ -522,28 +522,30 @@ params = SamplingParams(typical_p=0.7)
 params = SamplingParams(adaptive_p_target=0.5, adaptive_p_decay=0.85)
 ```
 
-### MTP (Multi-Token Prediction)
+### Draft-MTP Speculative Decoding
 
-`LlamaConfig.ctx_type=LLAMA_CONTEXT_TYPE_MTP` selects the MTP graph variant in llama.cpp at context-construction time, for Qwen3.5 / Qwen3.5-MoE / Qwen3.6-MoE checkpoints that ship MTP layers (`*.nextn_predict_layers > 0` metadata + `blk.*.nextn.*` tensors).
-
-> **This does not accelerate generation today.** The bindings' generate loop is strictly per-token (`llama_decode` with `n_tokens = 1`). Without a draft-verify consumer, setting `ctx_type=LLAMA_CONTEXT_TYPE_MTP` runs the auxiliary MTP heads each step and discards their output — extra compute and extra VRAM for no throughput benefit. Leave it at the default (`LLAMA_CONTEXT_TYPE_DEFAULT`) unless you are deliberately exercising the graph path.
+Set `LlamaConfig(ctx_type=LLAMA_CONTEXT_TYPE_MTP)` on a Qwen3.6-MoE MTP checkpoint and pass `speculative=True` to `generate()` / `generate_stream()` / `create_chat_completion()` for ≥ 1.10× tok/s.
 
 ```python
-from llama_cpp import Llama, LlamaConfig, LLAMA_CONTEXT_TYPE_MTP
+from llama_cpp import Llama, LlamaConfig, SamplingParams, LLAMA_CONTEXT_TYPE_MTP
 
-llm = Llama(
-    "models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
-    config=LlamaConfig(
-        model_path="models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
-        n_ctx=4096,
-        ctx_type=LLAMA_CONTEXT_TYPE_MTP,
-    ),
+llm = Llama(config=LlamaConfig(
+    model_path="models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+    ctx_type=LLAMA_CONTEXT_TYPE_MTP,
+))
+
+text = llm.generate(
+    "Explain MoE briefly.",
+    max_tokens=256,
+    sampling=SamplingParams(temperature=0.0),
+    speculative=True,
+    n_draft_max=2,
 )
 ```
 
-Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError`.
+The draft-verify loop drafts up to `n_draft_max` tokens (default 2, range [1, 8]) per round, verifies via the standard sampler chain, and accepts matching drafts. Greedy outputs (`temperature=0.0`) are bit-exact with the per-token path. Requires `ctx_type=LLAMA_CONTEXT_TYPE_MTP` and `memory_can_shift()=True`.
 
-The acceleration that upstream's `--spec-type draft-mtp` flag delivers (1.4–2.2× dense, 1.15–1.2× MoE per unsloth) is implemented in `common/speculative.cpp` and depends on staging APIs (`llama-ext.h`) not yet promoted to public `llama.h`. Tracked for a future revision once those APIs stabilize and ship in the installed headers.
+Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError`.
 
 ### On-Device State Save/Load
 
