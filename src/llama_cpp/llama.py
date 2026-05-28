@@ -661,6 +661,14 @@ class Llama:
         * The model exposes an MTP graph variant
           (``Context.supports_speculative_mtp()``).
         * The context is **not** embeddings-only.
+
+        Note: ``memory_can_shift()`` is intentionally **not** checked here.
+        Hybrid-attention MTP checkpoints (Qwen3.6-MoE) report
+        ``memory_can_shift()=False`` for their user-facing DEFAULT context
+        but the speculative loop trims rejected drafts via ``n_rs_seq``
+        recurrent-state rollback (set on the draft context), which is a
+        different mechanism than plain KV shift. Empirically, those models
+        run speculative correctly and hit unsloth's published speedup band.
         """
         if not speculative:
             return

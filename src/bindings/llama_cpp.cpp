@@ -1805,6 +1805,23 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
   // ===================================================================
 
   llama_context* const ctx_tgt = ctx.raw();
+
+  // --- Build the priming sequence and accept into sampler --------------
+  // Done up-front: if priming is empty (empty prompt + add_bos=false) we
+  // return without constructing ctx_dft / common_speculative — there's
+  // nothing to draft against and we don't want to begin() a spec impl
+  // we'll never use.
+  const bool need_bos = add_bos && (prompt.empty() || prompt.front() != ctx.model().bos());
+  std::vector<llama_token> priming;
+  priming.reserve(prompt.size() + (need_bos ? 1 : 0));
+  if (need_bos) priming.push_back(ctx.model().bos());
+  priming.insert(priming.end(), prompt.begin(), prompt.end());
+  if (priming.empty()) return output;
+
+  for (llama_token const t : priming) {
+    llama_sampler_accept(sampler.get(), t);
+  }
+
   llama_context* const ctx_dft = ctx.ensure_mtp_draft_context();
   llama_memory_t const mem_dft = llama_get_memory(ctx_dft);
 
@@ -1838,18 +1855,6 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     PreNormGuard& operator=(PreNormGuard&&) = delete;
   } const pn_guard{ctx_tgt, ctx_dft};
 
-  // --- Build the priming sequence and accept into sampler --------------
-  const bool need_bos = add_bos && (prompt.empty() || prompt.front() != ctx.model().bos());
-  std::vector<llama_token> priming;
-  priming.reserve(prompt.size() + (need_bos ? 1 : 0));
-  if (need_bos) priming.push_back(ctx.model().bos());
-  priming.insert(priming.end(), prompt.begin(), prompt.end());
-  if (priming.empty()) return output;
-
-  for (llama_token const t : priming) {
-    llama_sampler_accept(sampler.get(), t);
-  }
-
   // --- Sync ctx_dft with ctx_tgt -------------------------------------
   // ctx_dft is cached across calls and may carry KV from a prior generation.
   // The Python wrapper has already trimmed ctx_tgt's KV (e.g. cache_prompt
@@ -1858,6 +1863,8 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
   // ctx_dft batch positions align with KV_dft.
   {
     const int32_t tgt_keep = ctx.cur_pos();
+    // dft_max == -1 when seq 0 is empty (llama.cpp convention). Then
+    // dft_max + 1 == 0 ≤ any valid tgt_keep, so the trim correctly no-ops.
     const llama_pos dft_max = llama_memory_seq_pos_max(mem_dft, /*seq=*/0);
     if (dft_max + 1 > tgt_keep) {
       llama_memory_seq_rm(mem_dft, /*seq=*/0, /*p0=*/tgt_keep, /*p1=*/-1);
