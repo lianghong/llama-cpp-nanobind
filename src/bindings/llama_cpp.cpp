@@ -625,6 +625,21 @@ class Context {
     if (dparams.n_rs_seq < 2) {
       dparams.n_rs_seq = 2;
     }
+    // Cap ctx_dft's worst-case graph size. The verify batch is at most
+    // n_draft_max+1 (≤ 9 tokens), and prefill can chunk through ubatches.
+    // common_speculative_init enables backend top-k sampling on ctx_dft, which
+    // forces a second sched_reserve(); leaving n_ubatch at the user's default
+    // (often 512) allocates two ~500 MiB compute buffers and risks CUDA OOM
+    // even on cards with plenty of free VRAM (fragmentation / contiguous-range
+    // requirement). 64 is comfortably above n_draft_max+1 for any allowed
+    // value (range [1, 8]) and shrinks the graph ~8x.
+    constexpr uint32_t kDraftUBatch = 64;
+    if (dparams.n_ubatch == 0 || dparams.n_ubatch > kDraftUBatch) {
+      dparams.n_ubatch = kDraftUBatch;
+    }
+    if (dparams.n_batch < dparams.n_ubatch) {
+      dparams.n_batch = dparams.n_ubatch;
+    }
     ctx_dft_ = llama_init_from_model(model_->get(), dparams);
     if (!ctx_dft_) {
       throw std::runtime_error(
@@ -1835,6 +1850,20 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     llama_sampler_accept(sampler.get(), t);
   }
 
+  // --- Sync ctx_dft with ctx_tgt -------------------------------------
+  // ctx_dft is cached across calls and may carry KV from a prior generation.
+  // The Python wrapper has already trimmed ctx_tgt's KV (e.g. cache_prompt
+  // prefix-reuse, or no-op for reset_kv_cache=True after the higher-level
+  // kv_cache_clear). Mirror that trim here so common_speculative_process's
+  // ctx_dft batch positions align with KV_dft.
+  {
+    const int32_t tgt_keep = ctx.cur_pos();
+    const llama_pos dft_max = llama_memory_seq_pos_max(mem_dft, /*seq=*/0);
+    if (dft_max + 1 > tgt_keep) {
+      llama_memory_seq_rm(mem_dft, /*seq=*/0, /*p0=*/tgt_keep, /*p1=*/-1);
+    }
+  }
+
   // --- Decode the priming suffix (skip_decode_prefix already in KV) ---
   // We must mirror to ctx_dft via common_speculative_process(), so we can't
   // use prime_generation() — build the batch ourselves, decode on ctx_tgt,
@@ -2061,6 +2090,21 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     if (!keep_going) break;
 
     id_last = mirror.back();
+  }
+
+  // --- Tail trim: enforce the prompt-cache mirror invariant
+  // (`len(_cached_prompt_tokens) == kv_pos_max + 1`).
+  //
+  // When the loop terminates mid-round (max_tokens cap, EOS, stop-sequence,
+  // or callback abort), KV may contain accepted drafts past mirror.back()
+  // that were never emitted. Trim KV to mirror's last position on both
+  // contexts so callers using cache_prompt see KV aligned to the mirror.
+  if (!mirror.empty()) {
+    int32_t const tail_keep = static_cast<int32_t>(mirror.size());
+    if (ctx.cur_pos() > tail_keep) {
+      ctx.kv_cache_seq_rm(0, tail_keep, -1);
+      llama_memory_seq_rm(mem_dft, 0, tail_keep, -1);
+    }
   }
 
   return output;

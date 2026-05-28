@@ -86,7 +86,7 @@ def test_speculative_with_grammar():
     """Grammar + speculative must produce grammar-valid output."""
     from llama_cpp import LlamaGrammar
 
-    json_grammar = LlamaGrammar.from_str(
+    json_grammar = LlamaGrammar.from_string(
         'root ::= "{" ws "\\"ok\\"" ws ":" ws "true" ws "}" ws\nws ::= [ \\t\\n]*\n'
     )
     llm = _make_mtp_llm()
