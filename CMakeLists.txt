@@ -111,11 +111,13 @@ find_library(LLAMA_LIB llama REQUIRED)
 find_library(GGML_LIB ggml REQUIRED)
 find_library(GGML_BASE_LIB ggml-base REQUIRED)
 find_library(GGML_CPU_LIB ggml-cpu REQUIRED)
+find_library(LLAMA_COMMON_LIB llama-common REQUIRED)
 
 message(STATUS "Found libllama: ${LLAMA_LIB}")
 message(STATUS "Found libggml: ${GGML_LIB}")
 message(STATUS "Found libggml-base: ${GGML_BASE_LIB}")
 message(STATUS "Found libggml-cpu: ${GGML_CPU_LIB}")
+message(STATUS "Found libllama-common: ${LLAMA_COMMON_LIB}")
 
 # Optional GPU backend libraries
 find_library(GGML_CUDA_LIB ggml-cuda)
@@ -132,7 +134,7 @@ if(GGML_BLAS_LIB)
   message(STATUS "Found libggml-blas: ${GGML_BLAS_LIB}")
 endif()
 
-set(LLAMA_SHARED_LIBS ${LLAMA_LIB} ${GGML_LIB} ${GGML_BASE_LIB} ${GGML_CPU_LIB})
+set(LLAMA_SHARED_LIBS ${LLAMA_LIB} ${LLAMA_COMMON_LIB} ${GGML_LIB} ${GGML_BASE_LIB} ${GGML_CPU_LIB})
 foreach(_optlib GGML_CUDA_LIB GGML_METAL_LIB GGML_BLAS_LIB)
   if(${_optlib})
     list(APPEND LLAMA_SHARED_LIBS ${${_optlib}})

@@ -229,6 +229,10 @@ class SamplingParams:
     # Maps token_id -> bias (use float("-inf") or a large negative to ban).
     # OpenAI-API parity (mirrors `logit_bias` in chat/completions).
     logit_bias: dict[int, float] | None = None
+    # Draft-MTP speculative decoding: max number of draft tokens proposed per
+    # verify step. Active only when generate(..., speculative=True) is set on
+    # an MTP-capable context. Range [1, 8]; default 2 follows unsloth.
+    n_draft_max: int = 2
 
     def __post_init__(self) -> None:
         """Validate sampling parameters."""
@@ -279,6 +283,10 @@ class SamplingParams:
                     raise ValidationError(
                         f"logit_bias[{token_id}] must be a real number, got {bias!r}"
                     )
+        if not isinstance(self.n_draft_max, int) or not 1 <= self.n_draft_max <= 8:
+            raise ValidationError(
+                f"n_draft_max must be an int in [1, 8]; got {self.n_draft_max!r}"
+            )
 
     def to_native(self) -> _llama.SamplerParams:
         native = _llama.SamplerParams()
@@ -631,6 +639,26 @@ class Llama:
                 f"tokenized prompt ({n_tokens} tokens) exceeds "
                 f"reasonable limit ({max_reasonable_tokens}). "
                 "Reduce prompt length or increase n_ctx."
+            )
+
+    def _validate_speculative(self, speculative: bool) -> None:
+        """Validate the precondition for ``speculative=True`` calls.
+
+        Speculative decoding is only valid when the context was constructed
+        with ``ctx_type=LLAMA_CONTEXT_TYPE_MTP`` and is **not** an
+        embeddings-only context.
+        """
+        if not speculative:
+            return
+        if self.config.embeddings:
+            raise ValidationError(
+                "speculative=True is incompatible with embeddings-only contexts"
+            )
+        if not self.ctx.supports_speculative_mtp():
+            raise ValidationError(
+                f"speculative=True requires LlamaConfig("
+                f"ctx_type=LLAMA_CONTEXT_TYPE_MTP); got "
+                f"ctx_type={self.config.ctx_type}"
             )
 
     def close(self) -> None:
@@ -1169,6 +1197,8 @@ class Llama:
         reset_kv_cache: bool = True,
         add_bos: bool | None = None,
         cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int = 2,
     ) -> list[int]:
         """Internal generation from pre-tokenized input.
 
@@ -1245,7 +1275,23 @@ class Llama:
             self._invalidate_prompt_cache()
 
         try:
-            if grammar is not None:
+            if speculative:
+                generated = list(
+                    _llama.generate_tokens_speculative_mtp(
+                        self.ctx,
+                        sampler,
+                        grammar,
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        int(n_draft_max),
+                        stop_seqs,
+                        None,  # no streaming callback in this entry point
+                        skip_decode_prefix,
+                    )
+                )
+            elif grammar is not None:
                 generated = list(
                     _llama.generate_tokens_grammar_multi_stop(
                         self.ctx,
@@ -1308,6 +1354,8 @@ class Llama:
         seed: int | None = None,
         reset_kv_cache: bool = True,
         cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
     ) -> Iterator[str]:
         """True streaming generation - yields text as tokens are decoded.
 
@@ -1359,6 +1407,16 @@ class Llama:
                 f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
             )
         self._validate_stop_sequences(stop)
+        self._validate_speculative(speculative)
+        effective_n_draft_max = (
+            int(n_draft_max)
+            if n_draft_max is not None
+            else (
+                sampling.n_draft_max
+                if sampling is not None
+                else self.sampling.n_draft_max
+            )
+        )
 
         sampler_params = sampling or self.sampling
         if seed is not None:
@@ -1447,17 +1505,32 @@ class Llama:
                     token_queue.put(raw)
                     return True
 
-                _llama.generate_tokens_streaming(
-                    self.ctx,
-                    sampler,
-                    prompt_tokens,
-                    int(max_tokens),
-                    effective_add_bos,
-                    eos,
-                    stop_sequences,
-                    on_token,
-                    skip_decode_prefix,
-                )
+                if speculative:
+                    _llama.generate_tokens_speculative_mtp(
+                        self.ctx,
+                        sampler,
+                        None,  # no grammar in generate_stream
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        int(effective_n_draft_max),
+                        stop_sequences,
+                        on_token,
+                        skip_decode_prefix,
+                    )
+                else:
+                    _llama.generate_tokens_streaming(
+                        self.ctx,
+                        sampler,
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        stop_sequences,
+                        on_token,
+                        skip_decode_prefix,
+                    )
                 token_queue.put(None)  # Sentinel: generation complete
             except Exception as e:
                 token_queue.put(e)  # Propagate exception to main thread
@@ -1546,6 +1619,8 @@ class Llama:
         seed: int | None = None,
         reset_kv_cache: bool = True,
         cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
     ) -> str | Iterator[str] | dict[str, Any]:
         """Generate text for ``prompt``.
 
@@ -1582,6 +1657,19 @@ class Llama:
                 f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
             )
         self._validate_stop_sequences(stop)
+        self._validate_speculative(speculative)
+        if speculative and logprobs is not None:
+            raise ValidationError("logprobs is not supported on the speculative path")
+        # Default n_draft_max from sampling params if caller didn't override.
+        effective_n_draft_max = (
+            int(n_draft_max)
+            if n_draft_max is not None
+            else (
+                sampling.n_draft_max
+                if sampling is not None
+                else self.sampling.n_draft_max
+            )
+        )
 
         sampler_params = sampling or self.sampling
         if seed is not None:
@@ -1672,6 +1760,8 @@ class Llama:
                 grammar=None,
                 reset_kv_cache=reset_kv_cache,
                 cache_prompt=cache_prompt,
+                speculative=speculative,
+                n_draft_max=effective_n_draft_max,
             )
             if echo:
                 output_tokens = list(prompt_tokens) + output_tokens
@@ -1879,6 +1969,8 @@ class Llama:
         tool_choice: str | dict[str, Any] | None = None,
         reset_kv_cache: bool = True,
         cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
         **sampling_overrides: Any,
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         """Chat completions endpoint compatible with llama-cpp-python.
@@ -1926,6 +2018,12 @@ class Llama:
         # "logprobs") surfaces as a clear ValidationError here, not as a
         # confusing TypeError deep in SamplingParams.__init__.
         self._validate_sampling_overrides(sampling_overrides)
+        self._validate_speculative(speculative)
+        effective_n_draft_max = (
+            int(n_draft_max)
+            if n_draft_max is not None
+            else int(sampling_overrides.get("n_draft_max", self.sampling.n_draft_max))
+        )
 
         # Tokenize without BOS — the chat template may already include BOS
         # as a literal, and _generate_from_tokens applies its BOS rule based
@@ -1963,6 +2061,8 @@ class Llama:
             grammar=use_grammar,
             reset_kv_cache=reset_kv_cache,
             cache_prompt=cache_prompt,
+            speculative=speculative,
+            n_draft_max=effective_n_draft_max,
         )
 
         created = int(time.time())

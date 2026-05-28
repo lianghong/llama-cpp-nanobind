@@ -5,7 +5,10 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include "common.h"
+#include "llama-ext.h"
 #include "llama.h"
+#include "speculative.h"
 
 #include <algorithm>
 #include <atomic>
@@ -525,6 +528,7 @@ class Context {
     // Pre-allocate single-token batch for decode_one to avoid per-token
     // allocations
     single_batch_ = llama_batch_init(1, 0, 1);
+    multi_batch_ = llama_batch_init(kMultiBatchCapacity, 0, 1);
     llama_set_n_threads(ctx_, params_.raw.n_threads, params_.raw.n_threads_batch);
   }
 
@@ -535,6 +539,10 @@ class Context {
     if (single_batch_.token) {
       llama_batch_free(single_batch_);
       single_batch_ = {};
+    }
+    if (multi_batch_.token) {
+      llama_batch_free(multi_batch_);
+      multi_batch_ = {};
     }
     if (ctx_) {
       llama_free(ctx_);
@@ -580,6 +588,9 @@ class Context {
     // freed only in close()). Reinitialize only if it was freed.
     if (!single_batch_.token) {
       single_batch_ = llama_batch_init(1, 0, 1);
+    }
+    if (!multi_batch_.token) {
+      multi_batch_ = llama_batch_init(kMultiBatchCapacity, 0, 1);
     }
   }
 
@@ -627,6 +638,31 @@ class Context {
       throw std::runtime_error("llama_decode (single) failed with code " + std::to_string(rc));
     }
     ++cur_pos_;
+  }
+
+  // Decode multiple tokens into a single forward pass. All positions request
+  // logits (the speculative verify step needs them). Reuses multi_batch_.
+  int32_t decode_multi(const std::vector<llama_token>& tokens) {
+    check_ctx();
+    if (tokens.empty()) return 0;
+    if (static_cast<int32_t>(tokens.size()) > kMultiBatchCapacity) {
+      throw std::runtime_error("decode_multi: batch size " + std::to_string(tokens.size()) +
+                               " exceeds capacity " + std::to_string(kMultiBatchCapacity));
+    }
+    multi_batch_.n_tokens = static_cast<int32_t>(tokens.size());
+    for (int32_t i = 0; i < multi_batch_.n_tokens; ++i) {
+      multi_batch_.token[i] = tokens[static_cast<size_t>(i)];
+      multi_batch_.pos[i] = cur_pos_ + i;
+      multi_batch_.n_seq_id[i] = 1;
+      multi_batch_.seq_id[i][0] = 0;
+      multi_batch_.logits[i] = 1;
+    }
+    int32_t const rc = llama_decode(ctx_, multi_batch_);
+    if (rc < 0) {
+      throw std::runtime_error("llama_decode (multi) failed with code " + std::to_string(rc));
+    }
+    cur_pos_ += static_cast<int32_t>(tokens.size());
+    return multi_batch_.n_tokens;
   }
 
   std::vector<float> logits() const {
@@ -943,6 +979,8 @@ class Context {
     return llama_memory_can_shift(mem);
   }
 
+  bool supports_speculative_mtp() const { return params_.raw.ctx_type == LLAMA_CONTEXT_TYPE_MTP; }
+
   void set_embeddings(bool enabled) {
     check_ctx();
     llama_set_embeddings(ctx_, enabled);
@@ -959,6 +997,10 @@ class Context {
   ContextParams params_;
   int32_t cur_pos_ = 0;
   llama_batch single_batch_ = {};  // Reusable single-token batch for decode_one
+  // Reusable multi-token batch for the speculative draft-verify loop. Sized
+  // for `1 + max(n_draft_max)` = 1 + 8 = 9. n_tokens is set per call.
+  static constexpr int32_t kMultiBatchCapacity = 9;
+  llama_batch multi_batch_ = {};
 
   void check_ctx() const {
     if (!ctx_) {
@@ -1655,6 +1697,210 @@ int32_t generate_tokens_streaming(Context& ctx, SamplerChain& sampler,
   return static_cast<int32_t>(output.size());
 }
 
+// Speculative draft-MTP generation. Builds a `common_speculative_*` instance
+// over an MTP context, draws up to n_draft_max draft tokens per round, batches
+// them through `decode_multi`, and verifies via the existing sampler chain.
+//
+// The exit/cleanup contract mirrors generate_tokens_multi_stop: stop tokens
+// are NOT emitted to output, sampler accepts the full priming + verified
+// tokens for penalty tracking, KV cache is left in a state where the next
+// call can append.
+//
+// Streaming is signaled by a non-null callback. Returns the generated token
+// vector when callback is null; when callback is non-null, returns an empty
+// vector after the streaming loop ends (the consumer reads via the callback).
+std::vector<llama_token> generate_tokens_speculative_mtp(
+    Context& ctx, SamplerChain& sampler, GrammarSampler* grammar,
+    const std::vector<llama_token>& prompt, int32_t max_new_tokens, bool add_bos,
+    llama_token eos_token, int32_t n_draft_max,
+    const std::vector<std::vector<llama_token>>& stop_sequences,
+    const std::function<bool(llama_token)>* callback, int32_t skip_decode_prefix) {
+  std::vector<llama_token> output;
+  output.reserve(static_cast<size_t>(max_new_tokens));
+
+  // Prime KV (decodes prompt[skip_decode_prefix:]; mirror handled by Python)
+  std::vector<llama_token> const priming =
+      prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
+  if (priming.empty()) {
+    return output;
+  }
+
+  // Initialize the speculative context. Configure for draft-MTP only; the
+  // n_max field on common_params_speculative_draft drives the draft length.
+  common_params_speculative spec_params;
+  spec_params.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
+  spec_params.draft.n_max = n_draft_max;
+  spec_params.draft.ctx_tgt = ctx.raw();
+  spec_params.draft.ctx_dft = ctx.raw();  // self-speculative: target == draft
+
+  common_speculative_ptr spec(common_speculative_init(spec_params, /*n_seq=*/1));
+  if (!spec) {
+    throw std::runtime_error(
+        "common_speculative_init returned null (model has MTP graph but "
+        "draft-MTP impl is unavailable)");
+  }
+
+  // Engage pre-norm embedding extraction if the impl asks for it. RAII guard
+  // restores on all exits.
+  bool const need_pre_norm = common_speculative_need_embd_pre_norm(spec.get());
+  if (need_pre_norm) {
+    llama_set_embeddings_pre_norm(ctx.raw(), true, /*masked=*/true);
+  }
+  struct PreNormGuard {
+    llama_context* c;
+    bool engaged;
+    PreNormGuard(llama_context* ctx, bool eng) : c(ctx), engaged(eng) {}
+    ~PreNormGuard() {
+      if (engaged) llama_set_embeddings_pre_norm(c, false, false);
+    }
+    PreNormGuard(const PreNormGuard&) = delete;
+    PreNormGuard& operator=(const PreNormGuard&) = delete;
+    PreNormGuard(PreNormGuard&&) = delete;
+    PreNormGuard& operator=(PreNormGuard&&) = delete;
+  } const pn_guard{ctx.raw(), need_pre_norm};
+
+  // Mirror of the in-KV token sequence — common_speculative_draft reads it
+  // via params.prompt. We extend by verified tokens only (drafts that get
+  // rejected are trimmed from KV before next iteration).
+  std::vector<llama_token> mirror = priming;
+
+  const int32_t n_vocab = ctx.model().n_vocab();
+  std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
+
+  llama_token id_last = mirror.back();
+  int32_t n_emitted = 0;  // tokens added to `output` (counts toward max_new_tokens)
+
+  while (n_emitted < max_new_tokens) {
+    // --- step 1: draft ---
+    common_speculative_draft_params& dp =
+        common_speculative_get_draft_params(spec.get(), /*seq_id=*/0);
+    dp.drafting = true;
+    dp.n_max = n_draft_max;
+    dp.n_past = static_cast<llama_pos>(mirror.size());
+    dp.id_last = id_last;
+    dp.prompt = &mirror;
+
+    common_speculative_draft(spec.get());
+
+    // dp.result points to a vector of drafted ids (length 0..n_draft_max).
+    std::vector<llama_token> const drafted = dp.result ? *dp.result : std::vector<llama_token>{};
+    int32_t const k = static_cast<int32_t>(drafted.size());
+
+    // --- step 2: build [id_last, drafted_0, ..., drafted_{k-1}] and decode once ---
+    std::vector<llama_token> verify_batch;
+    verify_batch.reserve(static_cast<size_t>(k + 1));
+    verify_batch.push_back(id_last);
+    for (auto t : drafted) verify_batch.push_back(t);
+
+    // We've already decoded id_last (it's the last accepted token from the
+    // previous round, or the last priming token). To re-use its logits via
+    // the verify pass and have downstream KV positions for drafts laid out
+    // contiguously, we trim the KV at id_last's position and re-decode it
+    // alongside the drafts.
+    int32_t const id_last_pos = static_cast<int32_t>(mirror.size()) - 1;
+    if (!ctx.kv_cache_seq_rm(0, id_last_pos, -1)) {
+      throw std::runtime_error("speculative: kv_cache_seq_rm failed (memory_can_shift=false?)");
+    }
+    ctx.decode_multi(verify_batch);
+
+    // --- step 3: verify, position by position ---
+    int32_t accepted = 0;  // number of drafts accepted this round
+    llama_token corrected_id = LLAMA_TOKEN_NULL;
+    for (int32_t i = 0; i <= k; ++i) {
+      const float* logits = llama_get_logits_ith(ctx.raw(), i);
+      if (!logits) {
+        throw std::runtime_error("speculative: logits unavailable at offset " + std::to_string(i));
+      }
+      for (int32_t j = 0; j < n_vocab; ++j) {
+        candidates[static_cast<size_t>(j)] = {.id = j, .logit = logits[j], .p = 0.0F};
+      }
+      llama_token_data_array cur_p = {.data = candidates.data(),
+                                      .size = static_cast<size_t>(n_vocab),
+                                      .selected = -1,
+                                      .sorted = false};
+      if (grammar) llama_sampler_apply(grammar->get(), &cur_p);
+      llama_sampler_apply(sampler.get(), &cur_p);
+      llama_token verified = LLAMA_TOKEN_NULL;
+      if (cur_p.size > 0 && cur_p.selected >= 0 && std::cmp_less(cur_p.selected, cur_p.size)) {
+        verified = cur_p.data[cur_p.selected].id;
+      }
+      if (verified == LLAMA_TOKEN_NULL) {
+        throw std::runtime_error("speculative: sampler returned no token (grammar emptied set?)");
+      }
+
+      // Accept this token into sampler / grammar for penalty tracking.
+      llama_sampler_accept(sampler.get(), verified);
+      if (grammar) llama_sampler_accept(grammar->get(), verified);
+
+      if (i < k && verified == drafted[static_cast<size_t>(i)]) {
+        accepted++;
+        continue;
+      }
+      // Mismatch (or final position): record the corrected token and stop.
+      corrected_id = verified;
+      break;
+    }
+
+    // --- step 4: trim rejected drafts from KV (keep id_last + accepted drafts) ---
+    // The corrected token was sampled but not yet decoded. It enters KV as
+    // `id_last` of the next iteration when decode_multi runs.
+    int32_t const n_keep = id_last_pos + 1 /*id_last*/ + accepted;
+    int32_t const decoded_end = id_last_pos + 1 + k;  // one past last decoded pos
+    if (n_keep < decoded_end) {
+      if (!ctx.kv_cache_seq_rm(0, n_keep, -1)) {
+        throw std::runtime_error("speculative: kv_cache_seq_rm (reject trim) failed");
+      }
+    }
+
+    // --- step 5: tell the speculative context how many we accepted ---
+    common_speculative_accept(spec.get(), /*seq_id=*/0, static_cast<uint16_t>(accepted));
+
+    // --- step 6: emit accepted tokens then the corrected one ---
+    auto emit = [&](llama_token tok) -> bool {
+      // EOS / stop-token check (single-token).
+      if (tok == eos_token || tok == LLAMA_TOKEN_NULL) return false;
+      // Multi-token stop sequences: check after appending.
+      output.push_back(tok);
+      mirror.push_back(tok);
+      n_emitted++;
+      bool matched = false;
+      size_t remove_n = 0;
+      for (const auto& seq : stop_sequences) {
+        if (seq.empty() || seq.size() > output.size()) continue;
+        if (std::equal(seq.rbegin(), seq.rend(), output.rbegin())) {
+          matched = true;
+          remove_n = seq.size();
+          break;
+        }
+      }
+      if (matched) {
+        output.erase(output.end() - static_cast<std::ptrdiff_t>(remove_n), output.end());
+        // Mirror keeps the stop tokens because they're in KV; Python will
+        // handle the mirror invalidation/commit accordingly.
+        return false;
+      }
+      if (callback) {
+        nb::gil_scoped_acquire const gil;
+        if (!(*callback)(tok)) return false;
+      }
+      return n_emitted < max_new_tokens;
+    };
+
+    bool keep_going = true;
+    for (int32_t a = 0; a < accepted && keep_going; ++a) {
+      keep_going = emit(drafted[static_cast<size_t>(a)]);
+    }
+    if (keep_going) {
+      keep_going = emit(corrected_id);
+    }
+    if (!keep_going) break;
+
+    id_last = mirror.back();
+  }
+
+  return output;
+}
+
 }  // namespace
 
 // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
@@ -1882,6 +2128,10 @@ NB_MODULE(_llama, m) {
            nb::call_guard<nb::gil_scoped_release>(), "Process tokens through model")
       .def("decode_one", &Context::decode_one, "token"_a, nb::arg("request_logits") = true,
            nb::call_guard<nb::gil_scoped_release>())
+      .def("decode_multi", &Context::decode_multi, "tokens"_a,
+           nb::call_guard<nb::gil_scoped_release>(),
+           "Decode multiple tokens in a single forward pass; all positions "
+           "request logits.")
       .def("logits", &Context::logits, "Get logits from last decode")
       .def("embeddings", &Context::embeddings, "Get embeddings from last decode")
       .def("generate_next", &Context::generate_next, "sampler"_a, nb::arg("idx") = -1,
@@ -1922,6 +2172,8 @@ NB_MODULE(_llama, m) {
            "Get min position in sequence")
       .def("memory_can_shift", &Context::memory_can_shift,
            "Whether memory supports KV cache shifting")
+      .def("supports_speculative_mtp", &Context::supports_speculative_mtp,
+           "True iff the context was constructed with ctx_type=LLAMA_CONTEXT_TYPE_MTP")
       .def("set_embeddings", &Context::set_embeddings, "enabled"_a,
            "Enable or disable embedding extraction at runtime")
       .def("set_causal_attn", &Context::set_causal_attn, "enabled"_a,
@@ -1997,6 +2249,12 @@ NB_MODULE(_llama, m) {
         "skip_decode_prefix"_a = 0,
         "Streaming generation with callback. Callback receives token, returns "
         "False to stop.");
+
+  m.def("generate_tokens_speculative_mtp", &generate_tokens_speculative_mtp, "ctx"_a, "sampler"_a,
+        "grammar"_a.none(), "prompt"_a, "max_new_tokens"_a, "add_bos"_a, "eos_token"_a,
+        "n_draft_max"_a, "stop_sequences"_a = std::vector<std::vector<llama_token>>{},
+        "callback"_a.none(), "skip_decode_prefix"_a = 0, nb::call_guard<nb::gil_scoped_release>(),
+        "Speculative draft-MTP generation. grammar/callback may be None.");
 
   // Backend cleanup - call before interpreter shutdown to prevent segfault
   m.def(

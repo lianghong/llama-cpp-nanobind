@@ -267,8 +267,6 @@ k-quants (Q4_K, Q5_K, Q6_K, etc.) are NOT supported by llama.cpp for KV cache an
 
 #### MTP context type
 
-**Status:** Scaffold only. No throughput benefit in v0.4.x — the generate loop is per-token and there is no draft-verify consumer. See the warning below.
-
 Constants exported from `llama_cpp` (mirror `llama.h`'s `enum llama_context_type`):
 
 | Constant | Value | Notes |
@@ -277,8 +275,6 @@ Constants exported from `llama_cpp` (mirror `llama.h`'s `enum llama_context_type
 | `LLAMA_CONTEXT_TYPE_MTP` | 1 | Multi-Token Prediction graph variant |
 
 MTP requires a checkpoint that ships MTP layers — currently Qwen3.5 / Qwen3.5-MoE / Qwen3.6-MoE MTP variants (metadata `*.nextn_predict_layers > 0`, plus `blk.*.nextn.*` tensors). Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError` (`"context type MTP requested but model doesn't contain MTP layers"`). The generation API is otherwise unchanged — MTP is a graph-construction-time decision, not a runtime sampler.
-
-> **No acceleration consumer in this binding.** Setting `LLAMA_CONTEXT_TYPE_MTP` runs the MTP auxiliary heads on every step and discards their output, because the generate loop calls `llama_decode` with `n_tokens = 1` and never verifies a draft batch. Net effect today is **lower** throughput than the default. Acceleration of the kind unsloth's `--spec-type draft-mtp` advertises (1.4–2.2× dense, 1.15–1.2× MoE) lives in upstream `common/speculative.cpp` and depends on `llama-ext.h` staging APIs (`llama_set_embeddings_pre_norm`) and `libllama-common`, neither of which is exposed by the system-installed llama.cpp today. The wiring here is retained as a graph-variant probe and as the trigger point for when those APIs are promoted.
 
 ```python
 from llama_cpp import Llama, LlamaConfig, LLAMA_CONTEXT_TYPE_MTP
@@ -292,6 +288,54 @@ llm = Llama(
     ),
 )
 ```
+
+### Draft-MTP speculative decoding
+
+When the context is constructed with `ctx_type=LLAMA_CONTEXT_TYPE_MTP`,
+generation paths accept two new kwargs:
+
+- `speculative: bool = False` — opt-in flag. When `True`, the generate
+  loop runs the draft-MTP draft-verify path; when `False`, the per-token
+  path runs unchanged.
+- `n_draft_max: int | None = None` — max draft tokens per verify round.
+  Range `[1, 8]`. When `None`, falls back to `SamplingParams.n_draft_max`
+  (default `2`).
+
+```python
+from llama_cpp import LLAMA_CONTEXT_TYPE_MTP, Llama, LlamaConfig, SamplingParams
+
+llm = Llama(config=LlamaConfig(
+    model_path="models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+    ctx_type=LLAMA_CONTEXT_TYPE_MTP,
+))
+
+text = llm.generate(
+    "Explain MoE briefly.",
+    max_tokens=256,
+    sampling=SamplingParams(temperature=0.0),
+    speculative=True,
+    n_draft_max=2,
+)
+```
+
+**Validation errors** (raised by `_validate_speculative`):
+
+- `speculative=True` with `ctx_type != LLAMA_CONTEXT_TYPE_MTP` →
+  `ValidationError("speculative=True requires LlamaConfig(ctx_type=LLAMA_CONTEXT_TYPE_MTP); got ctx_type=...")`.
+- `speculative=True` with `embeddings=True` →
+  `ValidationError("speculative=True is incompatible with embeddings-only contexts")`.
+- `n_draft_max ∉ [1, 8]` → `ValidationError` from `SamplingParams.__post_init__`.
+- `speculative=True` with `logprobs=...` on `generate()` → `ValidationError`.
+
+**Reproducibility note:** the speculative path advances the dist sampler's
+RNG once per position rather than once per token, so seeded *non-greedy*
+runs may diverge from the per-token baseline trajectory (the distribution
+is the same; the realized sample sequence is not). Greedy
+(`temperature=0.0`) is bit-exact.
+
+**Hybrid models:** `memory_can_shift()` must be `True`. Models that
+report `False` (some Qwen3.5 hybrid configs, etc.) cannot run
+speculative; pass `speculative=False` for those.
 
 ### SamplingParams
 
