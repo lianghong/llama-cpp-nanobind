@@ -107,6 +107,15 @@ The script composes `CMAKE_ARGS` for you and respects `LLAMA_PREFIX`, `CMAKE_BUI
 
 **Recent Updates**:
 
+**v0.5.0** (2026-05-28) - Draft-MTP speculative decoding + sampling/grammar/state additions:
+- **Headline: draft-MTP speculative decoding.** `Llama.generate(...)`, `generate_stream(...)`, and `create_chat_completion(...)` accept `speculative=True` + `n_draft_max` (default 2, range [1, 8]). Dual-context architecture: user-facing context (DEFAULT graph) verifies; an internal draft context (MTP graph) is constructed against the same model on first speculative call and reused thereafter. Hybrid-attention MTP models (Qwen3.6-MoE) work via `n_rs_seq` recurrent-state rollback even though they report `memory_can_shift()=False`. Benchmarks (RTX 4090): Qwen3.6-27B dense **1.53×**, Qwen3.6-35B-A3B MoE **1.31×** — both inside or above unsloth's published bands. Greedy outputs are bit-exact vs. the per-token path. Tests in `tests/test_speculative_validation.py` (11 cases) and `tests/test_speculative_mtp.py` (7 end-to-end cases). Bench: `examples/bench_speculative.py`.
+- **Sampling additions**: `typical_p` (locally-typical sampling); `logit_bias` on `SamplingParams` (per-token additive bias, OpenAI-API parity); adaptive-p terminal sampler (`adaptive_p_target ≥ 0` replaces `dist`); MXFP4 / NVFP4 / Q1_0 ggml types for KV-cache experimentation.
+- **Lazy grammar** (trigger-activated GBNF): `LlamaGrammar.lazy(grammar_str, *, trigger_patterns=..., trigger_tokens=...)` produces a sampler that activates only on a trigger match. Useful for tool-calling and mixed free-form / structured output.
+- **On-device per-seq state**: `Context.save_seq_state_on_device(seq_id) -> bytes` / `load_seq_state_on_device(handle, dest_seq_id)` wrap `llama_state_seq_{get,set}_data_ext` with `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE`. Short-lived in-session handles for fast branching; durable snapshots still use `get_state()`.
+- **Prompt-prefix KV reuse** (`cache_prompt=True`, default): with `reset_kv_cache=False`, trims KV to the longest common prefix of the cached and new prompts and decodes only the divergent suffix. ~40× TTFT speedup on long chat histories. Falls back to clear+reprime on `memory_can_shift()=False` (correctness preserved).
+- **Quantized KV cache ergonomics**: `LlamaConfig` now rejects K-quants (Q4_K, …) and any non-{F32, F16, BF16} V-cache type unless `flash_attn=1`. Allowed K/V types are documented in `docs/API.md`.
+- **Full details**: `docs/CHANGELOG-v0.5.0.md`.
+
 **v0.4.0** (2026-05-03) - Multi-cycle review fixes + Unsloth-aligned presets:
 - **C++ correctness**: `set_state_data` safe no-copy use of nb::bytes buffer protocol (lifetime invariant documented); `prime_generation` single-pass BOS prepend; `LoraAdapter` validates parent model in `set_adapters_lora` (raises `ValueError` instead of segfault); `std::cmp_*` for signed/unsigned comparisons; const-correct logits pointers; `Model::read_c_string` template extracted for the four snprintf-style llama.cpp APIs.
 - **Streaming concurrency**: `generate_stream` acquires `self._lock` in the main thread before spawning the worker; worker detokenizes inline and pushes `bytes` to the consumer (no cross-thread `Model` access); on join timeout raises `LlamaError` and holds the lock to prevent data races with a zombie worker.
@@ -524,14 +533,14 @@ params = SamplingParams(adaptive_p_target=0.5, adaptive_p_decay=0.85)
 
 ### Draft-MTP Speculative Decoding
 
-Set `LlamaConfig(ctx_type=LLAMA_CONTEXT_TYPE_MTP)` on a Qwen3.6-MoE MTP checkpoint and pass `speculative=True` to `generate()` / `generate_stream()` / `create_chat_completion()` for ≥ 1.10× tok/s.
+Pass `speculative=True` to `generate()` / `generate_stream()` / `create_chat_completion()` on a Qwen3.6-MoE MTP checkpoint (or any model exposing an MTP graph variant) for **1.31× MoE / 1.53× dense** speedup on Qwen3.6.
 
 ```python
-from llama_cpp import Llama, LlamaConfig, SamplingParams, LLAMA_CONTEXT_TYPE_MTP
+from llama_cpp import Llama, LlamaConfig, SamplingParams
 
 llm = Llama(config=LlamaConfig(
     model_path="models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
-    ctx_type=LLAMA_CONTEXT_TYPE_MTP,
+    # ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT is the default — do NOT set MTP here.
 ))
 
 text = llm.generate(
@@ -543,9 +552,9 @@ text = llm.generate(
 )
 ```
 
-The draft-verify loop drafts up to `n_draft_max` tokens (default 2, range [1, 8]) per round, verifies via the standard sampler chain, and accepts matching drafts. Greedy outputs (`temperature=0.0`) are bit-exact with the per-token path. Requires `ctx_type=LLAMA_CONTEXT_TYPE_MTP` and `memory_can_shift()=True`.
+The architecture is **dual-context**: the user-facing context (DEFAULT graph) is the verifier; an internal draft context (MTP graph) is constructed against the same model on first speculative call. The draft-verify loop drafts up to `n_draft_max` tokens (default 2, range [1, 8]) per round, verifies via the standard sampler chain, and accepts matching drafts. Greedy outputs (`temperature=0.0`) are bit-exact with the per-token path.
 
-Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError`.
+**Preconditions:** model exposes an MTP graph (e.g. `*-MTP.gguf`); user-facing `ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT`; `embeddings=False`. Hybrid-attention MTP checkpoints (Qwen3.6-MoE) report `memory_can_shift()=False` on the user-facing context but speculative still works for them — drafts are trimmed via the draft context's recurrent-state rollback. See `examples/bench_speculative.py` for the benchmark harness.
 
 ### On-Device State Save/Load
 

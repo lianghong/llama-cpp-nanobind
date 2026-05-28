@@ -24,10 +24,10 @@ with Llama("model.gguf") as llm:
 
 **Methods**
 
-- `generate(prompt, max_tokens=128, sampling=None, stop=None, echo=False, logprobs=None, stream=False, seed=None, reset_kv_cache=True, cache_prompt=True)` → `str | Iterator[str] | dict`
-- `generate_stream(prompt, max_tokens=128, sampling=None, stop=None, seed=None, reset_kv_cache=True, cache_prompt=True)` → `Iterator[str]` – True streaming (yields as tokens decode)
+- `generate(prompt, max_tokens=128, sampling=None, stop=None, echo=False, logprobs=None, stream=False, seed=None, reset_kv_cache=True, cache_prompt=True, speculative=False, n_draft_max=None)` → `str | Iterator[str] | dict`
+- `generate_stream(prompt, max_tokens=128, sampling=None, stop=None, seed=None, reset_kv_cache=True, cache_prompt=True, speculative=False, n_draft_max=None)` → `Iterator[str]` – True streaming (yields as tokens decode)
 - `generate_async(...)` → Async version of generate
-- `create_chat_completion(messages, max_tokens=128, stream=False, stop=None, response_format=None, grammar=None, tools=None, tool_choice=None, reset_kv_cache=True, cache_prompt=True, **kwargs)` → Chat completion dict or stream
+- `create_chat_completion(messages, max_tokens=128, stream=False, stop=None, response_format=None, grammar=None, tools=None, tool_choice=None, reset_kv_cache=True, cache_prompt=True, speculative=False, n_draft_max=None, **kwargs)` → Chat completion dict or stream
 - `create_chat_completion_async(...)` → Async version
 - `create_embedding(input, model=None)` → OpenAI-compatible embedding API (requires `embeddings=True`)
 - `create_embedding_async(...)` → Async version
@@ -216,7 +216,7 @@ if __name__ == "__main__":
 | `use_mlock` | False | mlock model into RAM |
 | `offload_kqv` | True | Offload K/Q/V to GPU |
 | `flash_attn` | 1 | Flash-attention mode (required for quantized V cache) |
-| `ctx_type` | `LLAMA_CONTEXT_TYPE_DEFAULT` (0) | Context graph variant — set to `LLAMA_CONTEXT_TYPE_MTP` (1) on MTP-capable checkpoints. See "MTP context type" below |
+| `ctx_type` | `LLAMA_CONTEXT_TYPE_DEFAULT` (0) | Context graph variant. `LLAMA_CONTEXT_TYPE_MTP` (1) selects the MTP graph as the **user-facing** context (used by `tests/test_mtp.py`); for speculative decoding, leave at default — the MTP graph is constructed internally as the draft context. See "MTP context type" below |
 | `cache_type_k` | `GGML_TYPE_F16` (1) | ggml_type for K cache — see "Quantized KV cache" below |
 | `cache_type_v` | `GGML_TYPE_F16` (1) | ggml_type for V cache — see "Quantized KV cache" below |
 | `embeddings` | False | Enable embeddings (required for `embed()` and `create_embedding()`) |
@@ -276,6 +276,8 @@ Constants exported from `llama_cpp` (mirror `llama.h`'s `enum llama_context_type
 
 MTP requires a checkpoint that ships MTP layers — currently Qwen3.5 / Qwen3.5-MoE / Qwen3.6-MoE MTP variants (metadata `*.nextn_predict_layers > 0`, plus `blk.*.nextn.*` tensors). Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError` (`"context type MTP requested but model doesn't contain MTP layers"`). The generation API is otherwise unchanged — MTP is a graph-construction-time decision, not a runtime sampler.
 
+**For speculative decoding, leave `ctx_type` at the default.** The speculative path constructs the MTP graph internally as the *draft* context; setting `ctx_type=LLAMA_CONTEXT_TYPE_MTP` on the user-facing context and passing `speculative=True` is a precondition error (`_validate_speculative` raises `ValidationError`). The user-facing `LLAMA_CONTEXT_TYPE_MTP` setting exists for direct MTP-graph generation (no draft-verify loop).
+
 ```python
 from llama_cpp import Llama, LlamaConfig, LLAMA_CONTEXT_TYPE_MTP
 
@@ -291,8 +293,21 @@ llm = Llama(
 
 ### Draft-MTP speculative decoding
 
-When the context is constructed with `ctx_type=LLAMA_CONTEXT_TYPE_MTP`,
-generation paths accept two new kwargs:
+`generate()`, `generate_stream()`, and `create_chat_completion()` accept a
+`speculative=True` flag. When set, generation runs through a draft-verify
+loop that uses the model's own MTP graph to draft `n_draft_max` tokens
+per round and validates them with the standard sampler chain on the
+user-facing context.
+
+The architecture is **dual-context**: the user-facing context (`ctx_tgt`,
+`LLAMA_CONTEXT_TYPE_DEFAULT`) is the verifier, and an internal draft
+context (`ctx_dft`, `LLAMA_CONTEXT_TYPE_MTP`) is constructed against the
+same `llama_model` on the first speculative call and reused thereafter.
+Callers do **not** set `ctx_type=LLAMA_CONTEXT_TYPE_MTP` on the
+user-facing context — the MTP graph is used internally as the draft
+context only.
+
+Kwargs on the generation entry points:
 
 - `speculative: bool = False` — opt-in flag. When `True`, the generate
   loop runs the draft-MTP draft-verify path; when `False`, the per-token
@@ -302,11 +317,11 @@ generation paths accept two new kwargs:
   (default `2`).
 
 ```python
-from llama_cpp import LLAMA_CONTEXT_TYPE_MTP, Llama, LlamaConfig, SamplingParams
+from llama_cpp import Llama, LlamaConfig, SamplingParams
 
 llm = Llama(config=LlamaConfig(
     model_path="models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
-    ctx_type=LLAMA_CONTEXT_TYPE_MTP,
+    # ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT is the default — do NOT set MTP here.
 ))
 
 text = llm.generate(
@@ -318,24 +333,38 @@ text = llm.generate(
 )
 ```
 
-**Validation errors** (raised by `_validate_speculative`):
+**Preconditions** (validated by `_validate_speculative`, raised as
+`ValidationError`):
 
-- `speculative=True` with `ctx_type != LLAMA_CONTEXT_TYPE_MTP` →
-  `ValidationError("speculative=True requires LlamaConfig(ctx_type=LLAMA_CONTEXT_TYPE_MTP); got ctx_type=...")`.
-- `speculative=True` with `embeddings=True` →
-  `ValidationError("speculative=True is incompatible with embeddings-only contexts")`.
-- `n_draft_max ∉ [1, 8]` → `ValidationError` from `SamplingParams.__post_init__`.
-- `speculative=True` with `logprobs=...` on `generate()` → `ValidationError`.
+- User-facing `ctx_type` must be `LLAMA_CONTEXT_TYPE_DEFAULT`. The MTP
+  graph is the draft context, not the user-facing ctx.
+- The model must expose an MTP graph variant
+  (`Context.supports_speculative_mtp()` — checks for
+  `*.nextn_predict_layers > 0` metadata, e.g. Qwen3.6-MoE
+  `*-MTP.gguf` checkpoints).
+- `LlamaConfig.embeddings` must be `False`.
+- `n_draft_max` must be in `[1, 8]` (validated on `SamplingParams`).
+- `speculative=True` is incompatible with `logprobs=...` on `generate()`.
+
+**Hybrid-attention MTP checkpoints** (Qwen3.6-MoE) report
+`memory_can_shift()=False` on their user-facing context, but speculative
+**still works** for them: the loop trims rejected drafts via the draft
+context's `n_rs_seq` recurrent-state rollback, which is a different
+mechanism than plain `kv_cache_seq_rm`. `_validate_speculative`
+deliberately does not check `memory_can_shift()`.
 
 **Reproducibility note:** the speculative path advances the dist sampler's
-RNG once per position rather than once per token, so seeded *non-greedy*
-runs may diverge from the per-token baseline trajectory (the distribution
-is the same; the realized sample sequence is not). Greedy
+RNG once per *position* in each batch rather than once per *step*, so
+seeded *non-greedy* runs give matching distributions but differ in the
+realized sample sequence vs. the per-token baseline. Greedy
 (`temperature=0.0`) is bit-exact.
 
-**Hybrid models:** `memory_can_shift()` must be `True`. Models that
-report `False` (some Qwen3.5 hybrid configs, etc.) cannot run
-speculative; pass `speculative=False` for those.
+**Benchmarks** (RTX 4090, see `examples/bench_speculative.py`):
+
+| Model | Variant | Speedup | Unsloth band |
+|---|---|---|---|
+| Qwen3.6-27B-Q4_K_S | dense | 1.53× | 1.4–2.2× |
+| Qwen3.6-35B-A3B-UD-IQ4_XS | MoE (A3B) | 1.31× | 1.15–1.2× |
 
 ### SamplingParams
 
@@ -365,6 +394,7 @@ speculative; pass `speculative=False` for those.
 | `logit_bias` | None | `dict[int, float]` of per-token additive bias (applied first; `-inf` bans a token). Out-of-range token ids raise `IndexError` |
 | `adaptive_p_target` | -1.0 | Adaptive-p target (≥ 0 enables; replaces `dist`). Range `[0, 1]` |
 | `adaptive_p_decay` | 0.85 | Adaptive-p decay. Range `[0, 0.99]` |
+| `n_draft_max` | 2 | Max draft tokens per verify round when `speculative=True`. Range `[1, 8]` |
 
 Sampler chain ordering: logit_bias → DRY → penalties → top_n_sigma → top_k → top_p → min_p → typical_p → XTC → temp → dist (or adaptive_p when enabled)
 
