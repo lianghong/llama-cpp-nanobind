@@ -4,8 +4,6 @@
 # Date              : 2025-12-31
 # Last Modified Date: 2025-12-31
 # Last Modified By  : Lianghong Fei <feilianghong@gmail.com>
-import gc
-
 from llama_cpp import Llama
 from llama_cpp import LlamaConfig
 from llama_cpp import SamplingParams
@@ -14,7 +12,7 @@ from llama_cpp.unified import UnifiedLLM
 
 
 def llama_example() -> None:
-    model_path = "models/Qwen3-8B-Q6_K.gguf"
+    model_path = "models/Qwen3.5-4B-Q4_K_M.gguf"
 
     config = LlamaConfig(
         model_path=model_path,
@@ -35,12 +33,9 @@ def llama_example() -> None:
         text = llm.generate("Hello! Summarize the benefits of GPUs:", max_tokens=1024)
         print(f"\n*** llama_example output:\n {text}")
 
-    # Explicit cleanup of any remaining objects (optional but safe)
-    gc.collect()
-
 
 def unified_example() -> None:
-    model_path = "models/Qwen3-8B-Q6_K.gguf"
+    model_path = "models/Qwen3.5-4B-Q4_K_M.gguf"
 
     # Context manager guarantees close() even on error
     with UnifiedLLM(
@@ -55,9 +50,6 @@ def unified_example() -> None:
         llm.model_config.top_k = 20
         text = llm.generate("Hello! Summarize the benefits of CUDA:", max_tokens=1024)
         print(f"\n*** UnifiledLLM_example output:\n {text}")
-
-    # Explicit cleanup of any remaining objects (optional but safe)
-    gc.collect()
 
 
 def main() -> None:

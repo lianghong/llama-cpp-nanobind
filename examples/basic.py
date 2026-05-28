@@ -21,7 +21,7 @@ from llama_cpp import ModelLoadError
 from llama_cpp import SamplingParams
 
 
-DEFAULT_MODEL = "models/Qwen3-8B-Q6_K.gguf"
+DEFAULT_MODEL = "models/Qwen3.5-4B-Q4_K_M.gguf"
 
 # Matches <think>...</think> with optional whitespace after.
 # Also handles missing opening <think> (strips everything up to </think>).
@@ -38,6 +38,10 @@ class ThinkingFilter:
 
     Handles tags that arrive split across multiple chunks. Only text
     outside thinking blocks is emitted.
+
+    Tutorial reimplementation of what ``UnifiedLLM.sanitize_history`` and
+    ``generate_with_thinking`` do internally. Prefer those in real code;
+    this is kept here to show the underlying state machine.
     """
 
     def __init__(self) -> None:

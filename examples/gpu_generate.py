@@ -8,7 +8,7 @@ from llama_cpp import LlamaConfig
 from llama_cpp import SamplingParams
 
 
-MODEL = "models/Qwen3-8B-Q6_K.gguf"
+MODEL = "models/Qwen3.5-4B-Q4_K_M.gguf"
 
 
 def main() -> None:

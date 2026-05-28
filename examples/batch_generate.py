@@ -56,7 +56,7 @@ def main() -> None:
         MODEL_PATH = args.model
     else:
         models = list_models()
-        MODEL_PATH = str(models[0]) if models else "models/Qwen3-8B-Q6_K.gguf"
+        MODEL_PATH = str(models[0]) if models else "models/Qwen3.5-4B-Q4_K_M.gguf"
 
     # Check if model exists
     if not Path(MODEL_PATH).exists():
@@ -164,7 +164,7 @@ def main() -> None:
         total_tokens = 0
         total_time = 0.0
 
-        def format_prompt(user_prompt: str, system_prompt: str = None) -> str:
+        def format_prompt(user_prompt: str, system_prompt: str | None = None) -> str:
             """Format prompt with system message and chat template."""
             msgs = []
             if system_prompt:

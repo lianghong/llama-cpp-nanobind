@@ -10,11 +10,11 @@ Translates text files into a target language (default: Simplified Chinese)
 with automatic model family detection and optimized settings.
 
 Usage:
-    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --ctx 8192
-    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -t Japanese
-    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --thinking
-    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf -o out.txt  # specific output path
-    python examples/translate.py --model models/Qwen3-8B-Q6_K.gguf --no-save  # console only
+    python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --ctx 8192
+    python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf -t Japanese
+    python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --thinking
+    python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf -o out.txt  # specific output path
+    python examples/translate.py --model models/Qwen3.5-4B-Q4_K_M.gguf --no-save  # console only
 """
 
 import argparse
@@ -349,4 +349,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    exit(main())
+    import sys
+
+    sys.exit(main())

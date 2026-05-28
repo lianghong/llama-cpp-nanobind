@@ -836,7 +836,7 @@ class UnifiedLLM:
         model_config: Configuration for detected model family.
 
     Example:
-        >>> llm = UnifiedLLM("models/Qwen3-8B-Q6_K.gguf")
+        >>> llm = UnifiedLLM("models/Qwen3.5-4B-Q4_K_M.gguf")
         >>> print(llm.generate("Hello"))
 
         >>> # With thinking mode

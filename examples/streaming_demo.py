@@ -12,7 +12,7 @@ import time
 from llama_cpp import Llama
 
 
-MODEL_PATH = "models/Qwen3-8B-Q6_K.gguf"
+MODEL_PATH = "models/Qwen3.5-4B-Q4_K_M.gguf"
 
 
 def demo_buffered_streaming():
@@ -40,7 +40,6 @@ def demo_buffered_streaming():
                 )
                 print("Output: ", end="", flush=True)
             print(chunk, end="", flush=True)
-            time.sleep(0.01)  # Simulate processing time
 
         end_time = time.time()
 
@@ -81,7 +80,6 @@ def demo_true_streaming():
                 print("Output: ", end="", flush=True)
             chunk_times.append(current_time - start_time)
             print(chunk, end="", flush=True)
-            time.sleep(0.01)  # Simulate processing time
 
         end_time = time.time()
 

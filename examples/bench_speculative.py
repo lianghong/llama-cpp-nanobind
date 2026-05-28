@@ -6,11 +6,17 @@ Usage:
 
 Reports tok/s for each path and the speedup ratio. Acceptance floor for
 the implementation is >= 1.10x.
+
+Each path is run N times and the **median** wall-clock is reported, so a
+single warm-cache spike doesn't skew the result. The speculative path is
+also swept across a few ``n_draft_max`` values so you can see where the
+sweet spot sits for your model + hardware.
 """
 
 from __future__ import annotations
 
 import os
+import statistics
 import time
 
 from llama_cpp import (
@@ -25,6 +31,8 @@ PROMPT = (
     "balance throughput and parameter count."
 )
 MAX_TOKENS = 256
+RUNS = 3
+DRAFT_MAX_SWEEP = (2, 3, 4, 6)
 
 
 def _llm() -> Llama:
@@ -41,10 +49,11 @@ def _llm() -> Llama:
     return Llama(path, config=cfg)
 
 
-def _time_run(llm: Llama, *, speculative: bool) -> tuple[int, float]:
-    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=2)
-    # Warmup
-    llm.generate("warmup", max_tokens=4, sampling=sp, speculative=speculative)
+def _time_run(llm: Llama, *, speculative: bool, n_draft_max: int = 2) -> tuple[int, float]:
+    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=n_draft_max)
+    # Reset KV + perf counters between runs so each run starts cold-ish.
+    llm.reset()
+    llm.perf_reset()
     t0 = time.perf_counter()
     out = llm.generate(
         PROMPT,
@@ -53,24 +62,42 @@ def _time_run(llm: Llama, *, speculative: bool) -> tuple[int, float]:
         speculative=speculative,
     )
     elapsed = time.perf_counter() - t0
-    assert isinstance(out, str)
+    if not isinstance(out, str):
+        raise RuntimeError(f"expected str from generate(), got {type(out).__name__}")
     n_tok = len(llm.tokenize(out, add_special=False))
     return n_tok, elapsed
+
+
+def _median_tps(
+    llm: Llama, *, speculative: bool, n_draft_max: int = 2, runs: int = RUNS
+) -> tuple[int, float, float]:
+    """Return (tokens, median_elapsed, median_tps)."""
+    results = [
+        _time_run(llm, speculative=speculative, n_draft_max=n_draft_max)
+        for _ in range(runs)
+    ]
+    n_tok = results[-1][0]  # token count is deterministic at temperature=0
+    median_elapsed = statistics.median(t for _, t in results)
+    return n_tok, median_elapsed, n_tok / median_elapsed
 
 
 def main() -> None:
     llm = _llm()
     try:
-        n_base, t_base = _time_run(llm, speculative=False)
-        n_spec, t_spec = _time_run(llm, speculative=True)
+        # Warmup once to pay JIT/CUDA-graph cost outside timed runs.
+        llm.generate("warmup", max_tokens=4, sampling=SamplingParams(seed=0, temperature=0.0))
+
+        n_base, t_base, base_tps = _median_tps(llm, speculative=False)
+        print(f"baseline:    {n_base:4d} tok in {t_base:6.2f}s = {base_tps:6.1f} tok/s  (median of {RUNS})")
+
+        for nd in DRAFT_MAX_SWEEP:
+            n_spec, t_spec, spec_tps = _median_tps(llm, speculative=True, n_draft_max=nd)
+            print(
+                f"spec n_dft={nd}: {n_spec:4d} tok in {t_spec:6.2f}s = {spec_tps:6.1f} tok/s  "
+                f"(speedup {spec_tps / base_tps:.2f}x; floor 1.10x)"
+            )
     finally:
         llm.close()
-
-    base_tps = n_base / t_base
-    spec_tps = n_spec / t_spec
-    print(f"baseline:    {n_base:4d} tok in {t_base:6.2f}s = {base_tps:6.1f} tok/s")
-    print(f"speculative: {n_spec:4d} tok in {t_spec:6.2f}s = {spec_tps:6.1f} tok/s")
-    print(f"speedup:     {spec_tps / base_tps:.2f}x  (floor: 1.10x)")
 
 
 if __name__ == "__main__":

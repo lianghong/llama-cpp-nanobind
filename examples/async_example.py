@@ -10,13 +10,13 @@ from llama_cpp import LlamaConfig
 
 async def main() -> None:
     config = LlamaConfig(
-        model_path="models/Qwen3-8B-Q6_K.gguf",
+        model_path="models/Qwen3.5-4B-Q4_K_M.gguf",
         n_ctx=4096,
         verbose=True,
     )
 
     # Use context manager for automatic cleanup
-    with Llama("models/Qwen3-8B-Q6_K.gguf", config=config) as llm:
+    with Llama("models/Qwen3.5-4B-Q4_K_M.gguf", config=config) as llm:
         print("=== Async Generation ===")
         start = time.perf_counter()
 

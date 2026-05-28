@@ -7,9 +7,9 @@ from llama_cpp import LlamaConfig
 
 def main() -> None:
     # Initialize model with context manager for proper cleanup
-    config = LlamaConfig(model_path="models/Qwen3-8B-Q6_K.gguf", verbose=True)
+    config = LlamaConfig(model_path="models/Qwen3.5-4B-Q4_K_M.gguf", verbose=True)
 
-    with Llama("models/Qwen3-8B-Q6_K.gguf", config=config) as llm:
+    with Llama("models/Qwen3.5-4B-Q4_K_M.gguf", config=config) as llm:
         print("=== Stop at specific word ===")
         text = llm.generate(
             "List colors: red, blue, green,",

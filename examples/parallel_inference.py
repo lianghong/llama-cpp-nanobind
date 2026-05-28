@@ -17,7 +17,7 @@ from llama_cpp import LlamaPool
 
 
 # Model path - adjust to your model location
-MODEL_PATH = "models/Qwen3-8B-Q6_K.gguf"
+MODEL_PATH = "models/Qwen3.5-4B-Q4_K_M.gguf"
 
 # Test queries
 QUERIES = [
@@ -130,7 +130,8 @@ async def chat_completion_example():
     print("PARALLEL CHAT COMPLETIONS")
     print("=" * 60)
 
-    config = LlamaConfig(model_path=MODEL_PATH, n_ctx=2048, chat_format="gemma")
+    # No chat_format override — let the loader pick from the GGUF metadata.
+    config = LlamaConfig(model_path=MODEL_PATH, n_ctx=2048)
 
     async with LlamaPool(MODEL_PATH, pool_size=3, config=config) as pool:
         conversations = [
@@ -221,11 +222,14 @@ async def main():
         f"Time saved:      {serial_time - parallel_time:.2f}s ({(1 - parallel_time / serial_time) * 100:.1f}%)\n"
     )
 
-    # Verify results match
-    if serial_results == parallel_results:
-        print("✓ Results are identical (correctness verified)\n")
+    # Note: outputs from default sampling are non-deterministic (different
+    # RNG state per instance and no fixed seed), so a value-equality check
+    # would essentially always fail. Compare lengths instead as a sanity
+    # check that both paths produced something for every prompt.
+    if len(serial_results) == len(parallel_results) == len(QUERIES):
+        print("✓ Both paths returned one result per prompt\n")
     else:
-        print("Note: Results may differ due to parallel execution order\n")
+        print("⚠ Result counts differ — investigate before trusting timings\n")
 
     # Show concurrent request handling
     await demonstrate_concurrent_requests()
