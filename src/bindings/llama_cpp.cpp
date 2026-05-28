@@ -1372,6 +1372,10 @@ std::vector<TokenProb> generate_tokens_with_details(
   const int32_t n_vocab = ctx.model().n_vocab();
   // Allocate once outside the loop to avoid per-token heap allocation
   std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
+  // Index buffer for top-logprobs partial_sort, hoisted out of the per-token
+  // loop. Sized to n_vocab (cur_p.size never exceeds it); only the first
+  // cur_p.size slots are reinitialized via std::iota each iteration.
+  std::vector<size_t> idx(top_logprobs > 0 ? static_cast<size_t>(n_vocab) : 0);
 
   for (int i = 0; i < max_new_tokens; ++i) {
     const float* logits = llama_get_logits(ctx.raw());
@@ -1437,11 +1441,13 @@ std::vector<TokenProb> generate_tokens_with_details(
     tp.logprob = static_cast<float>(static_cast<double>(token_logit) - lse);
     if (top_logprobs > 0) {
       std::vector<std::pair<llama_token, float>> top_lp;
-      std::vector<size_t> idx(cur_p.size);
-      std::iota(idx.begin(), idx.end(), 0);
+      // Reinitialize only the live prefix [0, cur_p.size) of the hoisted idx
+      // buffer. cur_p.size <= n_vocab, so the buffer is always large enough.
+      auto const idx_end = idx.begin() + static_cast<std::ptrdiff_t>(cur_p.size);
+      std::iota(idx.begin(), idx_end, 0);
       size_t const n = std::min(static_cast<size_t>(top_logprobs), cur_p.size);
       std::partial_sort(
-          idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(n), idx.end(),
+          idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(n), idx_end,
           [&](size_t a, size_t b) { return cur_p.data[a].logit > cur_p.data[b].logit; });
       for (size_t j = 0; j < n; ++j) {
         float const lp = static_cast<float>(double(cur_p.data[idx[j]].logit) - lse);

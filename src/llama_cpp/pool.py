@@ -21,7 +21,7 @@ Example:
 """
 
 import asyncio
-import copy
+from dataclasses import replace as dc_replace
 import logging
 import threading
 from typing import Any, cast
@@ -110,7 +110,7 @@ class LlamaPool:
         self.instances: list[Llama] = []
         for i in range(pool_size):
             logging.debug("Loading instance %d/%d...", i + 1, pool_size)
-            instance = Llama(model_path, config=copy.copy(self.config))
+            instance = Llama(model_path, config=dc_replace(self.config))
             self.instances.append(instance)
         logging.info("LlamaPool initialized with %d instances", pool_size)
 

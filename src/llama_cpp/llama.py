@@ -1282,8 +1282,10 @@ class Llama:
             )
             return result
         except Exception as e:
-            # Fallback to simple format — log so users can diagnose template issues
-            logging.debug(
+            # Fallback to simple format. WARNING (not DEBUG) so misconfigured
+            # chat templates surface in production logs at default verbosity:
+            # silent fallback masks output-quality regressions for operators.
+            logging.warning(
                 "chat_apply_template failed (format=%r): %s; using simple format",
                 chat_format,
                 e,
