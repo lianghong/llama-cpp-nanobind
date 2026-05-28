@@ -32,6 +32,19 @@ using namespace nb::literals;
 
 namespace {
 
+// RAII guard for llama_batch — frees the batch on scope exit regardless of
+// how the scope exits (normal return, throw, early break). Non-copyable and
+// non-movable: each guard owns exactly one llama_batch by reference.
+struct BatchGuard {
+  llama_batch& b;
+  explicit BatchGuard(llama_batch& batch) : b(batch) {}
+  ~BatchGuard() { llama_batch_free(b); }
+  BatchGuard(const BatchGuard&) = delete;
+  BatchGuard& operator=(const BatchGuard&) = delete;
+  BatchGuard(BatchGuard&&) = delete;
+  BatchGuard& operator=(BatchGuard&&) = delete;
+};
+
 struct ModelParams {
   llama_model_params raw;
   ModelParams() : raw(llama_model_default_params()) {}
@@ -655,16 +668,7 @@ class Context {
     check_ctx();
     if (tokens.empty()) return;
     llama_batch batch = llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
-    // RAII guard ensures batch is freed regardless of how scope exits
-    struct BatchGuard {
-      llama_batch& b;
-      explicit BatchGuard(llama_batch& batch) : b(batch) {}
-      ~BatchGuard() { llama_batch_free(b); }
-      BatchGuard(const BatchGuard&) = delete;
-      BatchGuard& operator=(const BatchGuard&) = delete;
-      BatchGuard(BatchGuard&&) = delete;
-      BatchGuard& operator=(BatchGuard&&) = delete;
-    } const guard(batch);
+    BatchGuard const guard(batch);
 
     batch.n_tokens = static_cast<int32_t>(tokens.size());
     for (int32_t i = 0; i < batch.n_tokens; ++i) {
@@ -1885,15 +1889,7 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
   if (skip < priming_size) {
     const int32_t n_prime = priming_size - skip;
     llama_batch prime_batch = llama_batch_init(n_prime, 0, 1);
-    struct BatchGuard {
-      llama_batch& b;
-      explicit BatchGuard(llama_batch& batch) : b(batch) {}
-      ~BatchGuard() { llama_batch_free(b); }
-      BatchGuard(const BatchGuard&) = delete;
-      BatchGuard& operator=(const BatchGuard&) = delete;
-      BatchGuard(BatchGuard&&) = delete;
-      BatchGuard& operator=(BatchGuard&&) = delete;
-    } const guard(prime_batch);
+    BatchGuard const guard(prime_batch);
 
     prime_batch.n_tokens = n_prime;
     const int32_t pos_start = ctx.cur_pos();
@@ -1968,15 +1964,7 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     // on ctx_tgt (request logits at every position), then mirror into ctx_dft
     // via common_speculative_process to keep the recurrent state aligned.
     llama_batch verify_batch = llama_batch_init(k + 1, 0, 1);
-    struct VerifyBatchGuard {
-      llama_batch& b;
-      explicit VerifyBatchGuard(llama_batch& batch) : b(batch) {}
-      ~VerifyBatchGuard() { llama_batch_free(b); }
-      VerifyBatchGuard(const VerifyBatchGuard&) = delete;
-      VerifyBatchGuard& operator=(const VerifyBatchGuard&) = delete;
-      VerifyBatchGuard(VerifyBatchGuard&&) = delete;
-      VerifyBatchGuard& operator=(VerifyBatchGuard&&) = delete;
-    } const vguard(verify_batch);
+    BatchGuard const vguard(verify_batch);
 
     verify_batch.n_tokens = k + 1;
     verify_batch.token[0] = id_last;
