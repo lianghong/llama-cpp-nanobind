@@ -31,7 +31,7 @@ else()
   endif()
 endif()
 
-project(llama_cpp_nanobind VERSION 0.4.0 LANGUAGES C CXX)
+project(llama_cpp_nanobind VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_C_STANDARD 11)
