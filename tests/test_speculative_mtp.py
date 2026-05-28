@@ -11,7 +11,6 @@ import os
 import pytest
 
 from llama_cpp import (
-    LLAMA_CONTEXT_TYPE_MTP,
     Llama,
     LlamaConfig,
     SamplingParams,
@@ -36,7 +35,6 @@ def _make_mtp_llm(**overrides):
         model_path=MTP_MODEL_PATH,
         n_ctx=512,
         n_gpu_layers=-1,
-        ctx_type=LLAMA_CONTEXT_TYPE_MTP,
         verbose=False,
         **overrides,
     )
@@ -169,9 +167,13 @@ def test_speculative_with_cache_prompt():
 
 @requires_mtp_model
 def test_speculative_n_draft_max_bounds():
-    """Both n_draft_max=1 and n_draft_max=8 must work end-to-end."""
+    """Both n_draft_max=1 and n_draft_max=8 must work end-to-end.
+
+    n_rs_seq must be >= n_draft_max so the recurrent draft context can
+    roll back rejected drafts on hybrid attention models.
+    """
     for n in (1, 8):
-        llm = _make_mtp_llm()
+        llm = _make_mtp_llm(n_rs_seq=max(2, n))
         try:
             out = llm.generate(
                 "Hi",

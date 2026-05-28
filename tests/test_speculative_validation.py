@@ -54,11 +54,13 @@ def test_n_draft_max_one_accepted():
 
 
 @requires_model
-def test_validate_speculative_default_ctx_raises():
+def test_validate_speculative_non_mtp_model_raises():
+    """A non-MTP checkpoint must be rejected by speculative=True even when
+    the user-facing ctx_type is the (correct) default."""
     cfg = LlamaConfig(model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False)
     llm = Llama(MODEL_PATH, config=cfg)
     try:
-        with pytest.raises(ValidationError, match="ctx_type=LLAMA_CONTEXT_TYPE_MTP"):
+        with pytest.raises(ValidationError, match="MTP graph"):
             llm._validate_speculative(speculative=True)
     finally:
         llm.close()

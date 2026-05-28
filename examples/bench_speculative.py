@@ -14,7 +14,6 @@ import os
 import time
 
 from llama_cpp import (
-    LLAMA_CONTEXT_TYPE_MTP,
     Llama,
     LlamaConfig,
     SamplingParams,
@@ -37,7 +36,6 @@ def _llm() -> Llama:
         model_path=path,
         n_ctx=2048,
         n_gpu_layers=-1,
-        ctx_type=LLAMA_CONTEXT_TYPE_MTP,
         verbose=False,
     )
     return Llama(path, config=cfg)

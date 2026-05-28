@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -544,6 +545,10 @@ class Context {
       llama_batch_free(multi_batch_);
       multi_batch_ = {};
     }
+    if (ctx_dft_) {
+      llama_free(ctx_dft_);
+      ctx_dft_ = nullptr;
+    }
     if (ctx_) {
       llama_free(ctx_);
       ctx_ = nullptr;
@@ -574,6 +579,10 @@ class Context {
     if (!model_) {
       throw std::runtime_error("context has been closed");
     }
+    if (ctx_dft_) {
+      llama_free(ctx_dft_);
+      ctx_dft_ = nullptr;
+    }
     if (ctx_) {
       llama_free(ctx_);
       ctx_ = nullptr;  // Null immediately after free to prevent double-free
@@ -593,6 +602,43 @@ class Context {
       multi_batch_ = llama_batch_init(kMultiBatchCapacity, 0, 1);
     }
   }
+
+  // Lazily create the MTP draft context against the same model. Idempotent:
+  // returns the existing ctx_dft_ on subsequent calls. Throws if the model
+  // doesn't expose an MTP graph variant. The draft context is freed by
+  // close() / reset() / destructor.
+  llama_context* ensure_mtp_draft_context() {
+    check_ctx();
+    if (ctx_dft_ != nullptr) {
+      return ctx_dft_;
+    }
+    if (!model_) {
+      throw std::runtime_error("context has been closed");
+    }
+    llama_context_params dparams = params_.raw;
+    dparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+    dparams.embeddings = false;
+    // The draft context must support recurrent-state rollback so we can trim
+    // rejected drafts from its KV. Mirror the target's n_rs_seq (set on the
+    // user-facing context via LlamaConfig.n_rs_seq); if it's zero (the
+    // pre-MTP default), bump to 2 to match the default SamplingParams.n_draft_max.
+    if (dparams.n_rs_seq < 2) {
+      dparams.n_rs_seq = 2;
+    }
+    ctx_dft_ = llama_init_from_model(model_->get(), dparams);
+    if (!ctx_dft_) {
+      throw std::runtime_error(
+          "failed to create MTP draft context (model has no MTP graph variant?)");
+    }
+    llama_set_n_threads(ctx_dft_, dparams.n_threads, dparams.n_threads_batch);
+    return ctx_dft_;
+  }
+
+  llama_context* mtp_draft_context_or_null() const { return ctx_dft_; }
+
+  int32_t cur_pos() const { return cur_pos_; }
+
+  void advance_cur_pos(int32_t n) { cur_pos_ += n; }
 
   void decode(const std::vector<llama_token>& tokens, bool return_logits = true) {
     check_ctx();
@@ -979,7 +1025,19 @@ class Context {
     return llama_memory_can_shift(mem);
   }
 
-  bool supports_speculative_mtp() const { return params_.raw.ctx_type == LLAMA_CONTEXT_TYPE_MTP; }
+  // True iff the model exposes an MTP graph variant. Probes by trying to
+  // create the draft context lazily (cached on success). Returns false on
+  // any failure so the predicate is safe to call from precondition checks.
+  bool supports_speculative_mtp() {
+    if (!ctx_ || !model_) return false;
+    if (ctx_dft_ != nullptr) return true;
+    try {
+      ensure_mtp_draft_context();
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
 
   void set_embeddings(bool enabled) {
     check_ctx();
@@ -994,6 +1052,9 @@ class Context {
  private:
   Model* model_ = nullptr;
   llama_context* ctx_ = nullptr;
+  // Lazy MTP draft context — same model, ctx_type=LLAMA_CONTEXT_TYPE_MTP.
+  // Created on first speculative call, freed by close()/reset()/dtor.
+  llama_context* ctx_dft_ = nullptr;
   ContextParams params_;
   int32_t cur_pos_ = 0;
   llama_batch single_batch_ = {};  // Reusable single-token batch for decode_one
@@ -1714,24 +1775,29 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     const std::vector<llama_token>& prompt, int32_t max_new_tokens, bool add_bos,
     llama_token eos_token, int32_t n_draft_max,
     const std::vector<std::vector<llama_token>>& stop_sequences,
-    const std::function<bool(llama_token)>* callback, int32_t skip_decode_prefix) {
+    std::function<bool(llama_token)> callback, int32_t skip_decode_prefix) {
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
-  // Prime KV (decodes prompt[skip_decode_prefix:]; mirror handled by Python)
-  std::vector<llama_token> const priming =
-      prime_generation(ctx, sampler, prompt, add_bos, skip_decode_prefix);
-  if (priming.empty()) {
-    return output;
-  }
+  // === Architectural note ============================================
+  // draft-MTP requires two llama_contexts against the same model:
+  //   ctx_tgt (DEFAULT graph): generates verified logits
+  //   ctx_dft (MTP graph):     produces draft tokens
+  // The user-facing Context owns ctx_tgt; ctx_dft is created lazily on
+  // first speculative call. The draft impl mirrors prompt/verify batches
+  // into ctx_dft via common_speculative_process(); we trim ctx_dft's KV
+  // in lockstep with ctx_tgt's so the recurrent state stays aligned.
+  // ===================================================================
 
-  // Initialize the speculative context. Configure for draft-MTP only; the
-  // n_max field on common_params_speculative_draft drives the draft length.
+  llama_context* const ctx_tgt = ctx.raw();
+  llama_context* const ctx_dft = ctx.ensure_mtp_draft_context();
+  llama_memory_t const mem_dft = llama_get_memory(ctx_dft);
+
   common_params_speculative spec_params;
   spec_params.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
   spec_params.draft.n_max = n_draft_max;
-  spec_params.draft.ctx_tgt = ctx.raw();
-  spec_params.draft.ctx_dft = ctx.raw();  // self-speculative: target == draft
+  spec_params.draft.ctx_tgt = ctx_tgt;
+  spec_params.draft.ctx_dft = ctx_dft;
 
   common_speculative_ptr spec(common_speculative_init(spec_params, /*n_seq=*/1));
   if (!spec) {
@@ -1740,29 +1806,83 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
         "draft-MTP impl is unavailable)");
   }
 
-  // Engage pre-norm embedding extraction if the impl asks for it. RAII guard
-  // restores on all exits.
-  bool const need_pre_norm = common_speculative_need_embd_pre_norm(spec.get());
-  if (need_pre_norm) {
-    llama_set_embeddings_pre_norm(ctx.raw(), true, /*masked=*/true);
-  }
+  // The draft-MTP ctor already calls llama_set_embeddings_pre_norm() on both
+  // contexts. We RAII-guard them off on exit so subsequent non-speculative
+  // generation on ctx_tgt isn't perturbed.
   struct PreNormGuard {
-    llama_context* c;
-    bool engaged;
-    PreNormGuard(llama_context* ctx, bool eng) : c(ctx), engaged(eng) {}
+    llama_context* tgt;
+    llama_context* dft;
+    PreNormGuard(llama_context* t, llama_context* d) : tgt(t), dft(d) {}
     ~PreNormGuard() {
-      if (engaged) llama_set_embeddings_pre_norm(c, false, false);
+      if (tgt) llama_set_embeddings_pre_norm(tgt, false, false);
+      if (dft) llama_set_embeddings_pre_norm(dft, false, false);
     }
     PreNormGuard(const PreNormGuard&) = delete;
     PreNormGuard& operator=(const PreNormGuard&) = delete;
     PreNormGuard(PreNormGuard&&) = delete;
     PreNormGuard& operator=(PreNormGuard&&) = delete;
-  } const pn_guard{ctx.raw(), need_pre_norm};
+  } const pn_guard{ctx_tgt, ctx_dft};
 
-  // Mirror of the in-KV token sequence — common_speculative_draft reads it
-  // via params.prompt. We extend by verified tokens only (drafts that get
-  // rejected are trimmed from KV before next iteration).
+  // --- Build the priming sequence and accept into sampler --------------
+  const bool need_bos = add_bos && (prompt.empty() || prompt.front() != ctx.model().bos());
+  std::vector<llama_token> priming;
+  priming.reserve(prompt.size() + (need_bos ? 1 : 0));
+  if (need_bos) priming.push_back(ctx.model().bos());
+  priming.insert(priming.end(), prompt.begin(), prompt.end());
+  if (priming.empty()) return output;
+
+  for (llama_token const t : priming) {
+    llama_sampler_accept(sampler.get(), t);
+  }
+
+  // --- Decode the priming suffix (skip_decode_prefix already in KV) ---
+  // We must mirror to ctx_dft via common_speculative_process(), so we can't
+  // use prime_generation() — build the batch ourselves, decode on ctx_tgt,
+  // then hand the batch to the impl.
+  const int32_t skip = std::max<int32_t>(0, skip_decode_prefix);
+  const auto priming_size = static_cast<int32_t>(priming.size());
+  if (skip < priming_size) {
+    const int32_t n_prime = priming_size - skip;
+    llama_batch prime_batch = llama_batch_init(n_prime, 0, 1);
+    struct BatchGuard {
+      llama_batch& b;
+      explicit BatchGuard(llama_batch& batch) : b(batch) {}
+      ~BatchGuard() { llama_batch_free(b); }
+      BatchGuard(const BatchGuard&) = delete;
+      BatchGuard& operator=(const BatchGuard&) = delete;
+      BatchGuard(BatchGuard&&) = delete;
+      BatchGuard& operator=(BatchGuard&&) = delete;
+    } const guard(prime_batch);
+
+    prime_batch.n_tokens = n_prime;
+    const int32_t pos_start = ctx.cur_pos();
+    for (int32_t i = 0; i < n_prime; ++i) {
+      prime_batch.token[i] = priming[static_cast<size_t>(skip + i)];
+      prime_batch.pos[i] = pos_start + i;
+      prime_batch.n_seq_id[i] = 1;
+      prime_batch.seq_id[i][0] = 0;
+      prime_batch.logits[i] = (i == n_prime - 1) ? 1 : 0;
+    }
+    int32_t const rc = llama_decode(ctx_tgt, prime_batch);
+    if (rc < 0) {
+      throw std::runtime_error("speculative: prompt llama_decode (tgt) failed code " +
+                               std::to_string(rc));
+    }
+    ctx.advance_cur_pos(n_prime);
+
+    if (!common_speculative_process(spec.get(), prime_batch)) {
+      throw std::runtime_error("speculative: common_speculative_process(prompt) failed");
+    }
+  }
+
   std::vector<llama_token> mirror = priming;
+
+  // Per-round draft output buffer. Reused across rounds.
+  llama_tokens drafted;
+
+  // Initialize the speculative impl's per-seq state. Must come AFTER the
+  // prompt has been processed (so begin()'s pos_max check passes).
+  common_speculative_begin(spec.get(), /*seq_id=*/0, mirror);
 
   const int32_t n_vocab = ctx.model().n_vocab();
   std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
@@ -1772,6 +1892,7 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
 
   while (n_emitted < max_new_tokens) {
     // --- step 1: draft ---
+    drafted.clear();
     common_speculative_draft_params& dp =
         common_speculative_get_draft_params(spec.get(), /*seq_id=*/0);
     dp.drafting = true;
@@ -1779,35 +1900,75 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     dp.n_past = static_cast<llama_pos>(mirror.size());
     dp.id_last = id_last;
     dp.prompt = &mirror;
+    dp.result = &drafted;
 
     common_speculative_draft(spec.get());
 
-    // dp.result points to a vector of drafted ids (length 0..n_draft_max).
-    std::vector<llama_token> const drafted = dp.result ? *dp.result : std::vector<llama_token>{};
     int32_t const k = static_cast<int32_t>(drafted.size());
 
     // --- step 2: build [id_last, drafted_0, ..., drafted_{k-1}] and decode once ---
-    std::vector<llama_token> verify_batch;
-    verify_batch.reserve(static_cast<size_t>(k + 1));
-    verify_batch.push_back(id_last);
-    for (auto t : drafted) verify_batch.push_back(t);
-
     // We've already decoded id_last (it's the last accepted token from the
     // previous round, or the last priming token). To re-use its logits via
     // the verify pass and have downstream KV positions for drafts laid out
-    // contiguously, we trim the KV at id_last's position and re-decode it
-    // alongside the drafts.
+    // contiguously, we trim the KV at id_last's position on BOTH ctx_tgt
+    // and ctx_dft, then re-decode it alongside the drafts and mirror the
+    // batch into ctx_dft via common_speculative_process().
     int32_t const id_last_pos = static_cast<int32_t>(mirror.size()) - 1;
     if (!ctx.kv_cache_seq_rm(0, id_last_pos, -1)) {
-      throw std::runtime_error("speculative: kv_cache_seq_rm failed (memory_can_shift=false?)");
+      throw std::runtime_error(
+          "speculative: kv_cache_seq_rm (tgt) failed (memory_can_shift=false?)");
     }
-    ctx.decode_multi(verify_batch);
+    if (!llama_memory_seq_rm(mem_dft, 0, id_last_pos, -1)) {
+      throw std::runtime_error(
+          "speculative: kv_cache_seq_rm (dft) failed (memory_can_shift=false?)");
+    }
+
+    // Build a verify llama_batch [id_last, drafted_0..drafted_{k-1}], decode
+    // on ctx_tgt (request logits at every position), then mirror into ctx_dft
+    // via common_speculative_process to keep the recurrent state aligned.
+    llama_batch verify_batch = llama_batch_init(k + 1, 0, 1);
+    struct VerifyBatchGuard {
+      llama_batch& b;
+      explicit VerifyBatchGuard(llama_batch& batch) : b(batch) {}
+      ~VerifyBatchGuard() { llama_batch_free(b); }
+      VerifyBatchGuard(const VerifyBatchGuard&) = delete;
+      VerifyBatchGuard& operator=(const VerifyBatchGuard&) = delete;
+      VerifyBatchGuard(VerifyBatchGuard&&) = delete;
+      VerifyBatchGuard& operator=(VerifyBatchGuard&&) = delete;
+    } const vguard(verify_batch);
+
+    verify_batch.n_tokens = k + 1;
+    verify_batch.token[0] = id_last;
+    verify_batch.pos[0] = id_last_pos;
+    verify_batch.n_seq_id[0] = 1;
+    verify_batch.seq_id[0][0] = 0;
+    verify_batch.logits[0] = 1;
+    for (int32_t i = 0; i < k; ++i) {
+      verify_batch.token[i + 1] = drafted[static_cast<size_t>(i)];
+      verify_batch.pos[i + 1] = id_last_pos + 1 + i;
+      verify_batch.n_seq_id[i + 1] = 1;
+      verify_batch.seq_id[i + 1][0] = 0;
+      verify_batch.logits[i + 1] = 1;
+    }
+
+    int32_t const verify_rc = llama_decode(ctx_tgt, verify_batch);
+    if (verify_rc < 0) {
+      throw std::runtime_error("speculative: llama_decode (verify) failed code " +
+                               std::to_string(verify_rc));
+    }
+    // After kv_cache_seq_rm above, cur_pos_ was reset to id_last_pos. The
+    // verify batch decoded k+1 tokens at positions [id_last_pos .. id_last_pos+k],
+    // so the new "next position" is id_last_pos + k + 1.
+    ctx.advance_cur_pos(k + 1);
+    if (!common_speculative_process(spec.get(), verify_batch)) {
+      throw std::runtime_error("speculative: common_speculative_process(verify) failed");
+    }
 
     // --- step 3: verify, position by position ---
     int32_t accepted = 0;  // number of drafts accepted this round
     llama_token corrected_id = LLAMA_TOKEN_NULL;
     for (int32_t i = 0; i <= k; ++i) {
-      const float* logits = llama_get_logits_ith(ctx.raw(), i);
+      const float* logits = llama_get_logits_ith(ctx_tgt, i);
       if (!logits) {
         throw std::runtime_error("speculative: logits unavailable at offset " + std::to_string(i));
       }
@@ -1841,14 +2002,18 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
       break;
     }
 
-    // --- step 4: trim rejected drafts from KV (keep id_last + accepted drafts) ---
-    // The corrected token was sampled but not yet decoded. It enters KV as
-    // `id_last` of the next iteration when decode_multi runs.
+    // --- step 4: trim rejected drafts from KV on BOTH contexts ----------
+    // Keep id_last + accepted drafts. The corrected token was sampled but
+    // not yet decoded; it becomes `id_last` of the next iteration when the
+    // verify batch runs.
     int32_t const n_keep = id_last_pos + 1 /*id_last*/ + accepted;
     int32_t const decoded_end = id_last_pos + 1 + k;  // one past last decoded pos
     if (n_keep < decoded_end) {
       if (!ctx.kv_cache_seq_rm(0, n_keep, -1)) {
-        throw std::runtime_error("speculative: kv_cache_seq_rm (reject trim) failed");
+        throw std::runtime_error("speculative: kv_cache_seq_rm (tgt reject trim) failed");
+      }
+      if (!llama_memory_seq_rm(mem_dft, 0, n_keep, -1)) {
+        throw std::runtime_error("speculative: kv_cache_seq_rm (dft reject trim) failed");
       }
     }
 
@@ -1881,7 +2046,7 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
       }
       if (callback) {
         nb::gil_scoped_acquire const gil;
-        if (!(*callback)(tok)) return false;
+        if (!callback(tok)) return false;
       }
       return n_emitted < max_new_tokens;
     };
@@ -1969,6 +2134,12 @@ NB_MODULE(_llama, m) {
           "n_seq_max", [](ContextParams& p) { return p.raw.n_seq_max; },
           [](ContextParams& p, uint32_t v) { p.raw.n_seq_max = v; }, "Max number of sequences")
       .def_prop_rw(
+          "n_rs_seq", [](ContextParams& p) { return p.raw.n_rs_seq; },
+          [](ContextParams& p, uint32_t v) { p.raw.n_rs_seq = v; },
+          "Recurrent-state snapshots per seq for rollback (0 = no rollback). "
+          "Required by draft-MTP speculative decoding on hybrid recurrent "
+          "models like Qwen3.6-MoE; should be set to >= n_draft_max.")
+      .def_prop_rw(
           "n_threads", [](ContextParams& p) { return p.raw.n_threads; },
           [](ContextParams& p, int32_t v) { p.raw.n_threads = v; }, "Threads for generation")
       .def_prop_rw(
@@ -2015,6 +2186,7 @@ NB_MODULE(_llama, m) {
             d["n_batch"] = p.raw.n_batch;
             d["n_ubatch"] = p.raw.n_ubatch;
             d["n_seq_max"] = p.raw.n_seq_max;
+            d["n_rs_seq"] = p.raw.n_rs_seq;
             d["n_threads"] = p.raw.n_threads;
             d["n_threads_batch"] = p.raw.n_threads_batch;
             d["rope_freq_base"] = p.raw.rope_freq_base;

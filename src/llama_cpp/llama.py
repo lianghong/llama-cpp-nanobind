@@ -327,6 +327,14 @@ class LlamaConfig:
     n_batch: int = 2048
     n_ubatch: int = 512
     n_seq_max: int = 1  # Max parallel sequences (1 = single sequence, simplest)
+    # Recurrent-state snapshots per seq for partial-rollback (0 = no rollback).
+    # Required for draft-MTP speculative decoding on hybrid recurrent models
+    # like Qwen3.6-MoE: must be >= n_draft_max so rejected drafts can be
+    # rolled back from the recurrent state. Default 2 matches the default
+    # SamplingParams.n_draft_max; bump to your max n_draft_max when you go
+    # higher. Each unit costs additional VRAM proportional to the recurrent
+    # state size, so don't oversize.
+    n_rs_seq: int = 2
     n_threads: int | None = None
     n_threads_batch: int | None = None
     n_gpu_layers: int = -1
@@ -492,6 +500,7 @@ class Llama:
         ctx_params.n_batch = int(cfg.n_batch)
         ctx_params.n_ubatch = int(cfg.n_ubatch)
         ctx_params.n_seq_max = int(cfg.n_seq_max)
+        ctx_params.n_rs_seq = int(cfg.n_rs_seq)
         ctx_params.n_threads = int(cfg.n_threads or os.cpu_count() or 1)
         ctx_params.n_threads_batch = int(cfg.n_threads_batch or ctx_params.n_threads)
         ctx_params.flash_attn_type = int(cfg.flash_attn)
@@ -644,9 +653,14 @@ class Llama:
     def _validate_speculative(self, speculative: bool) -> None:
         """Validate the precondition for ``speculative=True`` calls.
 
-        Speculative decoding is only valid when the context was constructed
-        with ``ctx_type=LLAMA_CONTEXT_TYPE_MTP`` and is **not** an
-        embeddings-only context.
+        Speculative decoding requires:
+
+        * The user-facing context is the default graph variant
+          (``ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT``). The MTP graph is used
+          internally for the draft context only.
+        * The model exposes an MTP graph variant
+          (``Context.supports_speculative_mtp()``).
+        * The context is **not** embeddings-only.
         """
         if not speculative:
             return
@@ -654,11 +668,19 @@ class Llama:
             raise ValidationError(
                 "speculative=True is incompatible with embeddings-only contexts"
             )
-        if not self.ctx.supports_speculative_mtp():
+        if int(self.config.ctx_type) != LLAMA_CONTEXT_TYPE_DEFAULT:
             raise ValidationError(
                 f"speculative=True requires LlamaConfig("
-                f"ctx_type=LLAMA_CONTEXT_TYPE_MTP); got "
-                f"ctx_type={self.config.ctx_type}"
+                f"ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT); got "
+                f"ctx_type={self.config.ctx_type}. The MTP graph is used "
+                "internally as the draft context — do not pass it as the "
+                "user-facing ctx_type."
+            )
+        if not self.ctx.supports_speculative_mtp():
+            raise ValidationError(
+                "speculative=True requires a model with an MTP graph "
+                "variant (e.g. Qwen3.6-MoE *-MTP.gguf checkpoints). The "
+                "loaded model does not expose one."
             )
 
     def close(self) -> None:
