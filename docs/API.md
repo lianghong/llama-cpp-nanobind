@@ -69,6 +69,28 @@ for chunk in llm.generate_stream("Tell me a story", max_tokens=100):
     print(chunk, end="", flush=True)
 ```
 
+#### Streaming behavior matrix
+
+Not every `stream=True` entry point is fully incremental — a couple of
+paths still buffer the entire completion before yielding. The table below
+spells out the guarantees so you can size SSE/WebSocket timeouts correctly.
+
+| Entry point | `stream=True` behavior |
+|---|---|
+| `generate_stream(...)` | **Incremental** — chunks emit as the worker thread decodes each token. |
+| `generate(prompt, stream=True)` | **Buffered** — generation completes, then chunks are yielded. Use `generate_stream` if you need TTFT < total. |
+| `generate_async(stream=True)` | **Incremental** — bridges the sync generator through `asyncio.Queue`. |
+| `create_chat_completion(stream=True)` | **Incremental** in the default path; **buffered** when `grammar=` or `tools=` is set (the C++ grammar entry point is not incremental, and tool-call parsing needs the full message). |
+| `create_chat_completion_async(stream=True)` | Same as the sync chat path: incremental by default, buffered when `grammar=` / `tools=` is set. |
+
+Cancellation is safe on every incremental path: breaking out of the
+generator (or `await stream.aclose()` on the async paths) signals the
+worker to stop and releases `self._lock` before returning. After cancel,
+the instance is reusable. If a worker thread fails to exit within
+`Llama._STREAM_JOIN_TIMEOUT` seconds (because the underlying C++ call has
+not returned), `Llama.is_stuck` flips to `True` and the lock is held
+intentionally — restart the process to recover.
+
 ### Session-Style Continuation & Prompt-Prefix Cache Reuse
 
 Two complementary knobs govern KV cache behavior between calls:

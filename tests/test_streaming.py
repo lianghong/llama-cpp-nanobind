@@ -142,3 +142,36 @@ def test_create_chat_completion_stream_is_incremental(model_path):
             f"First content chunk arrived at {ratio:.1%} of total streaming "
             "time; chat streaming appears to buffer the full completion."
         )
+
+
+@requires_model
+def test_create_chat_completion_stream_early_termination(model_path):
+    """Closing the chat-stream generator early must release the lock and
+    leave the instance reusable. Regression guard for the path that now
+    delegates to ``generate_stream`` — without proper cleanup of the
+    underlying worker thread, ``self._lock`` would stay held and the next
+    call would block.
+    """
+    llm = Llama(model_path)
+
+    chunks = []
+    for i, chunk in enumerate(
+        llm.create_chat_completion(
+            [{"role": "user", "content": "Count to twenty."}],
+            max_tokens=64,
+            stream=True,
+        )
+    ):
+        chunks.append(chunk)
+        if i >= 2:
+            break
+
+    assert len(chunks) == 3
+    assert not llm.is_stuck, "chat stream early-break left worker stuck"
+
+    # Instance must be reusable: a follow-up generation must succeed and not
+    # deadlock on a still-held lock from the cancelled stream.
+    follow_up = llm.generate("Hello", max_tokens=4)
+    assert isinstance(follow_up, str) and follow_up
+
+    llm.close()
