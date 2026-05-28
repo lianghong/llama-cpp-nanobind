@@ -23,28 +23,26 @@ def demo_buffered_streaming():
     print("This buffers all tokens first, then yields them quickly.")
     print()
 
-    llm = Llama(MODEL_PATH)
+    with Llama(MODEL_PATH) as llm:
+        prompt = "Count from 1 to 10 slowly"
+        print(f"Prompt: {prompt}")
+        print("Output: ", end="", flush=True)
 
-    prompt = "Count from 1 to 10 slowly"
-    print(f"Prompt: {prompt}")
-    print("Output: ", end="", flush=True)
+        start_time = time.time()
+        first_chunk_time = None
 
-    start_time = time.time()
-    first_chunk_time = None
+        for chunk in llm.generate(prompt, max_tokens=48, stream=True):
+            if first_chunk_time is None:
+                first_chunk_time = time.time()
+                print(
+                    f"\n[First chunk after {first_chunk_time - start_time:.3f}s]",
+                    flush=True,
+                )
+                print("Output: ", end="", flush=True)
+            print(chunk, end="", flush=True)
+            time.sleep(0.01)  # Simulate processing time
 
-    for chunk in llm.generate(prompt, max_tokens=48, stream=True):
-        if first_chunk_time is None:
-            first_chunk_time = time.time()
-            print(
-                f"\n[First chunk after {first_chunk_time - start_time:.3f}s]",
-                flush=True,
-            )
-            print("Output: ", end="", flush=True)
-        print(chunk, end="", flush=True)
-        time.sleep(0.01)  # Simulate processing time
-
-    end_time = time.time()
-    llm.close()
+        end_time = time.time()
 
     print("\n\nTiming:")
     print(f"  Time to first chunk: {first_chunk_time - start_time:.3f}s")
@@ -63,31 +61,29 @@ def demo_true_streaming():
     print("This yields tokens as they're generated (incremental).")
     print()
 
-    llm = Llama(MODEL_PATH)
+    with Llama(MODEL_PATH) as llm:
+        prompt = "Count from 1 to 10 slowly"
+        print(f"Prompt: {prompt}")
+        print("Output: ", end="", flush=True)
 
-    prompt = "Count from 1 to 10 slowly"
-    print(f"Prompt: {prompt}")
-    print("Output: ", end="", flush=True)
+        start_time = time.time()
+        first_chunk_time = None
+        chunk_times = []
 
-    start_time = time.time()
-    first_chunk_time = None
-    chunk_times = []
+        for chunk in llm.generate_stream(prompt, max_tokens=48):
+            current_time = time.time()
+            if first_chunk_time is None:
+                first_chunk_time = current_time
+                print(
+                    f"\n[First chunk after {first_chunk_time - start_time:.3f}s]",
+                    flush=True,
+                )
+                print("Output: ", end="", flush=True)
+            chunk_times.append(current_time - start_time)
+            print(chunk, end="", flush=True)
+            time.sleep(0.01)  # Simulate processing time
 
-    for chunk in llm.generate_stream(prompt, max_tokens=48):
-        current_time = time.time()
-        if first_chunk_time is None:
-            first_chunk_time = current_time
-            print(
-                f"\n[First chunk after {first_chunk_time - start_time:.3f}s]",
-                flush=True,
-            )
-            print("Output: ", end="", flush=True)
-        chunk_times.append(current_time - start_time)
-        print(chunk, end="", flush=True)
-        time.sleep(0.01)  # Simulate processing time
-
-    end_time = time.time()
-    llm.close()
+        end_time = time.time()
 
     print("\n\nTiming:")
     print(f"  Time to first chunk: {first_chunk_time - start_time:.3f}s")
@@ -106,18 +102,16 @@ def demo_streaming_with_stop():
     print("=" * 70)
     print()
 
-    llm = Llama(MODEL_PATH)
+    with Llama(MODEL_PATH) as llm:
+        prompt = "List three colors: red"
+        print(f"Prompt: {prompt}")
+        print("Stop sequence: [',']")
+        print("Output: ", end="", flush=True)
 
-    prompt = "List three colors: red"
-    print(f"Prompt: {prompt}")
-    print("Stop sequence: [',']")
-    print("Output: ", end="", flush=True)
-
-    for chunk in llm.generate_stream(prompt, max_tokens=32, stop=[","]):
-        print(chunk, end="", flush=True)
+        for chunk in llm.generate_stream(prompt, max_tokens=32, stop=[","]):
+            print(chunk, end="", flush=True)
 
     print("\n[Stopped at comma]")
-    llm.close()
     print()
 
 
@@ -128,19 +122,17 @@ def demo_early_termination():
     print("=" * 70)
     print("Taking only first 5 chunks, then stopping.\n")
 
-    llm = Llama(MODEL_PATH)
+    with Llama(MODEL_PATH) as llm:
+        prompt = "Write a long story"
+        print(f"Prompt: {prompt}")
+        print("Output: ", end="", flush=True)
 
-    prompt = "Write a long story"
-    print(f"Prompt: {prompt}")
-    print("Output: ", end="", flush=True)
+        for i, chunk in enumerate(llm.generate_stream(prompt, max_tokens=100)):
+            print(chunk, end="", flush=True)
+            if i >= 4:  # Take only first 5 chunks
+                print("\n[Stopped early after 5 chunks]")
+                break
 
-    for i, chunk in enumerate(llm.generate_stream(prompt, max_tokens=100)):
-        print(chunk, end="", flush=True)
-        if i >= 4:  # Take only first 5 chunks
-            print("\n[Stopped early after 5 chunks]")
-            break
-
-    llm.close()
     print()
 
 

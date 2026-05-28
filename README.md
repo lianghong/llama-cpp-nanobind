@@ -576,17 +576,17 @@ clang-tidy -p build src/bindings/llama_cpp.cpp
 
 ### Memory Safety Verification
 
-The project includes a double-free verification script that exercises all resource cleanup paths under glibc's heap checker:
+The project ships a 20-scenario double-free regression suite that exercises all resource cleanup paths. Optionally run under glibc's heap checker for allocator-level corruption detection:
 
 ```bash
-# Basic run (crash detection via signal handlers)
-python examples/verify_double_free.py
+# Basic run (crash detection via pytest)
+uv run pytest tests/test_double_free_scenarios.py -v
 
 # With glibc heap checking (detects silent corruption)
-MALLOC_CHECK_=3 python examples/verify_double_free.py
+MALLOC_CHECK_=3 uv run pytest tests/test_double_free_scenarios.py -v
 ```
 
-The script tests 20 scenarios across both `Llama` and `UnifiedLLM`: double `close()`, context manager + close, state save/load + close, GC pressure, use-after-close, multi-instance close ordering, rapid create-close loops, `del` without close, `__del__` + close interactions, and mixed instance types.
+The suite covers both `Llama` and `UnifiedLLM`: double `close()`, context manager + close, state save/load + close, GC pressure, use-after-close, multi-instance close ordering, rapid create-close loops, `del` without close, `__del__` + close interactions, and mixed instance types.
 
 ## Notes
 

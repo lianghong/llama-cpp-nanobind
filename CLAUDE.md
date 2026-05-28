@@ -163,9 +163,9 @@ Default: `./models/Qwen3.5-4B-Q4_K_M.gguf` (override via `LLAMA_TEST_MODEL`; upd
 
 `conftest.py` provides `model_path` and `test_model` fixtures.
 
-**Memory safety**: `examples/verify_double_free.py` runs 20 cleanup scenarios. Run with allocator checking:
+**Memory safety**: `tests/test_double_free_scenarios.py` runs 20 cleanup scenarios. Run with allocator checking:
 ```bash
-MALLOC_CHECK_=3 python examples/verify_double_free.py
+MALLOC_CHECK_=3 uv run pytest tests/test_double_free_scenarios.py -v
 ```
 
 ## Common Pitfalls

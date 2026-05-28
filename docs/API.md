@@ -636,10 +636,10 @@ finally:
 
 **Memory Safety Verification:**
 
-Run `examples/verify_double_free.py` to exercise all cleanup paths (20 scenarios covering both `Llama` and `UnifiedLLM`). For allocator-level corruption detection, run under glibc's heap checker:
+Run `tests/test_double_free_scenarios.py` to exercise all cleanup paths (20 scenarios covering both `Llama` and `UnifiedLLM`). For allocator-level corruption detection, run under glibc's heap checker:
 
 ```bash
-MALLOC_CHECK_=3 python examples/verify_double_free.py
+MALLOC_CHECK_=3 uv run pytest tests/test_double_free_scenarios.py -v
 ```
 
 ## llama_cpp.LlamaPool
