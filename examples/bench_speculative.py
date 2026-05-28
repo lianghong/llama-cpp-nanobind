@@ -55,6 +55,7 @@ def _time_run(llm: Llama, *, speculative: bool) -> tuple[int, float]:
         speculative=speculative,
     )
     elapsed = time.perf_counter() - t0
+    assert isinstance(out, str)
     n_tok = len(llm.tokenize(out, add_special=False))
     return n_tok, elapsed
 
