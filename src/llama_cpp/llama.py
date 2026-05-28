@@ -1354,6 +1354,8 @@ class Llama:
         seed: int | None = None,
         reset_kv_cache: bool = True,
         cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
     ) -> Iterator[str]:
         """True streaming generation - yields text as tokens are decoded.
 
@@ -1405,6 +1407,16 @@ class Llama:
                 f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
             )
         self._validate_stop_sequences(stop)
+        self._validate_speculative(speculative)
+        effective_n_draft_max = (
+            int(n_draft_max)
+            if n_draft_max is not None
+            else (
+                sampling.n_draft_max
+                if sampling is not None
+                else self.sampling.n_draft_max
+            )
+        )
 
         sampler_params = sampling or self.sampling
         if seed is not None:
@@ -1493,17 +1505,32 @@ class Llama:
                     token_queue.put(raw)
                     return True
 
-                _llama.generate_tokens_streaming(
-                    self.ctx,
-                    sampler,
-                    prompt_tokens,
-                    int(max_tokens),
-                    effective_add_bos,
-                    eos,
-                    stop_sequences,
-                    on_token,
-                    skip_decode_prefix,
-                )
+                if speculative:
+                    _llama.generate_tokens_speculative_mtp(
+                        self.ctx,
+                        sampler,
+                        None,  # no grammar in generate_stream
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        int(effective_n_draft_max),
+                        stop_sequences,
+                        on_token,
+                        skip_decode_prefix,
+                    )
+                else:
+                    _llama.generate_tokens_streaming(
+                        self.ctx,
+                        sampler,
+                        prompt_tokens,
+                        int(max_tokens),
+                        effective_add_bos,
+                        eos,
+                        stop_sequences,
+                        on_token,
+                        skip_decode_prefix,
+                    )
                 token_queue.put(None)  # Sentinel: generation complete
             except Exception as e:
                 token_queue.put(e)  # Propagate exception to main thread

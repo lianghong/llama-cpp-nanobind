@@ -106,3 +106,28 @@ def test_speculative_with_grammar():
         assert "{" in text and "}" in text
     finally:
         llm.close()
+
+
+@requires_mtp_model
+def test_speculative_streaming():
+    """generate_stream with speculative=True must yield the same concatenated
+    text as the non-streaming path under greedy sampling.
+    """
+    prompt = "List three colors:"
+    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=2)
+
+    llm = _make_mtp_llm()
+    try:
+        non_stream = llm.generate(prompt, max_tokens=24, sampling=sp, speculative=True)
+    finally:
+        llm.close()
+
+    llm = _make_mtp_llm()
+    try:
+        chunks = list(
+            llm.generate_stream(prompt, max_tokens=24, sampling=sp, speculative=True)
+        )
+    finally:
+        llm.close()
+
+    assert "".join(chunks) == non_stream
