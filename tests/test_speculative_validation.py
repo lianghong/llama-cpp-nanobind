@@ -20,9 +20,7 @@ from conftest import MODEL_PATH, requires_model
 
 @requires_model
 def test_supports_speculative_mtp_default_ctx_returns_false():
-    cfg = LlamaConfig(
-        model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False
-    )
+    cfg = LlamaConfig(model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False)
     llm = Llama(MODEL_PATH, config=cfg)
     try:
         assert llm.ctx.supports_speculative_mtp() is False
@@ -57,9 +55,7 @@ def test_n_draft_max_one_accepted():
 
 @requires_model
 def test_validate_speculative_default_ctx_raises():
-    cfg = LlamaConfig(
-        model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False
-    )
+    cfg = LlamaConfig(model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False)
     llm = Llama(MODEL_PATH, config=cfg)
     try:
         with pytest.raises(ValidationError, match="ctx_type=LLAMA_CONTEXT_TYPE_MTP"):
@@ -70,9 +66,7 @@ def test_validate_speculative_default_ctx_raises():
 
 @requires_model
 def test_validate_speculative_false_is_noop():
-    cfg = LlamaConfig(
-        model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False
-    )
+    cfg = LlamaConfig(model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False)
     llm = Llama(MODEL_PATH, config=cfg)
     try:
         llm._validate_speculative(speculative=False)  # must not raise
@@ -105,9 +99,7 @@ def test_decode_multi_smoke():
     """Decode 3 tokens at once via the new multi-token batch helper.
     cur_pos_ must advance by exactly the number of tokens decoded.
     """
-    cfg = LlamaConfig(
-        model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False
-    )
+    cfg = LlamaConfig(model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False)
     llm = Llama(MODEL_PATH, config=cfg)
     try:
         # Tokenize a few BOS-free tokens; semantic content doesn't matter
