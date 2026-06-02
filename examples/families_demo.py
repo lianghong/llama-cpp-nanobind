@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 from llama_cpp.unified import UnifiedLLM
@@ -88,6 +89,13 @@ def main() -> None:
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
+
+    if not os.path.exists(args.model):
+        raise SystemExit(
+            f"Model file not found: {args.model}\n"
+            "Pass a path to a GGUF you have, e.g. "
+            "--model models/Qwen3.5-9B-Q4_K_M.gguf"
+        )
 
     try:
         with UnifiedLLM(args.model, n_ctx=args.ctx, verbose=args.verbose) as llm:

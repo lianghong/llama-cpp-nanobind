@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Demo of Qwen3.5-27B model using UnifiedLLM wrapper.
+"""Demo of Qwen3.5 models using UnifiedLLM wrapper.
+
+Defaults to the 9B checkpoint in ``models/``; pass ``--model`` to use another
+(e.g. the 27B, which additionally supports thinking mode).
 
 Qwen3.5 is a large language model from Alibaba Cloud featuring a hybrid
 attention architecture that combines Gated Delta Networks (linear attention)
@@ -35,12 +38,19 @@ Reference: https://huggingface.co/Qwen/Qwen3.5-27B-GGUF
 """
 
 import argparse
+import os
 import time
 
 from llama_cpp.unified import UnifiedLLM
 
 
-DEFAULT_MODEL = "models/Qwen3.5-27B-Q4_K_M.gguf"
+# Defaults to the 9B checkpoint that ships in models/. Thinking mode is only
+# available on the larger Qwen3.5 variants (27B+); on 4B/9B the family is still
+# detected as QWEN3_5 but supports_thinking is False, so generate_with_thinking
+# returns an empty thinking block plus the answer (the demo handles that). Pass
+# --model models/Qwen3.5-27B-Q4_K_M.gguf (download separately) to exercise the
+# full thinking-mode behavior.
+DEFAULT_MODEL = "models/Qwen3.5-9B-Q4_K_M.gguf"
 SEPARATOR = "=" * 60
 
 
@@ -123,7 +133,7 @@ def run_builtin_demos(llm: UnifiedLLM, show_thinking: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Qwen3.5-27B demo (hybrid attention, 262K context, 201 languages)"
+        description="Qwen3.5 demo (hybrid attention, 262K context, 201 languages)"
     )
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Path to GGUF model")
     parser.add_argument(
@@ -144,6 +154,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if not os.path.exists(args.model):
+        raise SystemExit(
+            f"Model file not found: {args.model}\n"
+            "Pass --model with a GGUF you have, e.g. "
+            "--model models/Qwen3.5-4B-Q4_K_M.gguf"
+        )
+
     print(f"Loading model: {args.model}")
     print(f"Context size:  {args.ctx}")
 
@@ -153,11 +170,18 @@ def main() -> None:
         print(f"Context window:     {llm.n_ctx()} tokens")
         print(f"Temperature:        {llm.model_config.temperature}")
         print(f"Presence penalty:   {llm.model_config.presence_penalty}")
-        print(
-            "Note: Qwen3.5 thinks by default -- no /think suffix needed. "
-            "Thinking is controlled by the chat template (enable_thinking), "
-            "not by appending text to the prompt."
-        )
+        if llm.supports_thinking:
+            print(
+                "Note: this Qwen3.5 checkpoint thinks by default -- no /think "
+                "suffix needed. Thinking is controlled by the chat template "
+                "(enable_thinking), not by appending text to the prompt."
+            )
+        else:
+            print(
+                "Note: this Qwen3.5 checkpoint does NOT support thinking mode "
+                "(only the 27B+ variants do). generate_with_thinking() returns "
+                "an empty thinking block plus the answer."
+            )
 
         if args.input_file:
             user_prompt = args.input_file.read()
@@ -186,7 +210,7 @@ def main() -> None:
             run_builtin_demos(llm, show_thinking=args.show_thinking)
 
             print(f"\n{SEPARATOR}")
-            print("Qwen3.5-27B demo completed.")
+            print("Qwen3.5 demo completed.")
             print(SEPARATOR)
 
 
