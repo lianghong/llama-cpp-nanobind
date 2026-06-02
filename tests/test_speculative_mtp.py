@@ -203,3 +203,197 @@ def test_speculative_stop_sequence():
         assert "STOPHERE" not in out
     finally:
         llm.close()
+
+
+# --- Continuation / mode-switch regression tests ---------------------------
+# These guard the load-bearing speculative off-by-1 (user KV ends 1 behind the
+# prompt-cache mirror; the next speculative turn self-heals) and the mode-switch
+# guard that forces a KV reset across a speculative↔non-speculative boundary.
+# A length invariant alone never caught these — only a differential
+# "continuation output == fresh full re-prime" check does.
+#
+# All tests below share ONE module-scoped 35B instance. Each test resets KV
+# (reset_kv_cache=True) at its start, so sharing is safe — and it keeps the
+# 35B model's VRAM footprint to a single load, which matters because the full
+# suite already loads it several times and a 20GB card has no headroom for the
+# extra per-test loads (transient OOM → ModelLoadError elsewhere in the suite).
+
+_CONT_PROMPT = "The capital of France is"
+
+
+@pytest.fixture(scope="module")
+def mtp_llm():
+    if not os.path.exists(MTP_MODEL_PATH):
+        pytest.skip("MTP-capable test model not found")
+    instance = _make_mtp_llm(n_rs_seq=8)
+    yield instance
+    instance.close()
+
+
+def _spec_continue(llm, first_spec, second_spec):
+    """Run turn1 (first_spec), continue with turn2 (second_spec) reusing KV,
+    then re-run turn2's exact text from a clean KV on the SAME instance.
+    Returns (cont, fresh). Greedy + deterministic, so a correct continuation
+    must byte-match the fresh re-prime.
+    """
+    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=4)
+    g1 = llm.generate(
+        _CONT_PROMPT,
+        max_tokens=10,
+        sampling=sp,
+        speculative=first_spec,
+        reset_kv_cache=True,
+        cache_prompt=True,
+    )
+    cont = llm.generate(
+        _CONT_PROMPT + g1,
+        max_tokens=10,
+        sampling=sp,
+        speculative=second_spec,
+        reset_kv_cache=False,
+        cache_prompt=True,
+    )
+    # "fresh" = same text primed from a cleared KV on this same instance.
+    fresh = llm.generate(
+        _CONT_PROMPT + g1,
+        max_tokens=10,
+        sampling=sp,
+        speculative=second_spec,
+        reset_kv_cache=True,
+        cache_prompt=True,
+    )
+    return cont, fresh
+
+
+@requires_mtp_model
+def test_speculative_continuation_modes(mtp_llm):
+    """Differential check across all four mode transitions on the same shared
+    instance:
+
+    * spec→spec / nonspec→nonspec: same-mode continuation must byte-match a
+      fresh re-prime (spec→spec exercises the load-bearing off-by-1 self-heal).
+    * spec→nonspec: the guard heals the off-by-1 in place (decodes the undecoded
+      tail token) and continues WITHOUT a reset — output correct, prefix reused.
+    * nonspec→spec: the draft recurrent state can't be resumed, so the guard
+      forces a reset; output must still be correct.
+    """
+    for first, second in [(True, True), (False, False), (True, False), (False, True)]:
+        cont, fresh = _spec_continue(mtp_llm, first, second)
+        assert cont == fresh, f"mode transition spec={first}->{second} diverged"
+
+
+@requires_mtp_model
+def test_speculative_to_nonspeculative_preserves_prefix(mtp_llm):
+    """spec→nonspec continuation must HEAL in place (reuse the cached prefix),
+    not full-reset. Guards against a regression back to the reset-everything
+    approach: the mirror must retain the turn-1 prefix and extend it."""
+    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=4)
+    g1 = mtp_llm.generate(
+        _CONT_PROMPT,
+        max_tokens=10,
+        sampling=sp,
+        speculative=True,
+        reset_kv_cache=True,
+        cache_prompt=True,
+    )
+    mirror_before = list(mtp_llm._cached_prompt_tokens)
+    mtp_llm.generate(
+        _CONT_PROMPT + g1,
+        max_tokens=8,
+        sampling=sp,
+        speculative=False,
+        reset_kv_cache=False,
+        cache_prompt=True,
+    )
+    mirror_after = list(mtp_llm._cached_prompt_tokens)
+    # A full reset would have rebuilt the mirror from scratch; an in-place heal
+    # keeps the turn-1 prefix as a strict prefix and extends it.
+    assert len(mirror_after) > len(mirror_before)
+    assert mirror_after[: len(mirror_before)] == mirror_before
+
+
+@requires_mtp_model
+def test_speculative_stop_then_continue_does_not_crash(mtp_llm):
+    """Regression: speculative + multi-token stop followed by a speculative
+    continuation previously aborted the process at
+    speculative.cpp GGML_ASSERT(impl) because stop tokens were left in the C++
+    mirror. Must now complete and stay deterministic across repeats."""
+    ps = "Counting: 1 2 3 STOPHERE 4 5 6 7 8"
+    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=4)
+    conts = []
+    for _ in range(2):
+        gs = mtp_llm.generate(
+            ps,
+            max_tokens=64,
+            sampling=sp,
+            stop=["STOPHERE"],
+            speculative=True,
+            reset_kv_cache=True,
+            cache_prompt=True,
+        )
+        assert "STOPHERE" not in gs
+        cont = mtp_llm.generate(
+            ps + gs,
+            max_tokens=10,
+            sampling=sp,
+            speculative=True,
+            reset_kv_cache=False,
+            cache_prompt=True,
+        )
+        conts.append(cont)
+    assert conts[0] == conts[1]  # deterministic, and no crash reaching here
+
+
+@requires_mtp_model
+def test_speculative_max_tokens_one(mtp_llm):
+    """Extreme early termination: max_tokens=1 exits the loop after a single
+    emitted token (the corrected_id tail). Must return non-empty text and keep
+    the mirror aligned for a clean continuation."""
+    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=4)
+    one = mtp_llm.generate(
+        _CONT_PROMPT,
+        max_tokens=1,
+        sampling=sp,
+        speculative=True,
+        reset_kv_cache=True,
+        cache_prompt=True,
+    )
+    assert isinstance(one, str) and one != ""
+    # Continuation after a 1-token speculative turn must stay coherent.
+    cont = mtp_llm.generate(
+        _CONT_PROMPT + one,
+        max_tokens=8,
+        sampling=sp,
+        speculative=True,
+        reset_kv_cache=False,
+        cache_prompt=True,
+    )
+    assert isinstance(cont, str) and cont.strip()
+
+
+@requires_mtp_model
+def test_speculative_streaming_callback_cancel(mtp_llm):
+    """Cancelling a speculative stream early (consumer stops iterating) must
+    not crash and must leave the instance reusable."""
+    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=4)
+    collected = []
+    for chunk in mtp_llm.generate_stream(
+        "Tell me a long story about a robot.",
+        max_tokens=64,
+        sampling=sp,
+        speculative=True,
+        reset_kv_cache=True,
+    ):
+        collected.append(chunk)
+        if len(collected) >= 3:
+            break  # early cancellation
+    assert collected
+    # Instance must remain usable after an early-cancelled stream.
+    out = mtp_llm.generate(
+        "Hello",
+        max_tokens=4,
+        sampling=sp,
+        speculative=True,
+        reset_kv_cache=True,
+    )
+    assert isinstance(out, str)

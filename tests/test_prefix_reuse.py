@@ -194,6 +194,82 @@ def test_prefix_reuse_output_matches_full_reprime(llm):
 
 
 @requires_model
+def test_multi_token_stop_keeps_mirror_aligned(llm):
+    """Regression: a matched multi-token stop must not leave stop-prefix tokens
+    stranded in KV ahead of the mirror.
+
+    For a stop sequence of N tokens, the first N-1 tokens are decoded into KV
+    across earlier iterations before the Nth completes the match. All N are
+    erased from the returned output, so without a rewind KV would sit N-1
+    positions ahead of ``_cached_prompt_tokens`` (which only holds the returned
+    tokens). On ``memory_can_shift()`` models the C++ stop handler rewinds and
+    refreshes logits, restoring the ``len(mirror) == kv_pos + 1`` invariant.
+
+    We construct a stop from the model's own greedy output so it is guaranteed
+    to be emitted mid-stream, and pick a slice that tokenizes to >= 2 tokens.
+    """
+    import pytest
+
+    # A string stop tokenizes on its own boundaries, which differ from how the
+    # model emits those characters token-by-token. When such a stop matches,
+    # its leading tokens were already decoded into KV across earlier iterations
+    # and then erased from the output — the trigger for the "stop-prefix tokens
+    # stranded in KV" bug. We pick a stop that is highly likely to be generated
+    # and to tokenize to >= 2 tokens, then search a few prompts/stops until one
+    # actually halts generation early with a multi-token stop.
+    candidates = [
+        ("Recite the alphabet with numbers: a1 b2 c3", "5 f6 g7"),
+        ("Count up: 1 2 3 4 5 6 7 8 9 10 11 12", "5 6 7"),
+        ("Letters: a b c d e f g h i j k l m n", "f g h"),
+    ]
+    chosen = None
+    for prompt, stop in candidates:
+        if len(llm.tokenize(stop, add_special=False)) < 2:
+            continue
+        llm.kv_cache_clear()
+        full = llm.generate(prompt, max_tokens=40, reset_kv_cache=True, seed=0)
+        if stop not in full:
+            continue  # model didn't emit the stop; can't trigger the path
+        llm.kv_cache_clear()
+        out = llm.generate(
+            prompt,
+            max_tokens=40,
+            stop=[stop],
+            reset_kv_cache=True,
+            cache_prompt=True,
+            seed=0,
+        )
+        if len(out) < len(full):  # generation actually halted at the stop
+            chosen = (prompt, stop, out)
+            break
+    if chosen is None:
+        pytest.skip("no multi-token string stop reproduced an early halt")
+    prompt, stop, out = chosen
+
+    # The core invariant: regardless of how many stop-prefix tokens were
+    # decoded, the prompt-cache mirror must equal the KV length. On
+    # memory_can_shift() models the C++ stop handler rewinds+refreshes to
+    # restore it; a plain seq_rm-less handler left KV ahead by (n_tokens - 1).
+    # On hybrid/recurrent models the rewind is skipped (would corrupt state),
+    # so the mirror may legitimately trail KV — assert only no-crash there.
+    if llm.ctx.memory_can_shift():
+        assert len(llm._cached_prompt_tokens) == _kv_pos(llm) + 1
+        # Continuation must match a fresh re-prime (refreshed logits correct).
+        cont = llm.generate(
+            prompt + out,
+            max_tokens=8,
+            reset_kv_cache=False,
+            cache_prompt=True,
+            seed=0,
+        )
+        llm.kv_cache_clear()
+        fresh = llm.generate(prompt + out, max_tokens=8, reset_kv_cache=True, seed=0)
+        assert cont == fresh
+    else:
+        assert isinstance(out, str)  # hybrid: no rewind, just must not crash
+
+
+@requires_model
 def test_chat_completion_cache_prompt(llm):
     """create_chat_completion accepts cache_prompt and reuses prefix between turns."""
     llm.kv_cache_clear()

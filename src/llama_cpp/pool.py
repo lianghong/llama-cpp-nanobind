@@ -197,8 +197,11 @@ class LlamaPool:
                     max_tokens=warmup_tokens,
                     reset_kv_cache=True,
                 )
-                # Clear KV cache after warmup to start fresh
-                instance.ctx.kv_cache_clear()
+                # Clear KV cache after warmup to start fresh, keeping the
+                # Python-side prompt-cache mirror and state-epoch bookkeeping
+                # in sync (bypassing the wrapper would leave a stale mirror
+                # that prefix-reuse could trust against a now-empty KV).
+                instance.kv_cache_clear()
             except (RuntimeError, ValueError) as e:
                 # Expected errors from model inference - warmup is optional optimization
                 logging.warning(

@@ -701,6 +701,28 @@ class Context {
     ++cur_pos_;
   }
 
+  // Trim KV seq 0 down to `keep_len` tokens AND leave the logits buffer
+  // holding `last_token`'s prediction at position keep_len-1. Used by the
+  // multi-token stop handlers: when a stop sequence matches, the stop-prefix
+  // tokens already decoded into KV must be removed so KV == returned output,
+  // but a plain seq_rm leaves the logits buffer pointing at the trimmed-away
+  // position. A following full-LCP continuation decodes nothing and would
+  // sample from those stale logits. Re-decoding `last_token` (the final
+  // RETURNED token) at position keep_len-1 refreshes the logits to exactly
+  // what a fresh prime of the same tokens would produce. No-op if keep_len<1.
+  // Precondition: caller has verified memory_can_shift() (recurrent models
+  // corrupt on mid-sequence seq_rm).
+  void rewind_keep_refresh(int32_t keep_len, llama_token last_token) {
+    check_ctx();
+    if (keep_len < 1) return;
+    // Remove everything from keep_len-1 onward (drops stop prefixes AND the
+    // last real token), then re-decode the last real token to refresh logits.
+    llama_memory_t mem = llama_get_memory(ctx_);
+    llama_memory_seq_rm(mem, 0, keep_len - 1, -1);
+    cur_pos_ = keep_len - 1;
+    decode_one(last_token, /*request_logits=*/true);  // cur_pos_ -> keep_len
+  }
+
   // Decode multiple tokens into a single forward pass. All positions request
   // logits (the speculative verify step needs them). Reuses multi_batch_.
   int32_t decode_multi(const std::vector<llama_token>& tokens) {
@@ -1517,6 +1539,19 @@ std::vector<TokenProb> generate_tokens_with_details(
           results.pop_back();
         }
       }
+      // The current matching token was NOT decoded yet, but the previous
+      // remove_n - 1 stop-prefix tokens WERE decoded into KV in earlier
+      // iterations. Rewind KV so it matches the returned output (callers
+      // commit only `results` to the prompt-cache mirror; leaving the
+      // stop-prefix tokens in KV would desync the mirror) AND refresh logits
+      // to the last returned token. Only when the model supports mid-sequence
+      // removal: on hybrid/recurrent models (memory_can_shift()==false)
+      // llama_memory_seq_rm corrupts recurrent state rather than no-op'ing,
+      // so we skip it (pre-existing prefix-reuse limitation on those models).
+      if (remove_n > 1 && ctx.memory_can_shift() && !generated.empty()) {
+        int32_t const keep_len = ctx.cur_pos() - static_cast<int32_t>(remove_n - 1);
+        ctx.rewind_keep_refresh(keep_len, generated.back());
+      }
       break;
     }
 
@@ -1628,7 +1663,20 @@ std::vector<llama_token> generate_tokens_multi_stop(
       if (seq.empty() || seq.size() > output.size()) continue;
       if (std::equal(seq.rbegin(), seq.rend(), output.rbegin())) {
         matched = true;
+        // The current token is not decoded yet, but the prior seq.size() - 1
+        // stop-prefix tokens were decoded into KV in earlier iterations.
+        // Rewind so KV matches the returned output (callers commit only
+        // `output` to the prompt-cache mirror). Only when the model supports
+        // mid-sequence removal: on hybrid/recurrent models
+        // (memory_can_shift()==false) llama_memory_seq_rm CORRUPTS recurrent
+        // state rather than no-op'ing, so we skip it and leave the stop-prefix
+        // tokens in KV (a separate, pre-existing prefix-reuse limitation).
         output.erase(output.end() - static_cast<std::ptrdiff_t>(seq.size()), output.end());
+        if (seq.size() > 1 && ctx.memory_can_shift() && !output.empty()) {
+          // keep_len = decoded-so-far minus the seq.size()-1 prefix tokens.
+          int32_t const keep_len = ctx.cur_pos() - static_cast<int32_t>(seq.size() - 1);
+          ctx.rewind_keep_refresh(keep_len, output.back());
+        }
         break;
       }
     }
@@ -1704,7 +1752,17 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
       if (seq.empty() || seq.size() > output.size()) continue;
       if (std::equal(seq.rbegin(), seq.rend(), output.rbegin())) {
         matched = true;
+        // The current token is not decoded yet, but the prior seq.size() - 1
+        // stop-prefix tokens were decoded into KV in earlier iterations.
+        // Rewind so KV matches the returned output and refresh logits to the
+        // last returned token. Only when the model supports mid-sequence
+        // removal: on hybrid/recurrent models (memory_can_shift()==false)
+        // llama_memory_seq_rm corrupts recurrent state, so we skip it.
         output.erase(output.end() - static_cast<std::ptrdiff_t>(seq.size()), output.end());
+        if (seq.size() > 1 && ctx.memory_can_shift() && !output.empty()) {
+          int32_t const keep_len = ctx.cur_pos() - static_cast<int32_t>(seq.size() - 1);
+          ctx.rewind_keep_refresh(keep_len, output.back());
+        }
         break;
       }
     }
@@ -1786,9 +1844,21 @@ int32_t generate_tokens_streaming(Context& ctx, SamplerChain& sampler,
     if (matched) {
       // Remove stop tokens; buffering guarantees none were yielded
       output.erase(output.end() - static_cast<std::ptrdiff_t>(remove_n), output.end());
-      // Break without decoding stop tokens (intentional):
+      // The current matching token was not decoded yet, but the prior
+      // remove_n - 1 stop-prefix tokens WERE decoded into KV in earlier
+      // iterations. Rewind so KV matches the returned output (the Python
+      // wrapper commits only the streamed tokens — which exclude the stop
+      // prefix — to the prompt-cache mirror) and refresh logits to the last
+      // returned token. Only when the model supports mid-sequence removal: on
+      // hybrid/recurrent models (memory_can_shift()==false) llama_memory_seq_rm
+      // corrupts recurrent state rather than no-op'ing, so we skip it. The
+      // re-decode is KV-only and never re-yields to the consumer.
+      if (remove_n > 1 && ctx.memory_can_shift() && !output.empty()) {
+        int32_t const keep_len = ctx.cur_pos() - static_cast<int32_t>(remove_n - 1);
+        ctx.rewind_keep_refresh(keep_len, output.back());
+      }
+      // Break without decoding the final stop token (intentional):
       // - Stop tokens are NOT part of conversation history (correct for reset_kv_cache=False)
-      // - cur_pos_ remains at position before stop tokens (KV cache consistency)
       // - Sampler has accepted stop tokens (for penalty tracking across generations)
       // This is the expected behavior for session continuation.
       break;
@@ -2104,12 +2174,18 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
       }
       if (matched) {
         output.erase(output.end() - static_cast<std::ptrdiff_t>(remove_n), output.end());
+        // Drop the stop tokens from the mirror too, so `mirror` stays equal to
+        // `priming + output`. Keeping stop tokens in the mirror (the old
+        // behavior) desynced common_speculative_begin's pos_max bookkeeping on
+        // the next speculative turn and aborted the process at
+        // speculative.cpp GGML_ASSERT(impl). Some of these stop tokens are
+        // already decoded into KV (accepted drafts); the exit reconciliation
+        // below trims any KV past the (now shorter) mirror.
+        mirror.erase(mirror.end() - static_cast<std::ptrdiff_t>(remove_n), mirror.end());
         // Stop tokens were counted toward n_emitted but aren't in `output`;
         // restore the budget so max_new_tokens reflects emitted tokens, not
         // tokens consumed by the stop match.
         n_emitted -= static_cast<int32_t>(remove_n);
-        // Mirror keeps the stop tokens because they're in KV; Python will
-        // handle the mirror invalidation/commit accordingly.
         return false;
       }
       if (callback) {
@@ -2131,13 +2207,26 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     id_last = mirror.back();
   }
 
-  // --- Tail trim: enforce the prompt-cache mirror invariant
+  // --- Tail reconciliation: enforce the prompt-cache mirror invariant
   // (`len(_cached_prompt_tokens) == kv_pos_max + 1`).
   //
-  // When the loop terminates mid-round (max_tokens cap, EOS, stop-sequence,
-  // or callback abort), KV may contain accepted drafts past mirror.back()
-  // that were never emitted. Trim KV to mirror's last position on both
-  // contexts so callers using cache_prompt see KV aligned to the mirror.
+  // `mirror` is now exactly `priming + output` (stop tokens were erased from
+  // both above). At loop exit ctx_tgt KV must NOT hold any token past what was
+  // returned in `output`, so trim any surplus.
+  //
+  //   * KV AHEAD (cur_pos > mirror.size()): accepted drafts were decoded but
+  //     never emitted (EOS hit, or a draft itself was the stop token). Trim
+  //     the surplus on both contexts.
+  //   * KV BEHIND (cur_pos < mirror.size()): the final corrected token was
+  //     emitted (and appended to `output`) but, by design, NOT decoded — it
+  //     was meant to become next round's `id_last`. We intentionally LEAVE it
+  //     undecoded: a following speculative turn re-decodes `id_last` in its
+  //     first verify batch (self-healing), and the Python wrapper syncs its
+  //     prompt-cache mirror to the ACTUAL KV length (via kv_cache_seq_pos_max)
+  //     after the call, so non-speculative continuations re-decode it too.
+  //     Forcing it into KV here (with or without common_speculative_process)
+  //     desyncs the draft context's recurrent MTP state and corrupts the next
+  //     speculative turn — the off-by-1 is correct and must be preserved.
   if (!mirror.empty()) {
     int32_t const tail_keep = static_cast<int32_t>(mirror.size());
     if (ctx.cur_pos() > tail_keep) {

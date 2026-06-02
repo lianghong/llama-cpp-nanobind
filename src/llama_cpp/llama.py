@@ -486,6 +486,23 @@ class Llama:
         # mismatch) raises LlamaError instead of letting llama.cpp's
         # ggml_abort terminate the process.
         self._state_epoch: int = 0
+        # Per-instance identity embedded in on-device state handles. An
+        # ON_DEVICE handle references device buffers owned by *this* context;
+        # loading it into a different Llama instance is undefined behavior in
+        # llama.cpp (potential ggml_abort/crash). The epoch alone can collide
+        # across instances (two fresh instances both at epoch 1 after one
+        # save), so we also stamp this random token and reject mismatches in
+        # load_seq_state_on_device before reaching C++.
+        self._state_owner: bytes = uuid.uuid4().bytes
+        # Tracks whether the most recent generation used the speculative
+        # draft-verify loop. Mixed-mode continuation (speculative=True then
+        # False, or vice-versa) on the SAME KV produces drift/garbage because
+        # the draft context's recurrent MTP state isn't primed across the
+        # boundary (the user-facing KV also legitimately ends 1 behind the
+        # mirror after a speculative turn). A continuation that crosses this
+        # boundary is silently forced to reset_kv_cache so the result is
+        # correct. None means "no generation yet".
+        self._last_gen_speculative: bool | None = None
 
         # Apply verbose setting with class-level synchronization
         # WARNING: This affects logging globally, not per-instance.
@@ -717,6 +734,21 @@ class Llama:
                 "variant (e.g. Qwen3.6-MoE *-MTP.gguf checkpoints). The "
                 "loaded model does not expose one."
             )
+
+    @staticmethod
+    def _validate_n_draft_max(value: int) -> int:
+        """Enforce the same ``[1, 8]`` bound as ``SamplingParams.n_draft_max``.
+
+        Per-call overrides (``generate``/``generate_stream``/
+        ``create_chat_completion``) bypass ``SamplingParams.__post_init__``,
+        so an unbounded value like ``n_draft_max=1_000_000`` would otherwise
+        reach the C++ speculative path and request an oversized verify batch.
+        """
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
+            raise ValidationError(
+                f"n_draft_max must be an int in [1, 8]; got {value!r}"
+            )
+        return value
 
     @property
     def is_stuck(self) -> bool:
@@ -1043,6 +1075,9 @@ class Llama:
         """
         self._cached_prompt_tokens = []
         self._state_epoch += 1
+        # KV was cleared/overwritten — there is no longer a continuation to
+        # cross a speculative boundary, so reset the mode tracker.
+        self._last_gen_speculative = None
 
     def _drop_mirror_only(self) -> None:
         """Drop the prompt-cache mirror without bumping the state epoch.
@@ -1163,6 +1198,75 @@ class Llama:
         """
         if generated:
             self._cached_prompt_tokens.extend(generated)
+
+    def _reconcile_kv_ahead_of_mirror(self) -> None:
+        """Clear KV when it holds more tokens than the prompt-cache mirror.
+
+        On hybrid/recurrent models (``memory_can_shift()==False``) the C++ stop
+        handlers cannot rewind stranded multi-token-stop prefixes out of KV
+        (mid-sequence ``seq_rm`` would corrupt recurrent state), so after such a
+        generation KV ends *ahead* of what was committed to the mirror. A
+        following ``reset_kv_cache=False`` continuation would then read those
+        phantom stop-prefix tokens as history and produce wrong output. We
+        cannot trim them (same corruption risk), so we full-clear KV (safe on
+        all models) and invalidate the mirror — the next turn re-primes cleanly
+        (correctness over the lost speedup, only on this stranded case).
+
+        This intentionally does NOT fire on the speculative off-by-1, where KV
+        ends one position *behind* the mirror (that is load-bearing and
+        self-heals on the next speculative turn). Only the KV-ahead case is a
+        bug. No-op when the mirror is empty (caching off / nothing to protect).
+        """
+        if not self._cached_prompt_tokens:
+            return
+        kv_len = self.ctx.kv_cache_seq_pos_max(0) + 1
+        if kv_len > len(self._cached_prompt_tokens):
+            self.ctx.kv_cache_clear()
+            self._invalidate_prompt_cache()
+
+    def _guard_speculative_mode_switch(
+        self, *, speculative: bool, reset_kv_cache: bool
+    ) -> bool:
+        """Reconcile KV when a continuation crosses the speculative boundary.
+
+        Continuing the same KV across a speculative↔non-speculative mode change
+        can drift or produce garbage. There are two distinct boundaries, healed
+        differently. Returns the effective ``reset_kv_cache``.
+
+        * **prev speculative → now non-speculative**: the speculative loop left
+          the user KV exactly one position behind the mirror (the final
+          ``corrected_id`` was emitted but not decoded — the load-bearing
+          off-by-1). A non-speculative turn never re-decodes it, so it would
+          read stale logits. We *heal in place* by decoding the missing tail
+          token(s) so KV == mirror, then continue with prefix reuse — keeping
+          the speedup. No reset needed.
+
+        * **prev non-speculative → now speculative**: the draft context's
+          recurrent MTP state was never built for this prefix and can only be
+          rebuilt from position 0 — which costs a full prefix decode anyway, so
+          a reset is both necessary and free of any recoverable speedup. We
+          force ``reset_kv_cache=True``.
+
+        Only acts on ``reset_kv_cache=False`` continuations after a prior
+        generation in the other mode; otherwise returns the flag unchanged.
+        """
+        if reset_kv_cache or self._last_gen_speculative is None:
+            return reset_kv_cache
+        if self._last_gen_speculative == speculative:
+            return reset_kv_cache  # same mode: no boundary to cross
+
+        if self._last_gen_speculative and not speculative:
+            # spec → nonspec: align KV to the mirror by decoding the undecoded
+            # tail (the off-by-1 corrected_id, possibly a few tokens), then
+            # continue without a reset.
+            if self._cached_prompt_tokens:
+                kv_len = self.ctx.kv_cache_seq_pos_max(0) + 1
+                missing = self._cached_prompt_tokens[kv_len:]
+                for tok in missing:
+                    self.ctx.decode_one(tok)
+            return False
+        # nonspec → spec: draft state must rebuild from scratch — reset.
+        return True
 
     def _apply_adapters(self) -> None:
         """Push current adapter list to the C++ context."""
@@ -1378,6 +1482,9 @@ class Llama:
         Returns:
             List of generated token IDs.
         """
+        reset_kv_cache = self._guard_speculative_mode_switch(
+            speculative=speculative, reset_kv_cache=reset_kv_cache
+        )
         if reset_kv_cache:
             self.ctx.kv_cache_clear()
             self._invalidate_prompt_cache()
@@ -1480,6 +1587,12 @@ class Llama:
         # cache_prompt=True call falls back to a clean full prime.
         if cache_prompt or reset_kv_cache:
             self._commit_generation_to_cache(generated)
+            # On hybrid models a multi-token stop can leave KV ahead of the
+            # mirror (stop-prefix tokens that couldn't be trimmed); clear so
+            # the next continuation re-primes instead of reading phantom KV.
+            self._reconcile_kv_ahead_of_mirror()
+        # Record the mode for the next call's speculative-boundary guard.
+        self._last_gen_speculative = speculative
         return generated
 
     def generate_stream(
@@ -1545,8 +1658,10 @@ class Llama:
                 f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
             )
         self._validate_stop_sequences(stop)
-        self._validate_speculative(speculative)
-        effective_n_draft_max = (
+        # n_draft_max range check is pure-Python; the native precondition
+        # check (_validate_speculative probes self.ctx) is deferred until
+        # after the lock is held — see below.
+        effective_n_draft_max = self._validate_n_draft_max(
             int(n_draft_max)
             if n_draft_max is not None
             else (
@@ -1559,36 +1674,7 @@ class Llama:
         sampler_params = sampling or self.sampling
         if seed is not None:
             sampler_params = dc_replace(sampler_params, seed=seed)
-        sampler = self._build_sampler(sampler_params)
 
-        if reset_kv_cache:
-            self.ctx.kv_cache_clear()
-            self._invalidate_prompt_cache()
-
-        # Tokenize without BOS — C++ generator prepends based on add_bos and
-        # the `prompt[0] != bos` guard.
-        prompt_tokens = self.tokenize(prompt, add_special=False)
-        self._validate_prompt_token_count(len(prompt_tokens))
-
-        # BOS rules — see _generate_from_tokens for full rationale.
-        if reset_kv_cache or cache_prompt:
-            effective_add_bos = self._effective_add_bos
-        else:
-            effective_add_bos = False
-
-        stop_sequences = self._tokenize_stop_sequences(stop)
-
-        eos = self.model.eos()
-
-        # Compute prefix reuse before spawning the worker. The helper updates
-        # the mirror to reflect the priming sequence; generated tokens are
-        # appended in the finally block on clean exit.
-        _, skip_decode_prefix = self._prepare_prompt_for_kv(
-            prompt_tokens,
-            reset_kv_cache=reset_kv_cache,
-            cache_prompt=cache_prompt,
-            effective_add_bos=effective_add_bos,
-        )
         # Tokens generated in this stream — appended to mirror on success,
         # discarded if the worker dies. Lives outside the worker closure so
         # the finally block can read it.
@@ -1662,14 +1748,52 @@ class Llama:
             except Exception as e:
                 token_queue.put(e)  # Propagate exception to main thread
 
-        # Acquire the lock BEFORE spawning the worker, so that any concurrent
-        # Llama call is blocked the moment generate_stream is invoked (not
-        # just once the worker thread schedules the `with self._lock:` body).
+        # Acquire the lock BEFORE any native context mutation, so that a
+        # concurrent Llama call (or a second generate_stream) cannot race on
+        # the non-thread-safe ctx/model. Everything that touches ctx/model —
+        # the speculative precondition probe, kv_cache_clear, tokenization,
+        # and prompt-cache preparation — runs under the lock. The closure's
+        # free variables (sampler, prompt_tokens, …) are late-bound, so the
+        # worker defined above picks them up once assigned here.
         # Release it in the finally below — after the generator completes,
         # raises, or is closed by the caller.
         self._lock.acquire()
         thread: threading.Thread | None = None
         try:
+            self._validate_speculative(speculative)
+            sampler = self._build_sampler(sampler_params)
+
+            reset_kv_cache = self._guard_speculative_mode_switch(
+                speculative=speculative, reset_kv_cache=reset_kv_cache
+            )
+            if reset_kv_cache:
+                self.ctx.kv_cache_clear()
+                self._invalidate_prompt_cache()
+
+            # Tokenize without BOS — C++ generator prepends based on add_bos
+            # and the `prompt[0] != bos` guard.
+            prompt_tokens = self.tokenize(prompt, add_special=False)
+            self._validate_prompt_token_count(len(prompt_tokens))
+
+            # BOS rules — see _generate_from_tokens for full rationale.
+            if reset_kv_cache or cache_prompt:
+                effective_add_bos = self._effective_add_bos
+            else:
+                effective_add_bos = False
+
+            stop_sequences = self._tokenize_stop_sequences(stop)
+            eos = self.model.eos()
+
+            # Compute prefix reuse before spawning the worker. The helper
+            # updates the mirror to reflect the priming sequence; generated
+            # tokens are appended in the finally block on clean exit.
+            _, skip_decode_prefix = self._prepare_prompt_for_kv(
+                prompt_tokens,
+                reset_kv_cache=reset_kv_cache,
+                cache_prompt=cache_prompt,
+                effective_add_bos=effective_add_bos,
+            )
+
             thread = threading.Thread(target=worker, daemon=True)
             thread.start()
 
@@ -1716,6 +1840,11 @@ class Llama:
                 # now in KV beyond the priming sequence.
                 if cache_prompt or reset_kv_cache:
                     self._commit_generation_to_cache(generated_in_stream)
+                    # Hybrid multi-token stop may leave KV ahead of the mirror;
+                    # clear so the next continuation re-primes (still locked).
+                    self._reconcile_kv_ahead_of_mirror()
+                # Record the mode for the next call's speculative-boundary guard.
+                self._last_gen_speculative = speculative
                 self._lock.release()
             else:
                 # Worker is stuck in C++; KV state is unknown. Drop the mirror
@@ -1793,7 +1922,7 @@ class Llama:
         if speculative and logprobs is not None:
             raise ValidationError("logprobs is not supported on the speculative path")
         # Default n_draft_max from sampling params if caller didn't override.
-        effective_n_draft_max = (
+        effective_n_draft_max = self._validate_n_draft_max(
             int(n_draft_max)
             if n_draft_max is not None
             else (
@@ -1836,8 +1965,14 @@ class Llama:
             # Logprobs path: dispatch directly so we can pull TokenProb structs
             # back out. The shared helper handles BOS prepending, prefix reuse,
             # and mirror updates — same contract as the non-logprobs paths.
+            # This path is always non-speculative; force a reset if continuing
+            # across a speculative boundary (stale draft/KV state otherwise).
+            reset_kv_cache = self._guard_speculative_mode_switch(
+                speculative=False, reset_kv_cache=reset_kv_cache
+            )
             if reset_kv_cache:
                 self.ctx.kv_cache_clear()
+                self._invalidate_prompt_cache()
             primed, skip_decode_prefix = self._prepare_prompt_for_kv(
                 prompt_tokens,
                 reset_kv_cache=reset_kv_cache,
@@ -1872,6 +2007,8 @@ class Llama:
             )
             if cache_prompt or reset_kv_cache:
                 self._commit_generation_to_cache(tail)
+                self._reconcile_kv_ahead_of_mirror()
+            self._last_gen_speculative = False
             output_tokens = [tp.token for tp in token_probs]
         else:
             # No-logprobs paths route through _generate_from_tokens, which
@@ -2143,7 +2280,7 @@ class Llama:
         # confusing TypeError deep in SamplingParams.__init__.
         self._validate_sampling_overrides(sampling_overrides)
         self._validate_speculative(speculative)
-        effective_n_draft_max = (
+        effective_n_draft_max = self._validate_n_draft_max(
             int(n_draft_max)
             if n_draft_max is not None
             else int(sampling_overrides.get("n_draft_max", self.sampling.n_draft_max))
@@ -2400,14 +2537,16 @@ class Llama:
         self._invalidate_prompt_cache()
         return result
 
-    # On-device handle envelope: 4-byte magic + uint64 epoch (little-endian)
-    # prefixed onto the raw llama.cpp handle bytes. The Python wrapper validates
-    # the magic and epoch before passing the inner payload to the C++ load,
-    # which converts the C API's ggml_abort-on-invalid-handle behavior into a
-    # recoverable LlamaError on the most common failure mode (stale handle
-    # after a KV-clearing op).
+    # On-device handle envelope: 4-byte magic + 16-byte instance-owner token +
+    # uint64 epoch (little-endian) prefixed onto the raw llama.cpp handle bytes.
+    # The Python wrapper validates the magic, owner, and epoch before passing
+    # the inner payload to the C++ load, which converts the C API's
+    # ggml_abort-on-invalid-handle behavior into a recoverable LlamaError on
+    # the common failure modes (stale handle after a KV-clearing op, or a
+    # handle from a different Llama instance whose device buffers we don't own).
     _ON_DEVICE_HANDLE_MAGIC = b"LCNH"  # llama-cpp-nanobind handle
-    _ON_DEVICE_HANDLE_HEADER_LEN = 4 + 8
+    _ON_DEVICE_HANDLE_OWNER_LEN = 16
+    _ON_DEVICE_HANDLE_HEADER_LEN = 4 + 16 + 8
 
     def save_seq_state_on_device(self, seq_id: int = 0) -> bytes:
         """Save per-sequence state with the ON_DEVICE flag (llama.cpp 2026-04+).
@@ -2435,10 +2574,10 @@ class Llama:
         ``set_state_data()`` / ``load_state()`` / ``embed()`` / ``close()``).
         Stale handles are validated in Python and rejected with
         ``LlamaError`` instead of letting llama.cpp's ``ggml_abort``
-        terminate the process. Garbage handles or handles from a different
-        ``Llama`` instance still have undefined behavior past the magic
-        check, so treat the handle as a short-lived in-session reference;
-        for durable state use ``get_state()``.
+        terminate the process. Handles from a different ``Llama`` instance
+        are also rejected (the embedded owner token won't match), so treat
+        the handle as a short-lived in-session reference; for durable or
+        cross-instance state use ``get_state()``.
 
         Args:
             seq_id: Sequence id to snapshot (default 0, the only sequence
@@ -2453,7 +2592,11 @@ class Llama:
         # the post-save epoch so a subsequent load matches.
         self._state_epoch += 1
         payload: bytes = self.ctx.save_seq_state_on_device(seq_id)
-        header = self._ON_DEVICE_HANDLE_MAGIC + struct.pack("<Q", self._state_epoch)
+        header = (
+            self._ON_DEVICE_HANDLE_MAGIC
+            + self._state_owner
+            + struct.pack("<Q", self._state_epoch)
+        )
         return header + payload
 
     def load_seq_state_on_device(self, data: bytes, dest_seq_id: int = 0) -> int:
@@ -2477,10 +2620,11 @@ class Llama:
             Bytes read from the handle.
 
         Raises:
-            LlamaError: handle is missing the magic prefix, has the wrong
-                epoch (a KV-clearing op happened since save), or is too
-                short. This converts the upstream ``ggml_abort`` failure
-                mode into a recoverable Python exception.
+            LlamaError: handle is missing the magic prefix, was created by a
+                different ``Llama`` instance, has the wrong epoch (a
+                KV-clearing op happened since save), or is too short. This
+                converts the upstream ``ggml_abort`` failure mode into a
+                recoverable Python exception.
         """
         self._check_closed()
         if (
@@ -2492,7 +2636,20 @@ class Llama:
                 "load_seq_state_on_device: handle is not a valid on-device "
                 "snapshot (missing magic prefix or truncated)"
             )
-        (handle_epoch,) = struct.unpack("<Q", data[4:12])
+        owner = bytes(data[4 : 4 + self._ON_DEVICE_HANDLE_OWNER_LEN])
+        if owner != self._state_owner:
+            raise LlamaError(
+                "load_seq_state_on_device: handle was created by a different "
+                "Llama instance. On-device handles reference device buffers "
+                "owned by the originating context and cannot be loaded "
+                "elsewhere. Use get_state() for cross-instance transfer."
+            )
+        (handle_epoch,) = struct.unpack(
+            "<Q",
+            data[
+                4 + self._ON_DEVICE_HANDLE_OWNER_LEN : self._ON_DEVICE_HANDLE_HEADER_LEN
+            ],
+        )
         if handle_epoch != self._state_epoch:
             raise LlamaError(
                 "load_seq_state_on_device: handle is stale "
