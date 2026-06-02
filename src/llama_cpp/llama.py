@@ -39,6 +39,15 @@ _shutdown_called = False
 _cleanup_registered = False
 _llama_initialized = False
 _cleanup_lock = threading.Lock()
+# Serializes every _instances mutation/snapshot so the set's internal structure
+# is never modified concurrently (a data race under PEP 703 free-threaded
+# builds; harmless under the GIL). It is a RLock — NOT the plain _cleanup_lock —
+# because the weakref finalizer (`lambda r: _instances.discard(r)`) can fire at
+# an arbitrary GC point on a thread that already holds this lock; a non-reentrant
+# lock would self-deadlock there. Critical sections are kept to a single set
+# operation and never span close()/__init__ work, so there is no lock inversion
+# with self._lock or _cleanup_lock.
+_instances_lock = threading.RLock()
 
 # ggml_type constants for KV cache quantization (cache_type_k, cache_type_v).
 # Values mirror ggml.h's `enum ggml_type`.
@@ -132,13 +141,18 @@ def _cleanup_all() -> None:
         if not _llama_initialized:
             return
         _shutdown_called = True
-    # Perform cleanup outside lock to avoid deadlock
-    for ref in list(_instances):
+    # Snapshot under _instances_lock so the iteration can't race a concurrent
+    # mutation of the set's internal structure; close() runs OUTSIDE the lock
+    # (it re-acquires _instances_lock for its own discard, and takes self._lock).
+    with _instances_lock:
+        snapshot = list(_instances)
+    for ref in snapshot:
         instance = ref()
         if instance is not None:
             with contextlib.suppress(Exception):
                 instance.close()
-    _instances.clear()
+    with _instances_lock:
+        _instances.clear()
     gc.collect()
     # Free llama.cpp backend only if all models released (guarded in C++)
     with contextlib.suppress(Exception):
@@ -270,7 +284,9 @@ class SamplingParams:
         if self.dry_seq_breakers is None:
             self.dry_seq_breakers = ["\n", ":", '"', "*"]
         # adaptive-p: target < 0 disables; otherwise must be in [0, 1].
-        if self.adaptive_p_target >= 0.0 and self.adaptive_p_target > 1.0:
+        # (Any value > 1.0 is necessarily >= 0.0, so a single comparison
+        # captures the "enabled but out of range" case.)
+        if self.adaptive_p_target > 1.0:
             raise ValidationError(
                 "adaptive_p_target must be in [0.0, 1.0] when enabled (or negative to disable)"
             )
@@ -580,9 +596,16 @@ class Llama:
 
         mark_llama_initialized()
 
-        # Register for cleanup at exit
-        self._ref = weakref.ref(self, lambda r: _instances.discard(r))
-        _instances.add(self._ref)
+        # Register for cleanup at exit. The finalizer discards under
+        # _instances_lock (RLock — finalizers can fire on a thread already
+        # holding it).
+        def _discard_ref(r: weakref.ref[Any]) -> None:
+            with _instances_lock:
+                _instances.discard(r)
+
+        self._ref = weakref.ref(self, _discard_ref)
+        with _instances_lock:
+            _instances.add(self._ref)
 
     def __enter__(self) -> Llama:
         return self
@@ -762,7 +785,14 @@ class Llama:
         return self._zombie
 
     def close(self) -> None:
-        """Release model and context resources."""
+        """Release model and context resources.
+
+        May raise ``LlamaError`` if the underlying C++ context or model failed
+        to free cleanly; the instance is still marked closed and resources are
+        nulled before the error propagates, so a retry is a safe no-op. The
+        atexit handler (``_cleanup_all``) suppresses this, so interpreter
+        shutdown is unaffected.
+        """
         # _closed is set in __init__ before any operation that can fail, so
         # direct access is safe and makes init-time bugs visible instead of
         # swallowing them as a no-op close.
@@ -786,7 +816,8 @@ class Llama:
 
             # Remove from instance tracking first
             if hasattr(self, "_ref"):
-                _instances.discard(self._ref)
+                with _instances_lock:
+                    _instances.discard(self._ref)
             if hasattr(self, "_lora_adapters"):
                 self._lora_adapters.clear()
 
@@ -1677,7 +1708,11 @@ class Llama:
 
         # Tokens generated in this stream — appended to mirror on success,
         # discarded if the worker dies. Lives outside the worker closure so
-        # the finally block can read it.
+        # the finally block can read it. Thread-safety: self._lock serializes
+        # ALL access — the worker (which appends from on_token) is spawned and
+        # joined while the lock is held, and the finally block that reads it
+        # runs under the same lock, so the worker append and the main-thread
+        # read never overlap. No separate lock is needed for this list.
         generated_in_stream: list[int] = []
 
         # Queue carries already-detokenized raw bytes from the worker thread,
@@ -1947,7 +1982,7 @@ class Llama:
         eos = self.model.eos()
 
         if stream and logprobs is not None:
-            raise ValueError(
+            raise ValidationError(
                 "Streaming with logprobs is not supported; set stream=False or logprobs=None"
             )
 
@@ -2119,6 +2154,18 @@ class Llama:
 
         Note: Streaming yields chunks after full generation (not true streaming).
         """
+        # Validate at the public boundary like generate()/create_chat_completion()
+        # so a non-string or empty prompt surfaces a clear ValidationError here
+        # rather than an opaque failure inside the C++ tokenizer.
+        self._check_closed()
+        if not isinstance(prompt, str):
+            raise ValidationError("prompt must be a string")
+        if not prompt.strip():
+            raise ValidationError("prompt cannot be empty")
+        if len(prompt) > _MAX_PROMPT_LENGTH:
+            raise ValidationError(
+                f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
+            )
         prompt_tokens = self.tokenize(prompt, add_special=self._effective_add_bos)
         prompt_tok_count = len(prompt_tokens)
 
@@ -2165,7 +2212,23 @@ class Llama:
             if not isinstance(result, dict):
                 raise TypeError(f"Unexpected generate() return type: {type(result)}")
             text = result["text"]
-            completion_tokens = len(result.get("tokens", []))
+            # When echo=True, result["tokens"] has the prompt tokens prepended,
+            # so len(tokens) would over-count completions by the prompt length.
+            # The per-token logprob entries mark echoed prompt tokens with a NaN
+            # logprob (real logprob only for generated tokens), giving an exact,
+            # BOS-agnostic completion count regardless of echo.
+            token_probs = result.get("token_probs")
+            if token_probs is not None:
+                completion_tokens = sum(
+                    1 for tp in token_probs if not math.isnan(tp.logprob)
+                )
+            else:
+                # No per-token detail available; fall back to subtracting the
+                # echoed prompt length when echo is on.
+                all_tokens = result.get("tokens", [])
+                completion_tokens = max(
+                    0, len(all_tokens) - (prompt_tok_count if echo else 0)
+                )
         else:
             # Non-logprobs path: call the internal token-level helper so we get
             # the exact generated token count without a lossy detokenize →
@@ -2768,7 +2831,7 @@ class Llama:
         """
         if stream:
             if logprobs is not None:
-                raise ValueError(
+                raise ValidationError(
                     "Streaming with logprobs is not supported; "
                     "set stream=False or logprobs=None"
                 )
@@ -2792,10 +2855,22 @@ class Llama:
                         reset_kv_cache=reset_kv_cache,
                         cache_prompt=cache_prompt,
                     ):
-                        asyncio.run_coroutine_threadsafe(out_queue.put(chunk), loop)
-                    asyncio.run_coroutine_threadsafe(out_queue.put(None), loop)
+                        # .result() blocks this worker until the chunk is
+                        # enqueued — applying backpressure (the unbounded queue
+                        # can't outrun a slow consumer) and surfacing enqueue
+                        # errors (e.g. the loop shutting down) instead of
+                        # silently dropping them.
+                        asyncio.run_coroutine_threadsafe(
+                            out_queue.put(chunk), loop
+                        ).result()
+                    asyncio.run_coroutine_threadsafe(out_queue.put(None), loop).result()
                 except BaseException as exc:  # noqa: BLE001
-                    asyncio.run_coroutine_threadsafe(out_queue.put(exc), loop)
+                    # Best-effort error delivery; if the enqueue itself fails
+                    # (loop gone) there's nothing left to report it to.
+                    with contextlib.suppress(Exception):
+                        asyncio.run_coroutine_threadsafe(
+                            out_queue.put(exc), loop
+                        ).result()
 
             async def async_stream() -> AsyncIterator[str]:
                 # Start the pump thread (it holds self._lock for the duration
@@ -2916,10 +2991,17 @@ class Llama:
                             "non-streaming response was returned)"
                         )
                     for chunk in iterator:
-                        asyncio.run_coroutine_threadsafe(out_queue.put(chunk), loop)
-                    asyncio.run_coroutine_threadsafe(out_queue.put(None), loop)
+                        # .result() applies backpressure and surfaces enqueue
+                        # errors — see generate_async's run_stream.
+                        asyncio.run_coroutine_threadsafe(
+                            out_queue.put(chunk), loop
+                        ).result()
+                    asyncio.run_coroutine_threadsafe(out_queue.put(None), loop).result()
                 except BaseException as exc:  # noqa: BLE001
-                    asyncio.run_coroutine_threadsafe(out_queue.put(exc), loop)
+                    with contextlib.suppress(Exception):
+                        asyncio.run_coroutine_threadsafe(
+                            out_queue.put(exc), loop
+                        ).result()
 
             async def async_stream() -> AsyncIterator[dict[str, Any]]:
                 pump = loop.run_in_executor(None, run_chat_stream)

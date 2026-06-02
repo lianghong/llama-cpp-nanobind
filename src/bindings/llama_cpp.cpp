@@ -248,22 +248,12 @@ class Model {
     if (static_cast<size_t>(n_tokens) != tokens.size()) {
       throw std::runtime_error("integer overflow in token count");
     }
-    // Two-call protocol: first call with size=0 returns -required_bytes
-    // (or 0 for empty output). Unlike llama_model_desc, the returned count
-    // is the exact byte count, not null-terminated, so no +1 is needed.
-    int32_t needed = llama_detokenize(vocab(), tokens.data(), n_tokens, nullptr, 0, remove_special,
-                                      unparse_special);
-    if (needed < 0) {
-      needed = -needed;
-    }
     std::string out;
-    out.resize(static_cast<size_t>(needed));
-    int32_t const written = llama_detokenize(vocab(), tokens.data(), n_tokens, out.data(), needed,
-                                             remove_special, unparse_special);
-    if (written < 0) {
+    // GIL held here; safe to throw inline on failure.
+    if (!detokenize_to_string(vocab(), tokens.data(), n_tokens, remove_special, unparse_special,
+                              out)) {
       throw std::runtime_error("detokenize failed");
     }
-    out.resize(static_cast<size_t>(written));
     return out;
   }
 
@@ -272,26 +262,15 @@ class Model {
     if (tokens.size() > static_cast<size_t>(INT32_MAX)) {
       throw std::runtime_error("too many tokens for detokenization");
     }
+    int32_t const n_tokens = static_cast<int32_t>(tokens.size());
     std::string out;
     bool detok_failed = false;
     {
       // Release GIL for the heavy detokenization work, but re-acquire
-      // before constructing the Python bytes object below.
+      // before constructing the Python bytes object (or throwing) below.
       nb::gil_scoped_release const release;
-      int32_t const n_tokens = static_cast<int32_t>(tokens.size());
-      int32_t needed = llama_detokenize(vocab(), tokens.data(), n_tokens, nullptr, 0,
-                                        remove_special, unparse_special);
-      if (needed < 0) {
-        needed = -needed;
-      }
-      out.resize(static_cast<size_t>(needed));
-      int32_t const written = llama_detokenize(vocab(), tokens.data(), n_tokens, out.data(), needed,
-                                               remove_special, unparse_special);
-      if (written < 0) {
-        detok_failed = true;
-      } else {
-        out.resize(static_cast<size_t>(written));
-      }
+      detok_failed = !detokenize_to_string(vocab(), tokens.data(), n_tokens, remove_special,
+                                           unparse_special, out);
     }
     // GIL re-acquired — safe to throw
     if (detok_failed) {
@@ -336,6 +315,38 @@ class Model {
     }
     buf.resize(static_cast<size_t>(needed));
     return buf;
+  }
+
+  // Shared two-call detokenize protocol, factored out of detokenize() and
+  // detokenize_bytes() so the buffer-sizing rules live in exactly one place.
+  //
+  // Pure C calls only — no GIL operations and no exceptions — so each caller
+  // can invoke it in its own GIL context (detokenize holds the GIL and throws
+  // inline; detokenize_bytes releases the GIL and must defer any throw until
+  // re-acquired). Writes the detokenized bytes into `out` and returns true on
+  // success; on failure (`llama_detokenize` returns < 0 on the fill call)
+  // leaves `out` unspecified and returns false. The token-count overflow check
+  // is the caller's responsibility (it can throw before releasing the GIL).
+  //
+  // Protocol: first call with size=0 returns -required_bytes (or 0 for empty
+  // output). The returned count is the exact byte count (not NUL-terminated),
+  // so — unlike read_c_string — no +1 is needed.
+  static bool detokenize_to_string(const llama_vocab* vocab, const llama_token* tokens,
+                                   int32_t n_tokens, bool remove_special, bool unparse_special,
+                                   std::string& out) {
+    int32_t needed =
+        llama_detokenize(vocab, tokens, n_tokens, nullptr, 0, remove_special, unparse_special);
+    if (needed < 0) {
+      needed = -needed;
+    }
+    out.resize(static_cast<size_t>(needed));
+    int32_t const written = llama_detokenize(vocab, tokens, n_tokens, out.data(), needed,
+                                             remove_special, unparse_special);
+    if (written < 0) {
+      return false;
+    }
+    out.resize(static_cast<size_t>(written));
+    return true;
   }
 
   void check_model() const {
@@ -539,8 +550,11 @@ class Context {
       throw std::runtime_error("failed to create llama context");
     }
     cur_pos_ = 0;
-    // Pre-allocate single-token batch for decode_one to avoid per-token
-    // allocations
+    // Pre-allocate reusable batches to avoid per-token allocations. Both
+    // members are `= {}`-initialized at declaration so `.token == nullptr`
+    // acts as the "not yet allocated" sentinel that close()/~Context() check
+    // before llama_batch_free — making cleanup exception-safe if either
+    // llama_batch_init below (or anything earlier in the ctor) throws.
     single_batch_ = llama_batch_init(1, 0, 1);
     multi_batch_ = llama_batch_init(kMultiBatchCapacity, 0, 1);
     llama_set_n_threads(ctx_, params_.raw.n_threads, params_.raw.n_threads_batch);
@@ -848,7 +862,8 @@ class Context {
     // reserved size. _PyBytes_Resize requires GIL (which we hold here).
     if (written < size) {
       if (_PyBytes_Resize(&py_obj, static_cast<Py_ssize_t>(written)) != 0) {
-        // py_obj is set to nullptr on failure.
+        // _PyBytes_Resize frees the original and sets py_obj to nullptr on
+        // failure, so there is nothing left to DECREF here.
         throw std::runtime_error("failed to resize Python bytes buffer");
       }
     }
@@ -956,6 +971,9 @@ class Context {
     }
     if (written < size) {
       if (_PyBytes_Resize(&py_obj, static_cast<Py_ssize_t>(written)) != 0) {
+        // _PyBytes_Resize frees the original and sets py_obj to nullptr on
+        // failure, so there is nothing left to DECREF here (matches
+        // get_state_data's resize path).
         throw std::runtime_error("failed to resize Python bytes buffer");
       }
     }
@@ -1561,6 +1579,32 @@ std::vector<TokenProb> generate_tokens_with_details(
   return results;
 }
 
+// Pick the token chosen by the sampler chain from a post-apply candidate
+// array. Normally `cur_p.selected` is valid and we use it directly; if it is
+// out of range (some sampler left it unset) we fall back to the highest-logit
+// candidate. Returns LLAMA_TOKEN_NULL only when the candidate set is empty
+// (e.g. grammar masked everything). Shared by the two grammar generators so
+// their selection logic cannot drift; the non-grammar generators select via
+// generate_next()/llama_sampler_sample(), and the speculative path treats an
+// invalid `selected` as a hard error rather than falling back, so neither uses
+// this helper.
+inline llama_token select_token_from_cur_p(const llama_token_data_array& cur_p) {
+  if (cur_p.size > 0 && cur_p.selected >= 0 && std::cmp_less(cur_p.selected, cur_p.size)) {
+    return cur_p.data[cur_p.selected].id;
+  }
+  llama_token token = LLAMA_TOKEN_NULL;
+  if (cur_p.size > 0) {
+    float best_logit = -std::numeric_limits<float>::infinity();
+    for (size_t j = 0; j < cur_p.size; ++j) {
+      if (cur_p.data[j].logit > best_logit) {
+        best_logit = cur_p.data[j].logit;
+        token = cur_p.data[j].id;
+      }
+    }
+  }
+  return token;
+}
+
 // Generation with grammar constraint
 std::vector<llama_token> generate_tokens_with_grammar(Context& ctx, SamplerChain& sampler,
                                                       GrammarSampler& grammar,
@@ -1600,20 +1644,8 @@ std::vector<llama_token> generate_tokens_with_grammar(Context& ctx, SamplerChain
     // candidates
     llama_sampler_apply(sampler.get(), &cur_p);
 
-    // Select token from the sampled distribution
-    llama_token token = LLAMA_TOKEN_NULL;
-    if (cur_p.size > 0 && cur_p.selected >= 0 && std::cmp_less(cur_p.selected, cur_p.size)) {
-      token = cur_p.data[cur_p.selected].id;
-    } else if (cur_p.size > 0) {
-      // Fallback: pick highest probability after sampling
-      float best_logit = -std::numeric_limits<float>::infinity();
-      for (size_t j = 0; j < cur_p.size; ++j) {
-        if (cur_p.data[j].logit > best_logit) {
-          best_logit = cur_p.data[j].logit;
-          token = cur_p.data[j].id;
-        }
-      }
-    }
+    // Select token from the sampled distribution (selected, or argmax fallback)
+    llama_token const token = select_token_from_cur_p(cur_p);
 
     if (token == eos_token || token == LLAMA_TOKEN_NULL) {
       break;
@@ -1723,20 +1755,8 @@ std::vector<llama_token> generate_tokens_grammar_multi_stop(
     // candidates
     llama_sampler_apply(sampler.get(), &cur_p);
 
-    // Select token from the sampled distribution
-    llama_token token = LLAMA_TOKEN_NULL;
-    if (cur_p.size > 0 && cur_p.selected >= 0 && std::cmp_less(cur_p.selected, cur_p.size)) {
-      token = cur_p.data[cur_p.selected].id;
-    } else if (cur_p.size > 0) {
-      // Fallback: pick highest probability after sampling
-      float best_logit = -std::numeric_limits<float>::infinity();
-      for (size_t j = 0; j < cur_p.size; ++j) {
-        if (cur_p.data[j].logit > best_logit) {
-          best_logit = cur_p.data[j].logit;
-          token = cur_p.data[j].id;
-        }
-      }
-    }
+    // Select token from the sampled distribution (selected, or argmax fallback)
+    llama_token const token = select_token_from_cur_p(cur_p);
 
     if (token == eos_token || token == LLAMA_TOKEN_NULL) {
       break;
@@ -2517,7 +2537,9 @@ NB_MODULE(_llama, m) {
       .def("memory_can_shift", &Context::memory_can_shift,
            "Whether memory supports KV cache shifting")
       .def("supports_speculative_mtp", &Context::supports_speculative_mtp,
-           "True iff the context was constructed with ctx_type=LLAMA_CONTEXT_TYPE_MTP")
+           "True iff the model exposes an MTP graph variant usable as a "
+           "speculative draft context (probed lazily). Independent of the "
+           "user-facing ctx_type, which must be DEFAULT for speculative use.")
       .def("set_embeddings", &Context::set_embeddings, "enabled"_a,
            "Enable or disable embedding extraction at runtime")
       .def("set_causal_attn", &Context::set_causal_attn, "enabled"_a,

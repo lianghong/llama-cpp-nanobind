@@ -47,6 +47,15 @@ from llama_cpp import SamplingParams
 _unified_instances: set[weakref.ref[Any]] = set()
 _cleanup_registered = False
 _cleanup_lock = threading.Lock()
+# Serializes every _unified_instances mutation/snapshot so the set's internal
+# structure is never modified concurrently (a data race under PEP 703
+# free-threaded builds; harmless under the GIL). It is a RLock — NOT the plain
+# _cleanup_lock — because the weakref finalizer can fire at an arbitrary GC
+# point on a thread that already holds this lock; a non-reentrant lock would
+# self-deadlock there. Mirrors llama.py's _instances_lock. Critical sections are
+# a single set operation and never span close()/__init__ work, so there is no
+# lock inversion. (close() runs OUTSIDE this lock for the same reason.)
+_instances_lock = threading.RLock()
 
 
 def _register_unified_cleanup() -> None:
@@ -61,12 +70,18 @@ def _register_unified_cleanup() -> None:
 
 def _cleanup_unified() -> None:
     """Close all UnifiedLLM instances before interpreter shutdown."""
-    for ref in list(_unified_instances):
+    # Snapshot under the lock so iteration can't race a concurrent mutation of
+    # the set's internal structure; close() runs OUTSIDE the lock (it
+    # re-acquires _instances_lock for its own discard).
+    with _instances_lock:
+        snapshot = list(_unified_instances)
+    for ref in snapshot:
         instance = ref()
         if instance is not None:
             with contextlib.suppress(Exception):
                 instance.close()
-    _unified_instances.clear()
+    with _instances_lock:
+        _unified_instances.clear()
     gc.collect()
 
 
@@ -1008,10 +1023,18 @@ class UnifiedLLM:
             self.llm = None  # type: ignore[assignment]
             raise
 
-        # Register for cleanup at exit (lazy registration on first instance)
+        # Register for cleanup at exit (lazy registration on first instance).
+        # The finalizer discards under _instances_lock (RLock — finalizers can
+        # fire on a thread already holding it).
         _register_unified_cleanup()
-        self._ref = weakref.ref(self, lambda r: _unified_instances.discard(r))
-        _unified_instances.add(self._ref)
+
+        def _discard_unified_ref(r: weakref.ref[Any]) -> None:
+            with _instances_lock:
+                _unified_instances.discard(r)
+
+        self._ref = weakref.ref(self, _discard_unified_ref)
+        with _instances_lock:
+            _unified_instances.add(self._ref)
 
     def _resolve_speculative(self, mode: bool | str) -> bool:
         """Resolve the ``speculative`` constructor argument to a bool.
@@ -1382,7 +1405,8 @@ class UnifiedLLM:
         self._closed = True
         # Remove from instance tracking
         if hasattr(self, "_ref"):
-            _unified_instances.discard(self._ref)
+            with _instances_lock:
+                _unified_instances.discard(self._ref)
         if hasattr(self, "llm") and self.llm is not None:
             self.llm.close()
             self.llm = None  # type: ignore[assignment]

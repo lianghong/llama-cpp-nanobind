@@ -337,6 +337,24 @@ except ValidationError as e:
     print(f"Invalid parameter: {e}")
 ```
 
+`ValidationError` (a subclass of `LlamaError`) is raised for every invalid
+parameter across `generate` / `create_chat_completion` / `__call__` — catch it
+once to cover them all.
+
+**`close()` may raise `LlamaError`** if the underlying C++ context/model fails
+to free cleanly. The instance is still marked closed and resources are nulled
+before the error propagates, so a retry is a safe no-op — but context-manager
+users who care about cleanup errors should handle it explicitly:
+
+```python
+try:
+    with Llama("model.gguf") as llm:
+        ...
+except LlamaError as e:
+    print(f"Cleanup error (resources already released): {e}")
+```
+
+
 ### Async API
 
 Async wrappers for FastAPI, asyncio applications (runs inference in thread pool):

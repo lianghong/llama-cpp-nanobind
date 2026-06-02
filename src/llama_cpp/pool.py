@@ -110,6 +110,12 @@ class LlamaPool:
         self.instances: list[Llama] = []
         for i in range(pool_size):
             logging.debug("Loading instance %d/%d...", i + 1, pool_size)
+            # Give each instance its own LlamaConfig copy. Llama.__init__ stores
+            # the config by reference (self.config = cfg) and LlamaConfig is a
+            # mutable (non-frozen) dataclass — sharing one object across the pool
+            # would couple all instances if any per-instance state were ever
+            # written back to self.config. dc_replace() with no kwargs is a cheap
+            # shallow copy that keeps them independent.
             instance = Llama(model_path, config=dc_replace(self.config))
             self.instances.append(instance)
         logging.info("LlamaPool initialized with %d instances", pool_size)
@@ -456,12 +462,14 @@ class LlamaPool:
 
         # If queue was never initialized (pool never used), skip queue operations
         if self._available is not None:
-            # Warn if instances are checked out (in-flight requests will be disrupted)
-            in_flight = self.pool_size - self._available.qsize()
+            # Warn if instances are checked out (in-flight requests will be
+            # disrupted). qsize() is a best-effort snapshot and close() is sync,
+            # so this count is approximate — present it as such.
+            in_flight = max(0, self.pool_size - self._available.qsize())
             if in_flight > 0:
                 logging.warning(
-                    "LlamaPool.close() called with %d in-flight request(s); "
-                    "use close_graceful() to wait for them. "
+                    "LlamaPool.close() called with ~%d in-flight request(s) "
+                    "(approximate); use close_graceful() to wait for them. "
                     "In-flight requests may encounter errors.",
                     in_flight,
                 )
@@ -536,8 +544,11 @@ class LlamaPool:
                         await asyncio.sleep(0.01)
                         continue
                     returned += 1
-            except Exception:
-                pass  # Best-effort drain; force-close below handles the rest
+            except Exception as e:
+                # Best-effort drain; the force-close below handles the rest.
+                # Log at debug so a stuck/erroring drain is diagnosable without
+                # changing the best-effort behavior.
+                logging.debug("close_graceful drain interrupted: %s", e)
 
             if returned < self.pool_size:
                 logging.warning(

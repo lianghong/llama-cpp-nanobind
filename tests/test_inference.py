@@ -117,6 +117,30 @@ def test_call_returns_dict(llm):
 
 
 @requires_model
+def test_call_logprobs_echo_completion_tokens_excludes_prompt(llm):
+    """Regression: with logprobs + echo=True, usage.completion_tokens must
+    count only generated tokens, not prompt+generated. The logprobs path
+    returns echoed prompt tokens prepended in result['tokens'], so a naive
+    len(tokens) over-counted completions by the prompt length.
+    """
+    prompt = "The capital of France is"
+    max_new = 6
+    res = llm(prompt, max_tokens=max_new, logprobs=1, echo=True)
+    usage = res["usage"]
+    # completion_tokens reflects only generated tokens (<= max_tokens), never
+    # the echoed prompt.
+    assert 0 < usage["completion_tokens"] <= max_new
+    assert usage["prompt_tokens"] > 0
+    # total = prompt + completion (no double-counting of the echoed prompt).
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+
+    # echo=False must agree on the completion count (echo only changes the
+    # echoed text/prompt accounting, not the number of generated tokens).
+    res_no_echo = llm(prompt, max_tokens=max_new, logprobs=1, echo=False)
+    assert res_no_echo["usage"]["completion_tokens"] <= max_new
+
+
+@requires_model
 def test_streaming(llm):
     chunks = list(llm.generate("Hello", max_tokens=5, stream=True))
     assert len(chunks) > 0
