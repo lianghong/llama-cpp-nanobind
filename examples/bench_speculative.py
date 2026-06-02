@@ -44,6 +44,12 @@ def _llm() -> Llama:
         model_path=path,
         n_ctx=2048,
         n_gpu_layers=-1,
+        # On hybrid MTP models the speculative loop rolls back rejected drafts
+        # via the draft context's recurrent-state slots, so n_rs_seq must be
+        # >= the largest n_draft_max we sweep — otherwise the reject trim fails
+        # ("kv_cache_seq_rm (tgt reject trim) failed"). Default is 2; the sweep
+        # goes up to max(DRAFT_MAX_SWEEP), so size it accordingly.
+        n_rs_seq=max(2, *DRAFT_MAX_SWEEP),
         verbose=False,
     )
     return Llama(path, config=cfg)
