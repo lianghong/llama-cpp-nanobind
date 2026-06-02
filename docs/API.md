@@ -365,7 +365,8 @@ text = llm.generate(
   `*.nextn_predict_layers > 0` metadata, e.g. Qwen3.6-MoE
   `*-MTP.gguf` checkpoints).
 - `LlamaConfig.embeddings` must be `False`.
-- `n_draft_max` must be in `[1, 8]` (validated on `SamplingParams`).
+- `n_draft_max` must be in `[1, 8]` (validated on `SamplingParams` **and** on
+  per-call `n_draft_max=` overrides).
 - `speculative=True` is incompatible with `logprobs=...` on `generate()`.
 
 **Hybrid-attention MTP checkpoints** (Qwen3.6-MoE) report
@@ -380,6 +381,18 @@ RNG once per *position* in each batch rather than once per *step*, so
 seeded *non-greedy* runs give matching distributions but differ in the
 realized sample sequence vs. the per-token baseline. Greedy
 (`temperature=0.0`) is bit-exact.
+
+**Session continuation & mode switching** (`reset_kv_cache=False`,
+`cache_prompt=True`): mixing speculative and non-speculative turns on the same
+KV is handled automatically. A `speculative=True` turn leaves the user KV one
+position behind the prompt-cache mirror (the final corrected token is emitted
+but re-decoded on the next speculative turn — this is intentional). When the
+*next* turn is non-speculative, the wrapper decodes that one undecoded token in
+place so the continuation is correct and the prefix-reuse speedup is preserved.
+A non-speculative → speculative switch forces a KV reset (the draft context's
+recurrent state can only rebuild from scratch). Same-mode continuations are
+untouched. You do **not** need to pass `reset_kv_cache=True` manually when
+switching modes — but doing so is always safe.
 
 **Benchmarks** (RTX 4090, see `examples/bench_speculative.py`):
 

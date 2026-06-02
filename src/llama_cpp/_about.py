@@ -2,7 +2,7 @@
 # File              : _about.py
 # Author            : Lianghong Fei <feilianghong@gmail.com>
 # Date              : 2025-12-12
-# Last Modified Date: 2025-12-12
+# Last Modified Date: 2026-06-02
 # Last Modified By  : Lianghong Fei <feilianghong@gmail.com>
 __all__ = ["__version__"]
-__version__ = "0.5.0"
+__version__ = "0.6.0"
