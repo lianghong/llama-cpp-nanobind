@@ -5,6 +5,8 @@ the precondition checks (ctx_type, n_draft_max, embeddings) at the
 Llama / SamplingParams / Context-binding boundary.
 """
 
+import os
+
 import pytest
 
 from llama_cpp import (
@@ -17,13 +19,48 @@ from llama_cpp.llama import ValidationError
 
 from conftest import MODEL_PATH, requires_model
 
+# A genuine MTP checkpoint (`<arch>.nextn_predict_layers=1`) exercises the
+# positive side of the metadata gate. Shares the env override with test_mtp.py.
+MTP_MODEL_PATH = os.environ.get(
+    "LLAMA_MTP_TEST_MODEL",
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "models",
+        "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+    ),
+)
+requires_mtp_model = pytest.mark.skipif(
+    not os.path.exists(MTP_MODEL_PATH), reason="MTP-capable test model not found"
+)
+
 
 @requires_model
 def test_supports_speculative_mtp_default_ctx_returns_false():
+    # Regression: a plain Qwen3.5 checkpoint (no nextn_predict_layers metadata)
+    # must report False. A bare MTP-context allocation probe false-positives
+    # here because llama.cpp builds a degenerate MTP context for any qwen35
+    # arch; the draft-MTP decode path then SIGABRTs at runtime.
     cfg = LlamaConfig(model_path=MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False)
     llm = Llama(MODEL_PATH, config=cfg)
     try:
+        assert llm.ctx.mtp_predict_layers() == 0
         assert llm.ctx.supports_speculative_mtp() is False
+    finally:
+        llm.close()
+
+
+@requires_mtp_model
+def test_supports_speculative_mtp_real_mtp_model_returns_true():
+    # A genuine MTP checkpoint declares nextn_predict_layers > 0 and the gate
+    # must let it through (the metadata fix must not regress real MTP support).
+    cfg = LlamaConfig(
+        model_path=MTP_MODEL_PATH, n_ctx=512, n_gpu_layers=0, verbose=False
+    )
+    llm = Llama(MTP_MODEL_PATH, config=cfg)
+    try:
+        assert llm.ctx.mtp_predict_layers() > 0
+        assert llm.ctx.supports_speculative_mtp() is True
     finally:
         llm.close()
 

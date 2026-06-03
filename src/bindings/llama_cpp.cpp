@@ -1111,17 +1111,44 @@ class Context {
     return llama_memory_can_shift(mem);
   }
 
-  // True iff the model exposes an MTP graph variant. Probes by trying to
-  // create the draft context lazily (cached on success). Returns false on
-  // any failure so the predicate is safe to call from precondition checks.
+  // True iff the model exposes an MTP graph variant. Returns false on any
+  // failure so the predicate is safe to call from precondition checks.
   bool supports_speculative_mtp() {
     if (!ctx_ || !model_) return false;
+    // Authoritative signal: the GGUF must declare next-token-prediction
+    // layers via `<arch>.nextn_predict_layers > 0`. Allocating an MTP context
+    // is NOT a sufficient test — llama.cpp happily builds a (degenerate)
+    // LLAMA_CONTEXT_TYPE_MTP context for any qwen35-arch model even when it
+    // ships zero MTP layers, so a pure allocation probe false-positives on
+    // plain Qwen3.5 checkpoints and the draft-MTP decode path then aborts at
+    // runtime (GGML_ASSERT n_ubatch >= n_tokens). Gate on metadata first.
+    if (mtp_predict_layers() <= 0) return false;
     if (ctx_dft_ != nullptr) return true;
     try {
       ensure_mtp_draft_context();
       return true;
     } catch (...) {
       return false;
+    }
+  }
+
+  // Return the model's declared next-token-prediction (MTP) layer count from
+  // the GGUF metadata key `<arch>.nextn_predict_layers`. Returns 0 when the
+  // key is absent, empty, or unparseable (the pre-MTP default for every
+  // non-MTP checkpoint). Never throws.
+  int32_t mtp_predict_layers() const {
+    if (!model_) return 0;
+    try {
+      std::string const arch = model_->meta_val_str("general.architecture");
+      if (arch.empty()) return 0;
+      std::string const raw = model_->meta_val_str(arch + ".nextn_predict_layers");
+      if (raw.empty()) return 0;
+      std::size_t consumed = 0;
+      int const layers = std::stoi(raw, &consumed);
+      if (consumed != raw.size()) return 0;  // trailing junk → treat as absent
+      return layers > 0 ? layers : 0;
+    } catch (...) {
+      return 0;
     }
   }
 
@@ -2538,8 +2565,14 @@ NB_MODULE(_llama, m) {
            "Whether memory supports KV cache shifting")
       .def("supports_speculative_mtp", &Context::supports_speculative_mtp,
            "True iff the model exposes an MTP graph variant usable as a "
-           "speculative draft context (probed lazily). Independent of the "
+           "speculative draft context. Gated on the GGUF metadata key "
+           "`<arch>.nextn_predict_layers > 0` (a bare allocation probe "
+           "false-positives on plain qwen35 checkpoints). Independent of the "
            "user-facing ctx_type, which must be DEFAULT for speculative use.")
+      .def("mtp_predict_layers", &Context::mtp_predict_layers,
+           "The model's declared next-token-prediction layer count from the "
+           "GGUF metadata key `<arch>.nextn_predict_layers`; 0 when absent "
+           "(every non-MTP checkpoint).")
       .def("set_embeddings", &Context::set_embeddings, "enabled"_a,
            "Enable or disable embedding extraction at runtime")
       .def("set_causal_attn", &Context::set_causal_attn, "enabled"_a,
