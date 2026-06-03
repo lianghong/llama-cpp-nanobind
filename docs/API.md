@@ -57,6 +57,8 @@ with Llama("model.gguf") as llm:
 - `kv_cache_seq_rm()`, `kv_cache_seq_cp()`, `kv_cache_seq_keep()`, `kv_cache_seq_add()`, `kv_cache_seq_pos_max()` → KV cache management
 - `kv_cache_seq_pos_min()` → `int` – Minimum position in KV cache for sequence
 - `memory_can_shift()` → `bool` – Whether KV cache supports shifting
+- `supports_speculative_mtp()` → `bool` – Whether the model exposes an MTP graph usable as a speculative draft context (gated on `<arch>.nextn_predict_layers > 0` metadata)
+- `mtp_predict_layers()` → `int` – Declared next-token-prediction layer count from `<arch>.nextn_predict_layers` (0 for every non-MTP checkpoint)
 - `set_embeddings(enabled)` → None – Toggle embedding computation at runtime
 - `set_causal_attn(enabled)` → None – Toggle causal attention at runtime
 
@@ -361,9 +363,13 @@ text = llm.generate(
 - User-facing `ctx_type` must be `LLAMA_CONTEXT_TYPE_DEFAULT`. The MTP
   graph is the draft context, not the user-facing ctx.
 - The model must expose an MTP graph variant
-  (`Context.supports_speculative_mtp()` — checks for
-  `*.nextn_predict_layers > 0` metadata, e.g. Qwen3.6-MoE
-  `*-MTP.gguf` checkpoints).
+  (`Context.supports_speculative_mtp()` — gated on the GGUF metadata key
+  `<arch>.nextn_predict_layers > 0`, e.g. Qwen3.6-MoE `*-MTP.gguf`
+  checkpoints). The metadata is authoritative: llama.cpp will *allocate* a
+  degenerate `LLAMA_CONTEXT_TYPE_MTP` context for any `qwen35`-arch model
+  even when it ships zero MTP layers, so the probe must not infer support
+  from allocation success — a plain Qwen3.5 checkpoint correctly reports
+  `False`.
 - `LlamaConfig.embeddings` must be `False`.
 - `n_draft_max` must be in `[1, 8]` (validated on `SamplingParams` **and** on
   per-call `n_draft_max=` overrides).

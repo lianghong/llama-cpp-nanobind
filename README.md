@@ -107,6 +107,9 @@ The script composes `CMAKE_ARGS` for you and respects `LLAMA_PREFIX`, `CMAKE_BUI
 
 **Recent Updates**:
 
+**2026-06-03** - Speculative MTP probe fix:
+- **`supports_speculative_mtp()` no longer false-positives on non-MTP models.** It now gates on the GGUF metadata key `<arch>.nextn_predict_layers > 0` (via `Context.mtp_predict_layers()`) instead of MTP-context allocation success — llama.cpp allocates a degenerate MTP context for any `qwen35`-arch checkpoint, so the old probe wrongly enabled speculative on plain Qwen3.5 models and the draft path then aborted the process (`GGML_ASSERT n_ubatch >= n_tokens`). Plain Qwen3.5 now reports `False` (clean `ValidationError` on forced `speculative=True`); genuine MTP checkpoints are unaffected. **Full details**: `docs/CHANGELOG-2026-06-03.md`.
+
 **v0.6.0** (2026-06-02) - KV/mirror invariant fixes (code review + deeper speculative bugs):
 - **Multi-token stop sequences** no longer strand stop-prefix tokens in the KV cache: the stop handlers rewind KV to match the returned output and refresh logits (`Context::rewind_keep_refresh`), guarded by `memory_can_shift()` (skipped on hybrid models, where the Python layer reconciles instead).
 - **Speculative ↔ non-speculative session continuation** is now correct and automatic. The speculative loop's off-by-1 (user KV ends one position behind the prompt-cache mirror) is load-bearing and self-heals on the next speculative turn; a spec→non-spec switch heals it in place (preserving prefix reuse), and a non-spec→spec switch resets the KV. Also fixes a `GGML_ASSERT(impl)` process abort on speculative + multi-token stop + speculative continuation.
