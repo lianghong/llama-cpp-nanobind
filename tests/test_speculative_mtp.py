@@ -16,18 +16,7 @@ from llama_cpp import (
     SamplingParams,
 )
 
-MTP_MODEL_PATH = os.environ.get(
-    "LLAMA_MTP_TEST_MODEL",
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "models",
-        "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
-    ),
-)
-requires_mtp_model = pytest.mark.skipif(
-    not os.path.exists(MTP_MODEL_PATH), reason="MTP-capable test model not found"
-)
+from conftest import MTP_MODEL_PATH, requires_mtp_model
 
 
 def _make_mtp_llm(**overrides):

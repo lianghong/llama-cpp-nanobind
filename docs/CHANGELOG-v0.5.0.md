@@ -32,7 +32,7 @@ resp = llm.create_chat_completion(messages, sampling_params=sp, speculative=True
 ### Preconditions (validated by `Llama._validate_speculative`)
 
 - User-facing `ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT` (the MTP graph belongs to the internal draft context).
-- Model exposes an MTP graph (`Context::supports_speculative_mtp()` — checks for `nextn_predict_layers > 0` metadata).
+- Model exposes an MTP graph (`Context::supports_speculative_mtp()`). *(As shipped in v0.5.0 this probed by MTP-context allocation success; the `nextn_predict_layers > 0` metadata gate landed 2026-06-03 — see `docs/CHANGELOG-2026-06-03.md`.)*
 - `LlamaConfig.embeddings=False`.
 
 ### Benchmarks (Qwen3.6 family, RTX 4090)

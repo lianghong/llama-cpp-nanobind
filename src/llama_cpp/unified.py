@@ -1004,8 +1004,9 @@ class UnifiedLLM:
             )
 
         # Resolve speculative mode. "auto" probes the model's MTP support
-        # after load; True/False are forced. supports_speculative_mtp() is
-        # cheap (a single bool check on the loaded model).
+        # after load; True/False are forced. The probe is cheap on non-MTP
+        # models (metadata check) but on MTP-capable models its first call
+        # allocates the draft context, so False skips it entirely.
         self.speculative = self._resolve_speculative(speculative)
         self.n_draft_max = n_draft_max
 
@@ -1044,6 +1045,14 @@ class UnifiedLLM:
         Logs the decision so operators can confirm whether the speedup is
         actually engaged at startup.
         """
+        if mode is False:
+            # Skip the probe entirely: on an MTP-capable model its first call
+            # allocates the draft context, which False callers never use.
+            return False
+        if mode is not True and mode != "auto":
+            raise ValueError(
+                f"speculative must be True, False, or 'auto'; got {mode!r}"
+            )
         has_mtp = self.llm.ctx.supports_speculative_mtp()
         if mode == "auto":
             if has_mtp:
@@ -1052,17 +1061,13 @@ class UnifiedLLM:
                 )
                 return True
             return False
-        if mode is True:
-            if not has_mtp:
-                raise ValueError(
-                    "speculative=True was requested but the loaded model does "
-                    "not expose an MTP graph variant. Use a *-MTP.gguf "
-                    "checkpoint (e.g. Qwen3.6-MoE) or speculative='auto'."
-                )
-            return True
-        if mode is False:
-            return False
-        raise ValueError(f"speculative must be True, False, or 'auto'; got {mode!r}")
+        if not has_mtp:
+            raise ValueError(
+                "speculative=True was requested but the loaded model does "
+                "not expose an MTP graph variant. Use a *-MTP.gguf "
+                "checkpoint (e.g. Qwen3.6-MoE) or speculative='auto'."
+            )
+        return True
 
     def _check_closed(self) -> None:
         """Raise LlamaError if instance has been closed."""

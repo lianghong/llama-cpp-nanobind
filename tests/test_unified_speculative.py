@@ -8,26 +8,9 @@ Default model: ``./models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf`` (override via
 ``LLAMA_MTP_TEST_MODEL``). Tests skip cleanly when the file is absent.
 """
 
-import os
-
-import pytest
-
 from llama_cpp.unified import UnifiedLLM
 
-
-MTP_MODEL_PATH = os.environ.get(
-    "LLAMA_MTP_TEST_MODEL",
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "models",
-        "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
-    ),
-)
-requires_mtp_model = pytest.mark.skipif(
-    not os.path.exists(MTP_MODEL_PATH),
-    reason="MTP-capable test model not found",
-)
+from conftest import MTP_MODEL_PATH, requires_mtp_model
 
 
 # MTP test model (35B-A3B) is large; keep n_ctx tiny to fit common VRAM budgets.

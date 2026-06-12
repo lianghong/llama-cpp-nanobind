@@ -752,6 +752,14 @@ class Llama:
                 "user-facing ctx_type."
             )
         if not self.ctx.supports_speculative_mtp():
+            if self.ctx.mtp_predict_layers() > 0:
+                # Metadata says MTP-capable, so the draft-context allocation
+                # failed (e.g. CUDA OOM) — don't tell the user to change models.
+                raise ValidationError(
+                    "speculative=True: the model declares MTP layers but the "
+                    "draft context could not be created (likely out of "
+                    "device memory). Free VRAM or reduce n_ctx and retry."
+                )
             raise ValidationError(
                 "speculative=True requires a model with an MTP graph "
                 "variant (e.g. Qwen3.6-MoE *-MTP.gguf checkpoints). The "
@@ -1049,6 +1057,28 @@ class Llama:
         result: bool = self.ctx.memory_can_shift()
         return result
 
+    def supports_speculative_mtp(self) -> bool:
+        """Return whether the model can drive draft-MTP speculative decoding.
+
+        True iff the model declares ``<arch>.nextn_predict_layers > 0``
+        metadata and an MTP draft context can be created. The first call on
+        a capable model allocates the draft context (cached until
+        ``reset()``/``close()``).
+        """
+        self._check_closed()
+        result: bool = self.ctx.supports_speculative_mtp()
+        return result
+
+    def mtp_predict_layers(self) -> int:
+        """Return the model's declared next-token-prediction layer count.
+
+        Read from the GGUF metadata key ``<arch>.nextn_predict_layers``;
+        0 for every non-MTP checkpoint.
+        """
+        self._check_closed()
+        result: int = self.ctx.mtp_predict_layers()
+        return result
+
     def set_embeddings(self, enabled: bool) -> None:
         """Enable or disable embedding extraction at runtime."""
         self._check_closed()
@@ -1264,13 +1294,22 @@ class Llama:
         can drift or produce garbage. There are two distinct boundaries, healed
         differently. Returns the effective ``reset_kv_cache``.
 
-        * **prev speculative → now non-speculative**: the speculative loop left
-          the user KV exactly one position behind the mirror (the final
-          ``corrected_id`` was emitted but not decoded — the load-bearing
-          off-by-1). A non-speculative turn never re-decodes it, so it would
-          read stale logits. We *heal in place* by decoding the missing tail
-          token(s) so KV == mirror, then continue with prefix reuse — keeping
-          the speedup. No reset needed.
+        * **prev speculative → now non-speculative**: two exit shapes need
+          healing, both in place (prefix reuse kept, no reset):
+
+          - *KV behind the mirror* (the common case): the final
+            ``corrected_id`` was emitted but not decoded — the load-bearing
+            off-by-1. Decode the missing tail token(s); the last decode also
+            refreshes the logits.
+          - *KV aligned with the mirror*: ``max_tokens`` ran out exactly on an
+            accepted draft, so every mirror token is already in KV — but the
+            logits buffer still holds the last verify batch's logits at the
+            final *drafted* position, not the mirror tail (stale whenever any
+            draft was rejected that round). A full-LCP continuation decodes
+            nothing and would sample its first token from those stale logits.
+            Trim the last token and re-decode it to refresh; if the trim is
+            refused (hybrid memory), fall back to a full clear + re-prime
+            (correct, speedup lost for that turn).
 
         * **prev non-speculative → now speculative**: the draft context's
           recurrent MTP state was never built for this prefix and can only be
@@ -1287,14 +1326,31 @@ class Llama:
             return reset_kv_cache  # same mode: no boundary to cross
 
         if self._last_gen_speculative and not speculative:
-            # spec → nonspec: align KV to the mirror by decoding the undecoded
-            # tail (the off-by-1 corrected_id, possibly a few tokens), then
-            # continue without a reset.
             if self._cached_prompt_tokens:
+                mirror = self._cached_prompt_tokens
                 kv_len = self.ctx.kv_cache_seq_pos_max(0) + 1
-                missing = self._cached_prompt_tokens[kv_len:]
-                for tok in missing:
-                    self.ctx.decode_one(tok)
+                if kv_len < len(mirror):
+                    # Off-by-1 exit: decode the undecoded tail (the emitted
+                    # corrected_id); the last decode also refreshes the logits
+                    # buffer.
+                    for tok in mirror[kv_len:]:
+                        self.ctx.decode_one(tok)
+                elif kv_len == len(mirror):
+                    # Aligned exit (max_tokens ran out on an accepted draft):
+                    # every mirror token is in KV, but the logits buffer still
+                    # holds the last verify batch's final position — a drafted
+                    # token that may have been rejected and trimmed. A full-LCP
+                    # continuation decodes nothing and would sample from those
+                    # stale logits. Trim the tail token and re-decode it.
+                    if self.ctx.kv_cache_seq_rm(0, kv_len - 1, -1):
+                        # KV memory mutated — invalidate on-device handles.
+                        self._state_epoch += 1
+                        self.ctx.decode_one(mirror[-1])
+                    else:
+                        # Hybrid memory refused the trim: fall back to a full
+                        # reset (caller clears KV + mirror; correct, speedup
+                        # lost for this turn).
+                        return True
             return False
         # nonspec → spec: draft state must rebuild from scratch — reset.
         return True
@@ -2342,6 +2398,10 @@ class Llama:
         # "logprobs") surfaces as a clear ValidationError here, not as a
         # confusing TypeError deep in SamplingParams.__init__.
         self._validate_sampling_overrides(sampling_overrides)
+        # _validate_speculative probes self.ctx — closed-instance check first
+        # so a closed Llama raises LlamaError, not a misleading
+        # ValidationError.
+        self._check_closed()
         self._validate_speculative(speculative)
         effective_n_draft_max = self._validate_n_draft_max(
             int(n_draft_max)

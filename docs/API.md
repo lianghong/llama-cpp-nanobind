@@ -363,13 +363,11 @@ text = llm.generate(
 - User-facing `ctx_type` must be `LLAMA_CONTEXT_TYPE_DEFAULT`. The MTP
   graph is the draft context, not the user-facing ctx.
 - The model must expose an MTP graph variant
-  (`Context.supports_speculative_mtp()` — gated on the GGUF metadata key
+  (`supports_speculative_mtp()` — gated on the GGUF metadata key
   `<arch>.nextn_predict_layers > 0`, e.g. Qwen3.6-MoE `*-MTP.gguf`
-  checkpoints). The metadata is authoritative: llama.cpp will *allocate* a
-  degenerate `LLAMA_CONTEXT_TYPE_MTP` context for any `qwen35`-arch model
-  even when it ships zero MTP layers, so the probe must not infer support
-  from allocation success — a plain Qwen3.5 checkpoint correctly reports
-  `False`.
+  checkpoints). A plain Qwen3.5 checkpoint correctly reports `False`.
+  Why metadata and not allocation success: see
+  `docs/CHANGELOG-2026-06-03.md`.
 - `LlamaConfig.embeddings` must be `False`.
 - `n_draft_max` must be in `[1, 8]` (validated on `SamplingParams` **and** on
   per-call `n_draft_max=` overrides).
@@ -390,11 +388,14 @@ realized sample sequence vs. the per-token baseline. Greedy
 
 **Session continuation & mode switching** (`reset_kv_cache=False`,
 `cache_prompt=True`): mixing speculative and non-speculative turns on the same
-KV is handled automatically. A `speculative=True` turn leaves the user KV one
-position behind the prompt-cache mirror (the final corrected token is emitted
-but re-decoded on the next speculative turn — this is intentional). When the
-*next* turn is non-speculative, the wrapper decodes that one undecoded token in
-place so the continuation is correct and the prefix-reuse speedup is preserved.
+KV is handled automatically. A `speculative=True` turn usually leaves the user
+KV one position behind the prompt-cache mirror (the final corrected token is
+emitted but re-decoded on the next speculative turn — this is intentional).
+When the *next* turn is non-speculative, the wrapper heals in place: it decodes
+that one undecoded token, or — when the turn ended exactly on an accepted draft
+and KV is already aligned — re-decodes the final token to refresh stale verify
+logits. Either way the continuation is correct and the prefix-reuse speedup is
+preserved.
 A non-speculative → speculative switch forces a KV reset (the draft context's
 recurrent state can only rebuild from scratch). Same-mode continuations are
 untouched. You do **not** need to pass `reset_kv_cache=True` manually when
@@ -487,6 +488,8 @@ UnifiedLLM(
     family: str | ModelFamily | None = None,
     cache_type_k: int = 1,   # GGML_TYPE_F16
     cache_type_v: int = 1,   # GGML_TYPE_F16
+    speculative: bool | str = "auto",
+    n_draft_max: int | None = None,
 )
 ```
 
@@ -498,6 +501,8 @@ UnifiedLLM(
 - `verbose`: Enable verbose logging.
 - `family`: Explicit model family override (auto-detects if None).
 - `cache_type_k` / `cache_type_v`: ggml_type for K/V cache. Defaults to F16. Pass e.g. `GGML_TYPE_Q8_0` or `GGML_TYPE_BF16` from `llama_cpp` to quantize. Flash attention is enabled by default (`flash_attn=1`), which is required for quantized V. See [Quantized KV cache](#quantized-kv-cache) above for the full constant list and validation rules.
+- `speculative`: Draft-MTP speculative decoding mode. `"auto"` (default) enables it iff the model exposes an MTP graph; `True` requires it (raises `ValueError` when the model has no MTP graph); `False` disables it without probing. See [Draft-MTP speculative decoding](#draft-mtp-speculative-decoding) above.
+- `n_draft_max`: Max draft tokens per verify round, range `[1, 8]`. `None` defers to the `SamplingParams` default (2).
 
 **Quantized KV cache example**
 
@@ -526,6 +531,7 @@ with UnifiedLLM("models/Qwen3.5-4B-Q4_K_M.gguf") as llm:
 
 - `family` → `ModelFamily` – Detected model family enum (one of `QWEN3_5`, `QWEN3_6`, `GEMMA4`, `GRANITE`)
 - `supports_thinking` → `bool` – Whether the resolved preset has thinking enabled by default
+- `speculative_enabled` → `bool` – Resolved speculative mode (what `"auto"` decided, or the forced value)
 
 **Methods**
 

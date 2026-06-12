@@ -22,13 +22,20 @@ llama-context.cpp:1701: GGML_ASSERT((cparams.causal_attn || cparams.n_ubatch >= 
 ```
 
 **Root cause.** `Context::supports_speculative_mtp()` inferred MTP capability
-from whether an `LLAMA_CONTEXT_TYPE_MTP` context could be *allocated*.
-llama.cpp builds a degenerate MTP context for any `qwen35`-arch model
-regardless of whether it ships next-token-prediction layers, so the probe
-returned `True` on plain Qwen3.5 checkpoints. The genuine signal — the GGUF
-metadata key `<arch>.nextn_predict_layers` — was never consulted. The
-draft-MTP draft context runs non-causal and forbids ubatch chunking, so the
-first >64-token prompt tripped the assert. The existing
+from whether an `LLAMA_CONTEXT_TYPE_MTP` context could be *allocated*. The
+genuine signal — the GGUF metadata key `<arch>.nextn_predict_layers` — was
+never consulted. Allocation success is not a capability signal: llama.cpp
+builds **before b9180** (2026-05-16, the same PR that introduced the
+`common_speculative` draft-MTP API) allocate a degenerate MTP context for any
+`qwen35`-arch model regardless of whether it ships next-token-prediction
+layers, so against such a build the probe returned `True` on plain Qwen3.5
+checkpoints. (b9180+ rejects the allocation — `llama_init_from_model` returns
+null when `hparams.n_layer_nextn == 0` — under which the old probe happened to
+return `False` for the right reason on the wrong mechanism, and an allocation
+probe still builds a throwaway draft context just to answer a capability
+query.) The draft-MTP draft context runs non-causal and forbids ubatch
+chunking, so once speculative engaged, the first >64-token prompt tripped the
+assert. The existing
 `tests/test_speculative_validation.py::test_supports_speculative_mtp_default_ctx_returns_false`
 encoded the correct expectation (`False`) and was failing against the
 shipped 0.6.0 build.
@@ -50,8 +57,9 @@ shipped 0.6.0 build.
 - Plain Qwen3.5 (4B/9B): `mtp_predict_layers() == 0`,
   `supports_speculative_mtp() is False`. `UnifiedLLM(..., speculative="auto")`
   resolves to disabled and generates normally — no crash. An explicit
-  `speculative=True` raises a recoverable `ValidationError` instead of
-  aborting the process.
+  `speculative=True` raises a recoverable error instead of aborting the
+  process: `ValueError` from the `UnifiedLLM` constructor, `ValidationError`
+  from `Llama.generate(...)`-level calls.
 - Genuine MTP (Qwen3.6-35B-A3B / 27B, `nextn_predict_layers=1`):
   `supports_speculative_mtp() is True` — speculative still works end-to-end.
 

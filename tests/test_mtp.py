@@ -7,8 +7,6 @@ Qwen3.5 and Qwen3.5-MoE / Qwen3.6 MTP checkpoints). On a model without
 MTP layers, context construction fails with `ModelLoadError`.
 """
 
-import os
-
 import pytest
 
 from llama_cpp import (
@@ -21,22 +19,7 @@ from llama_cpp import (
 )
 from llama_cpp.llama import ValidationError
 
-from conftest import MODEL_PATH, requires_model
-
-# A Qwen3.6-MoE MTP checkpoint (`nextn_predict_layers=1`) is required to
-# exercise the positive MTP path. Override via `LLAMA_MTP_TEST_MODEL`.
-MTP_MODEL_PATH = os.environ.get(
-    "LLAMA_MTP_TEST_MODEL",
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "models",
-        "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
-    ),
-)
-requires_mtp_model = pytest.mark.skipif(
-    not os.path.exists(MTP_MODEL_PATH), reason="MTP-capable test model not found"
-)
+from conftest import MODEL_PATH, MTP_MODEL_PATH, requires_model, requires_mtp_model
 
 
 # --- Pure validation (no model required) ---

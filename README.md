@@ -107,8 +107,12 @@ The script composes `CMAKE_ARGS` for you and respects `LLAMA_PREFIX`, `CMAKE_BUI
 
 **Recent Updates**:
 
+**2026-06-12** - Build fix + speculative continuation fix:
+- **Tracks the upstream `llama_set_embeddings_pre_norm` → `llama_set_embeddings_nextn` rename** (llama.cpp b9496+) — the extension builds and imports again against current `/usr/local` llama.cpp.
+- **spec→nonspec continuation no longer diverges when `max_tokens` runs out on an accepted draft**: the mode-switch guard now also refreshes stale verify logits on the KV-aligned exit shape (trim + re-decode the tail token), preserving prefix reuse. Plus code-review hardening: memoized `mtp_predict_layers()` with a parse-failure warning, GIL released during the MTP probe, `Llama`-level `supports_speculative_mtp()`/`mtp_predict_layers()` wrappers, OOM-aware speculative validation errors, and `UnifiedLLM(speculative=False)` skips the probe. **Full details**: `docs/CHANGELOG-2026-06-12.md`.
+
 **2026-06-03** - Speculative MTP probe fix:
-- **`supports_speculative_mtp()` no longer false-positives on non-MTP models.** It now gates on the GGUF metadata key `<arch>.nextn_predict_layers > 0` (via `Context.mtp_predict_layers()`) instead of MTP-context allocation success — llama.cpp allocates a degenerate MTP context for any `qwen35`-arch checkpoint, so the old probe wrongly enabled speculative on plain Qwen3.5 models and the draft path then aborted the process (`GGML_ASSERT n_ubatch >= n_tokens`). Plain Qwen3.5 now reports `False` (clean `ValidationError` on forced `speculative=True`); genuine MTP checkpoints are unaffected. **Full details**: `docs/CHANGELOG-2026-06-03.md`.
+- **`supports_speculative_mtp()` no longer false-positives on non-MTP models.** It now gates on the GGUF metadata key `<arch>.nextn_predict_layers > 0` (via `mtp_predict_layers()`) instead of MTP-context allocation success — pre-b9180 llama.cpp builds allocate a degenerate MTP context for `qwen35`-arch checkpoints without MTP layers, so the old probe wrongly enabled speculative on plain Qwen3.5 models and the draft path then aborted the process (`GGML_ASSERT n_ubatch >= n_tokens`). Plain Qwen3.5 now reports `False` (clean error on forced `speculative=True`: `ValueError` from `UnifiedLLM`, `ValidationError` from `Llama`); genuine MTP checkpoints are unaffected. **Full details**: `docs/CHANGELOG-2026-06-03.md`.
 
 **v0.6.0** (2026-06-02) - KV/mirror invariant fixes (code review + deeper speculative bugs):
 - **Multi-token stop sequences** no longer strand stop-prefix tokens in the KV cache: the stop handlers rewind KV to match the returned output and refresh logits (`Context::rewind_keep_refresh`), guarded by `memory_can_shift()` (skipped on hybrid models, where the Python layer reconciles instead).

@@ -18,6 +18,23 @@ requires_model = pytest.mark.skipif(
     not os.path.exists(MODEL_PATH), reason="test model not found"
 )
 
+# A genuine MTP checkpoint (`<arch>.nextn_predict_layers > 0`) for the
+# positive draft-MTP paths (test_mtp.py, test_speculative_mtp.py,
+# test_unified_speculative.py, test_speculative_validation.py).
+MTP_MODEL_PATH = os.environ.get(
+    "LLAMA_MTP_TEST_MODEL",
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "models",
+        "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+    ),
+)
+
+requires_mtp_model = pytest.mark.skipif(
+    not os.path.exists(MTP_MODEL_PATH), reason="MTP-capable test model not found"
+)
+
 
 @pytest.fixture(autouse=True)
 def cleanup_between_tests():

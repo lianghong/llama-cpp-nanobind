@@ -1116,12 +1116,14 @@ class Context {
   bool supports_speculative_mtp() {
     if (!ctx_ || !model_) return false;
     // Authoritative signal: the GGUF must declare next-token-prediction
-    // layers via `<arch>.nextn_predict_layers > 0`. Allocating an MTP context
-    // is NOT a sufficient test — llama.cpp happily builds a (degenerate)
-    // LLAMA_CONTEXT_TYPE_MTP context for any qwen35-arch model even when it
-    // ships zero MTP layers, so a pure allocation probe false-positives on
-    // plain Qwen3.5 checkpoints and the draft-MTP decode path then aborts at
-    // runtime (GGML_ASSERT n_ubatch >= n_tokens). Gate on metadata first.
+    // layers via `<arch>.nextn_predict_layers > 0`. MTP-context allocation
+    // success is NOT a capability signal: pre-b9180 llama.cpp builds allocate
+    // a degenerate LLAMA_CONTEXT_TYPE_MTP context for qwen35-arch models that
+    // ship zero MTP layers (the draft-MTP decode path then aborts at runtime,
+    // GGML_ASSERT n_ubatch >= n_tokens; b9180+ rejects the allocation), and
+    // even on gated builds an allocation probe would build a throwaway draft
+    // context just to answer a capability query. Gate on metadata first
+    // (memoized — O(1) after the first read).
     if (mtp_predict_layers() <= 0) return false;
     if (ctx_dft_ != nullptr) return true;
     try {
@@ -1135,21 +1137,13 @@ class Context {
   // Return the model's declared next-token-prediction (MTP) layer count from
   // the GGUF metadata key `<arch>.nextn_predict_layers`. Returns 0 when the
   // key is absent, empty, or unparseable (the pre-MTP default for every
-  // non-MTP checkpoint). Never throws.
+  // non-MTP checkpoint). Never throws. The value is immutable per model, so
+  // the first successful read is memoized.
   int32_t mtp_predict_layers() const {
     if (!model_) return 0;
-    try {
-      std::string const arch = model_->meta_val_str("general.architecture");
-      if (arch.empty()) return 0;
-      std::string const raw = model_->meta_val_str(arch + ".nextn_predict_layers");
-      if (raw.empty()) return 0;
-      std::size_t consumed = 0;
-      int const layers = std::stoi(raw, &consumed);
-      if (consumed != raw.size()) return 0;  // trailing junk → treat as absent
-      return layers > 0 ? layers : 0;
-    } catch (...) {
-      return 0;
-    }
+    if (mtp_layers_cache_ >= 0) return mtp_layers_cache_;
+    mtp_layers_cache_ = read_mtp_predict_layers();
+    return mtp_layers_cache_;
   }
 
   void set_embeddings(bool enabled) {
@@ -1168,7 +1162,44 @@ class Context {
   // Lazy MTP draft context — same model, ctx_type=LLAMA_CONTEXT_TYPE_MTP.
   // Created on first speculative call, freed by close()/reset()/dtor.
   llama_context* ctx_dft_ = nullptr;
+  // Memoized mtp_predict_layers() result; -1 = not yet read. The metadata is
+  // immutable per model, and the predicate runs on every speculative call.
+  mutable int32_t mtp_layers_cache_ = -1;
   ContextParams params_;
+
+  // Uncached metadata read backing mtp_predict_layers(). Returns 0 when the
+  // key is absent/empty/unparseable; warns on stderr when the key exists but
+  // fails to parse (a genuine MTP checkpoint silently losing speculative is
+  // otherwise undiagnosable). Never throws.
+  int32_t read_mtp_predict_layers() const {
+    std::string arch;
+    std::string raw;
+    try {
+      arch = model_->meta_val_str("general.architecture");
+      if (arch.empty()) return 0;
+      raw = model_->meta_val_str(arch + ".nextn_predict_layers");
+    } catch (...) {
+      return 0;  // metadata unreadable (e.g. model closed) — not a parse issue
+    }
+    if (raw.empty()) return 0;
+    try {
+      std::size_t consumed = 0;
+      int const layers = std::stoi(raw, &consumed);
+      if (consumed == raw.size()) {
+        return layers > 0 ? layers : 0;
+      }
+      // NOLINTNEXTLINE(bugprone-empty-catch) — fall through to the warning
+    } catch (...) {
+      // invalid_argument / out_of_range (e.g. a u32-max or non-numeric
+      // rendering) — handled by the unparseable warning below.
+    }
+    std::fprintf(stderr,
+                 "llama-cpp-nanobind: warning: %s.nextn_predict_layers "
+                 "metadata is present but unparseable (\"%s\"); treating as 0 "
+                 "(speculative MTP disabled)\n",
+                 arch.c_str(), raw.c_str());
+    return 0;
+  }
   int32_t cur_pos_ = 0;
   llama_batch single_batch_ = {};  // Reusable single-token batch for decode_one
   // Reusable multi-token batch for the speculative draft-verify loop. Sized
@@ -1999,22 +2030,22 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
         "draft-MTP impl is unavailable)");
   }
 
-  // The draft-MTP ctor already calls llama_set_embeddings_pre_norm() on both
+  // The draft-MTP ctor already calls llama_set_embeddings_nextn() on both
   // contexts. We RAII-guard them off on exit so subsequent non-speculative
   // generation on ctx_tgt isn't perturbed.
-  struct PreNormGuard {
+  struct NextnEmbdGuard {
     llama_context* tgt;
     llama_context* dft;
-    PreNormGuard(llama_context* t, llama_context* d) : tgt(t), dft(d) {}
-    ~PreNormGuard() {
-      if (tgt) llama_set_embeddings_pre_norm(tgt, false, false);
-      if (dft) llama_set_embeddings_pre_norm(dft, false, false);
+    NextnEmbdGuard(llama_context* t, llama_context* d) : tgt(t), dft(d) {}
+    ~NextnEmbdGuard() {
+      if (tgt) llama_set_embeddings_nextn(tgt, false, false);
+      if (dft) llama_set_embeddings_nextn(dft, false, false);
     }
-    PreNormGuard(const PreNormGuard&) = delete;
-    PreNormGuard& operator=(const PreNormGuard&) = delete;
-    PreNormGuard(PreNormGuard&&) = delete;
-    PreNormGuard& operator=(PreNormGuard&&) = delete;
-  } const pn_guard{ctx_tgt, ctx_dft};
+    NextnEmbdGuard(const NextnEmbdGuard&) = delete;
+    NextnEmbdGuard& operator=(const NextnEmbdGuard&) = delete;
+    NextnEmbdGuard(NextnEmbdGuard&&) = delete;
+    NextnEmbdGuard& operator=(NextnEmbdGuard&&) = delete;
+  } const nextn_guard{ctx_tgt, ctx_dft};
 
   // --- Sync ctx_dft with ctx_tgt -------------------------------------
   // ctx_dft is cached across calls and may carry KV from a prior generation.
@@ -2564,11 +2595,12 @@ NB_MODULE(_llama, m) {
       .def("memory_can_shift", &Context::memory_can_shift,
            "Whether memory supports KV cache shifting")
       .def("supports_speculative_mtp", &Context::supports_speculative_mtp,
-           "True iff the model exposes an MTP graph variant usable as a "
-           "speculative draft context. Gated on the GGUF metadata key "
-           "`<arch>.nextn_predict_layers > 0` (a bare allocation probe "
-           "false-positives on plain qwen35 checkpoints). Independent of the "
-           "user-facing ctx_type, which must be DEFAULT for speculative use.")
+           nb::call_guard<nb::gil_scoped_release>(),
+           "True iff the model declares `<arch>.nextn_predict_layers > 0` "
+           "metadata and an MTP draft context can be created. The first call "
+           "on a capable model allocates the draft context (cached). "
+           "Independent of the user-facing ctx_type, which must be DEFAULT "
+           "for speculative use.")
       .def("mtp_predict_layers", &Context::mtp_predict_layers,
            "The model's declared next-token-prediction layer count from the "
            "GGUF metadata key `<arch>.nextn_predict_layers`; 0 when absent "
