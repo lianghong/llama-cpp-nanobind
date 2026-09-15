@@ -19,27 +19,21 @@ Example:
     >>> print(response)
 """
 
-from abc import ABC, abstractmethod
 import atexit
-from collections.abc import Iterator
 import contextlib
-from dataclasses import dataclass
-from dataclasses import field
-from enum import auto
-from enum import Enum
 import gc
 import logging
 import os
 import re
 import threading
-from typing import Any, cast, ClassVar
 import weakref
+from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Any, ClassVar, cast
 
-from llama_cpp import Llama
-from llama_cpp import LlamaConfig
-from llama_cpp import LlamaError
-from llama_cpp import SamplingParams
-
+from llama_cpp import Llama, LlamaConfig, LlamaError, SamplingParams
 
 # ---------------------------------------------------------------------------
 # Instance tracking for cleanup at exit
@@ -367,7 +361,7 @@ def detect_from_metadata(model: Llama) -> ModelConfig | None:
     try:
         arch = model.model.meta_val_str("general.architecture").lower()
         name = model.model.meta_val_str("general.name").lower()
-    except (RuntimeError, AttributeError):
+    except RuntimeError, AttributeError:
         return None
 
     # Qwen family — distinguish 3.5 vs 3.6 by name; arch stays "qwen*".
@@ -955,6 +949,14 @@ class UnifiedLLM:
         n_ctx = min(n_ctx, self.model_config.max_ctx)
         n_batch = min(n_batch, n_ctx)
         n_ubatch = min(n_ubatch, n_batch)
+        try:
+            draft_width = (
+                Llama._validate_n_draft_max(n_draft_max)
+                if n_draft_max is not None
+                else 2
+            )
+        except LlamaError as exc:
+            raise ValueError(str(exc)) from exc
 
         llama_config = LlamaConfig(
             model_path=model_path,
@@ -967,6 +969,9 @@ class UnifiedLLM:
             flash_attn=1,
             cache_type_k=cache_type_k,
             cache_type_v=cache_type_v,
+            # Plan weight loading and target rollback before creating contexts.
+            load_mtp=speculative is not False,
+            n_rs_seq=draft_width if speculative is not False else 0,
             verbose=verbose,
         )
 

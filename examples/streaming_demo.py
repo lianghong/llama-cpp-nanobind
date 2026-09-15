@@ -15,7 +15,7 @@ from llama_cpp import Llama
 MODEL_PATH = "models/Qwen3.5-4B-Q4_K_M.gguf"
 
 
-def demo_buffered_streaming():
+def demo_buffered_streaming() -> None:
     """Demo: generate(..., stream=True) - appears to stream but is buffered."""
     print("=" * 70)
     print("BUFFERED STREAMING: generate(..., stream=True)")
@@ -44,6 +44,10 @@ def demo_buffered_streaming():
         end_time = time.time()
 
     print("\n\nTiming:")
+    if first_chunk_time is None:
+        print("  No output chunks were generated.")
+        print(f"  Total time: {end_time - start_time:.3f}s")
+        return
     print(f"  Time to first chunk: {first_chunk_time - start_time:.3f}s")
     print(f"  Total time: {end_time - start_time:.3f}s")
     print(
@@ -52,7 +56,7 @@ def demo_buffered_streaming():
     print()
 
 
-def demo_true_streaming():
+def demo_true_streaming() -> None:
     """Demo: generate_stream() - true incremental streaming."""
     print("=" * 70)
     print("TRUE STREAMING: generate_stream()")
@@ -84,6 +88,10 @@ def demo_true_streaming():
         end_time = time.time()
 
     print("\n\nTiming:")
+    if first_chunk_time is None:
+        print("  No output chunks were generated.")
+        print(f"  Total time: {end_time - start_time:.3f}s")
+        return
     print(f"  Time to first chunk: {first_chunk_time - start_time:.3f}s")
     print(f"  Total time: {end_time - start_time:.3f}s")
     print(
@@ -93,7 +101,7 @@ def demo_true_streaming():
     print()
 
 
-def demo_streaming_with_stop():
+def demo_streaming_with_stop() -> None:
     """Demo: Streaming with stop sequences."""
     print("=" * 70)
     print("STREAMING WITH STOP SEQUENCES")
@@ -113,7 +121,7 @@ def demo_streaming_with_stop():
     print()
 
 
-def demo_early_termination():
+def demo_early_termination() -> None:
     """Demo: Early termination of streaming."""
     print("=" * 70)
     print("EARLY TERMINATION")
@@ -134,7 +142,7 @@ def demo_early_termination():
     print()
 
 
-def main():
+def main() -> None:
     """Run all demonstrations."""
     try:
         print("\n" + "=" * 70)

@@ -241,11 +241,15 @@ async def test_generate_async_stream_slow_consumer_no_loss(llm):
     import asyncio
 
     fast = []
-    async for chunk in await llm.generate_async("Count to ten:", max_tokens=24, stream=True):
+    async for chunk in await llm.generate_async(
+        "Count to ten:", max_tokens=24, stream=True
+    ):
         fast.append(chunk)
 
     slow = []
-    async for chunk in await llm.generate_async("Count to ten:", max_tokens=24, stream=True):
+    async for chunk in await llm.generate_async(
+        "Count to ten:", max_tokens=24, stream=True
+    ):
         slow.append(chunk)
         await asyncio.sleep(0.02)  # drain slower than the worker produces
 

@@ -107,6 +107,11 @@ The script composes `CMAKE_ARGS` for you and respects `LLAMA_PREFIX`, `CMAKE_BUI
 
 **Recent Updates**:
 
+**2026-09-15** - Current upstream compatibility and MTP update:
+- Updated for llama.cpp b10972: model loading modes, sampler signatures, and the `pos0` speculative interface. Embedded MTP weights remain enabled by default; `LlamaConfig(load_mtp=False)` skips them.
+- Corrected MTP hidden-state carryover, bounded prompt batching, rollback validation, and streaming stop buffering. Normal speculative exits now leave KV and logits aligned; cached continuations retain the draft driver.
+- See [upstream research](docs/UPSTREAM_RESEARCH-2026-09-15.md) and [change/validation notes](docs/CHANGELOG-2026-09-15.md).
+
 **2026-06-12** - Build fix + speculative continuation fix:
 - **Tracks the upstream `llama_set_embeddings_pre_norm` → `llama_set_embeddings_nextn` rename** (llama.cpp b9496+) — the extension builds and imports again against current `/usr/local` llama.cpp.
 - **spec→nonspec continuation no longer diverges when `max_tokens` runs out on an accepted draft**: the mode-switch guard now also refreshes stale verify logits on the KV-aligned exit shape (trim + re-decode the tail token), preserving prefix reuse. Plus code-review hardening: memoized `mtp_predict_layers()` with a parse-failure warning, GIL released during the MTP probe, `Llama`-level `supports_speculative_mtp()`/`mtp_predict_layers()` wrappers, OOM-aware speculative validation errors, and `UnifiedLLM(speculative=False)` skips the probe. **Full details**: `docs/CHANGELOG-2026-06-12.md`.
@@ -565,7 +570,7 @@ params = SamplingParams(adaptive_p_target=0.5, adaptive_p_decay=0.85)
 
 ### Draft-MTP Speculative Decoding
 
-Pass `speculative=True` to `generate()` / `generate_stream()` / `create_chat_completion()` on a Qwen3.6-MoE MTP checkpoint (or any model exposing an MTP graph variant) for **1.31× MoE / 1.53× dense** speedup on Qwen3.6.
+Pass `speculative=True` to `generate()` / `generate_stream()` / `create_chat_completion()` on a checkpoint containing embedded MTP layers, such as Qwen3.5 `*-MTP.gguf`. Measure speedup for your model and hardware with `examples/bench_speculative.py`; MTP can be slower when draft acceptance is low.
 
 ```python
 from llama_cpp import Llama, LlamaConfig, SamplingParams
@@ -584,9 +589,13 @@ text = llm.generate(
 )
 ```
 
-The architecture is **dual-context**: the user-facing context (DEFAULT graph) is the verifier; an internal draft context (MTP graph) is constructed against the same model on first speculative call. The draft-verify loop drafts up to `n_draft_max` tokens (default 2, range [1, 8]) per round, verifies via the standard sampler chain, and accepts matching drafts. Greedy outputs (`temperature=0.0`) are bit-exact with the per-token path.
+The architecture is **dual-context**: the user-facing context (DEFAULT graph) is the verifier; an internal draft context (MTP graph) is constructed against the same model on first speculative call. The draft-verify loop drafts up to `n_draft_max` tokens (default 2, range [1, 8]) per round, verifies via the standard sampler chain, and accepts matching drafts. Greedy outputs (`temperature=0.0`) are checked against the per-token path in differential tests; batching can still change floating-point rounding near ties.
 
-**Preconditions:** model exposes an MTP graph (e.g. `*-MTP.gguf`); user-facing `ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT`; `embeddings=False`. Hybrid-attention MTP checkpoints (Qwen3.6-MoE) report `memory_can_shift()=False` on the user-facing context but speculative still works for them — drafts are trimmed via the draft context's recurrent-state rollback. See `examples/bench_speculative.py` for the benchmark harness.
+**Preconditions:** model contains MTP layers; `load_mtp=True` (default); user-facing `ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT`; `embeddings=False`. Hybrid/recurrent targets require `n_rs_seq >= n_draft_max` (both default to 2). KV shifting is not required. Continue with the full prompt and `cache_prompt=True`; changing the prefix or draft width rebuilds hidden-state carryover. Separate assistant/draft GGUF models are not exposed by this binding.
+
+```bash
+python examples/bench_speculative.py --model models/Qwen3.5-4B-Q4_K_M-MTP.gguf --draft-max 1 2 4 --runs 3
+```
 
 ### On-Device State Save/Load
 
@@ -603,17 +612,25 @@ The opaque handle is invalidated by any KV-clearing op (`reset()`, `kv_cache_cle
 ## Tests & Code Quality
 
 ```bash
-uv pip install -e .[test]
+uv pip install -e ".[dev]"
 uv run pytest -q
 
-# Python linting/formatting
-ruff format src/ tests/ examples/ tools/
-ruff check src/ tests/ examples/ tools/
+# Python linting, format validation, and strict type checking
+make check
+
+# Apply Python formatting
+uv run ruff format src/ tests/ examples/ tools/
 
 # C++ formatting and static analysis
 clang-format -i src/bindings/llama_cpp.cpp
 clang-tidy -p build src/bindings/llama_cpp.cpp
 ```
+
+`make check` runs Ruff on the library, tests, examples, and tools, then mypy
+on the library, examples, tools, and public API typing contracts. The development
+extra includes the optional dependencies needed to check the scripts.
+The package ships a `py.typed` marker and overloads for streaming and non-streaming
+generation, so type checkers infer the return type from `stream` and `logprobs`.
 
 ### Memory Safety Verification
 

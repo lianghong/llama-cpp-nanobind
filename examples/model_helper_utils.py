@@ -13,7 +13,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
+if TYPE_CHECKING:
+    from gguf import GGUFReader
+    from llama_cpp import Llama
 
 _RE_TOOL_JSON = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 _RE_GPTOSS_TOOL = re.compile(
@@ -36,7 +40,7 @@ class ParsedOutput:
 # -------------------------- model detection --------------------------- #
 
 
-def _read_str_field(reader, key: str) -> str | None:
+def _read_str_field(reader: GGUFReader, key: str) -> str | None:
     field = reader.fields.get(key)
     if not field:
         return None
@@ -54,14 +58,15 @@ def detect_family(model_path: str | Path) -> str:
     except ImportError as exc:
         raise RuntimeError("gguf is required for detect_family") from exc
 
-    orig = gguf.GGUFReader._build_tensors
-    gguf.GGUFReader._build_tensors = lambda self, offs, tf: None  # type: ignore[assignment,method-assign]
-    try:
-        reader = gguf.GGUFReader(path)
-        arch = (_read_str_field(reader, "general.architecture") or "").lower()
-        name = (_read_str_field(reader, "general.name") or "").lower()
-    finally:
-        gguf.GGUFReader._build_tensors = orig  # type: ignore[method-assign]
+    class MetadataReader(gguf.GGUFReader):
+        def _build_tensors(
+            self, start_offs: int, fields: list[gguf.ReaderField]
+        ) -> None:
+            """Skip tensor loading without modifying other readers."""
+
+    reader = MetadataReader(path)
+    arch = (_read_str_field(reader, "general.architecture") or "").lower()
+    name = (_read_str_field(reader, "general.name") or "").lower()
 
     if "mistral" in arch or "minis" in name:
         return "mistral3"
@@ -175,7 +180,7 @@ def parse_gptoss(text: str) -> ParsedOutput:
     if not final_match:
         content = content.strip()
 
-    tool_calls = _RE_GPTOSS_TOOL.findall(text) or None
+    tool_calls = [match.group(0) for match in _RE_GPTOSS_TOOL.finditer(text)] or None
     return ParsedOutput(
         content=content, reasoning=analysis, tool_calls=tool_calls, raw=raw
     )
@@ -230,7 +235,14 @@ def parse_output(text: str, family: str) -> ParsedOutput:
 
 # ---------------------- recommended settings -------------------------- #
 
-_RECOMMENDED_PARAMS = {
+
+class GenerationParams(TypedDict, total=False):
+    temperature: float
+    top_p: float
+    top_k: int
+
+
+_RECOMMENDED_PARAMS: dict[str, GenerationParams] = {
     "mistral3": {"temperature": 0.15, "top_p": 1.0},
     "qwen3": {"temperature": 0.7, "top_p": 0.8, "top_k": 20},
     "qwen3_thinking": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
@@ -242,7 +254,9 @@ _RECOMMENDED_PARAMS = {
 }
 
 
-def recommended_generation_params(family: str, *, thinking: bool = False) -> dict:
+def recommended_generation_params(
+    family: str, *, thinking: bool = False
+) -> GenerationParams:
     """Return recommended sampling parameters for a family."""
     fam = family.lower()
     if fam == "qwen3" and thinking:
@@ -254,8 +268,10 @@ def recommended_generation_params(family: str, *, thinking: bool = False) -> dic
 
 
 def _update_system_message(
-    messages: list[dict], directive: str, pattern: re.Pattern | None = None
-) -> list[dict]:
+    messages: list[dict[str, str]],
+    directive: str,
+    pattern: re.Pattern[str] | None = None,
+) -> list[dict[str, str]]:
     """Helper to add/update directive in system message."""
     for msg in messages:
         if msg.get("role") == "system":
@@ -277,7 +293,7 @@ def _update_system_message(
 
 def build_generation_kwargs(
     family: str, extra_stop: Iterable[str] | None = None
-) -> dict:
+) -> dict[str, list[str]]:
     stops = stop_strings_for_family(family)
     if extra_stop:
         stops.extend(s for s in extra_stop if s not in stops)
@@ -285,8 +301,8 @@ def build_generation_kwargs(
 
 
 def set_thinking_mode(
-    messages: list[dict], family: str, enable: bool = True
-) -> list[dict]:
+    messages: list[dict[str, str]], family: str, enable: bool = True
+) -> list[dict[str, str]]:
     """Add /think or /no_think directive for Qwen3 models."""
     if family.lower() != "qwen3":
         return messages
@@ -294,8 +310,8 @@ def set_thinking_mode(
 
 
 def set_reasoning_level(
-    messages: list[dict], family: str, level: str = "medium"
-) -> list[dict]:
+    messages: list[dict[str, str]], family: str, level: str = "medium"
+) -> list[dict[str, str]]:
     """Set reasoning level (low/medium/high) for gpt-oss models."""
     if family.lower() != "gpt-oss":
         return messages
@@ -303,15 +319,27 @@ def set_reasoning_level(
     return _update_system_message(messages, f"Reasoning: {level}", _RE_REASONING)
 
 
+class ChatTemplateFormatter(Protocol):
+    """Interface required by the generic template adapter below."""
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        add_generation_prompt: bool,
+        **kwargs: Any,
+    ) -> str: ...
+
+
 def apply_template(
-    llama,
-    messages: list[dict],
-    tools: list | None = None,
+    llama: ChatTemplateFormatter,
+    messages: list[dict[str, str]],
+    tools: list[dict[str, Any]] | None = None,
     add_generation_prompt: bool = True,
-    **template_kwargs,
+    **template_kwargs: Any,
 ) -> str:
     """Thin wrapper around llama.apply_chat_template."""
-    kwargs = {"tools": tools} if tools else {}
+    kwargs: dict[str, Any] = {"tools": tools} if tools else {}
     kwargs.update(template_kwargs)
     return llama.apply_chat_template(
         messages, add_generation_prompt=add_generation_prompt, **kwargs
@@ -319,15 +347,23 @@ def apply_template(
 
 
 def generate_with_model_stops(
-    llama,
+    llama: Llama,
     prompt: str,
     family: str,
     max_tokens: int = 128,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
-    """Generate text using the model's default stop strings."""
+    """Generate non-streaming text using the model's default stop strings."""
+    if kwargs.get("stream", False) or kwargs.get("logprobs") is not None:
+        raise ValueError("generate_with_model_stops only supports plain text output")
     stops = stop_strings_for_family(family)
-    return llama.generate(prompt, max_tokens=max_tokens, stop=stops or None, **kwargs)
+    text: str = llama.generate(
+        prompt,
+        max_tokens=max_tokens,
+        stop=stops or None,
+        **kwargs,
+    )
+    return text
 
 
 def list_models(models_dir: Path | str | None = None) -> list[Path]:
@@ -346,7 +382,7 @@ def list_models(models_dir: Path | str | None = None) -> list[Path]:
 # --------------------------- CLI demo ---------------------------------- #
 
 
-def _demo():
+def _demo() -> None:
     models = list_models()
     if not models:
         print("No GGUF models found in models/")

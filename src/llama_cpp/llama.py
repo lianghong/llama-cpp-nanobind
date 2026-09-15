@@ -3,12 +3,7 @@
 import asyncio
 import atexit
 import codecs
-from collections.abc import AsyncIterator, Iterator, Sequence
 import contextlib
-from dataclasses import asdict
-from dataclasses import dataclass
-from dataclasses import fields as _dc_fields
-from dataclasses import replace as dc_replace
 import gc
 import json
 import logging
@@ -18,12 +13,14 @@ import queue
 import struct
 import threading
 import time
-from typing import Any
 import uuid
 import weakref
+from collections.abc import AsyncIterator, Iterator, Sequence
+from dataclasses import asdict, dataclass, fields as _dc_fields, replace as dc_replace
+from typing import Any, Literal, overload
 
 from . import _about  # noqa: F401
-from . import _llama  # type: ignore[attr-defined]  # C++ extension module
+from . import _llama  # C++ extension module
 
 
 def _uuid7_hex() -> str:
@@ -312,7 +309,11 @@ class SamplingParams:
                     raise ValidationError(
                         f"logit_bias[{token_id}] must be a real number, got {bias!r}"
                     )
-        if not isinstance(self.n_draft_max, int) or not 1 <= self.n_draft_max <= 8:
+        if (
+            isinstance(self.n_draft_max, bool)
+            or not isinstance(self.n_draft_max, int)
+            or not 1 <= self.n_draft_max <= 8
+        ):
             raise ValidationError(
                 f"n_draft_max must be an int in [1, 8]; got {self.n_draft_max!r}"
             )
@@ -371,6 +372,7 @@ class LlamaConfig:
     split_mode: int = 0
     use_mmap: bool = True
     use_mlock: bool = False
+    load_mtp: bool = True  # retain embedded MTP weights; False saves their memory
     check_tensors: bool = False
     no_host: bool = False
     flash_attn: int = 1
@@ -403,6 +405,12 @@ class LlamaConfig:
             raise ValidationError("n_gpu_layers must be >= -1 (-1 means all layers)")
         if self.n_seq_max < 1:
             raise ValidationError("n_seq_max must be at least 1")
+        if (
+            isinstance(self.n_rs_seq, bool)
+            or not isinstance(self.n_rs_seq, int)
+            or self.n_rs_seq < 0
+        ):
+            raise ValidationError("n_rs_seq must be a nonnegative integer")
         if self.ctx_type not in _VALID_CONTEXT_TYPES:
             raise ValidationError(
                 f"ctx_type={self.ctx_type} is not a supported llama_context_type. "
@@ -510,14 +518,9 @@ class Llama:
         # save), so we also stamp this random token and reject mismatches in
         # load_seq_state_on_device before reaching C++.
         self._state_owner: bytes = uuid.uuid4().bytes
-        # Tracks whether the most recent generation used the speculative
-        # draft-verify loop. Mixed-mode continuation (speculative=True then
-        # False, or vice-versa) on the SAME KV produces drift/garbage because
-        # the draft context's recurrent MTP state isn't primed across the
-        # boundary (the user-facing KV also legitimately ends 1 behind the
-        # mirror after a speculative turn). A continuation that crosses this
-        # boundary is silently forced to reset_kv_cache so the result is
-        # correct. None means "no generation yet".
+        # A nonspec→spec transition rebuilds draft hidden-state carryover;
+        # spec→nonspec reuses aligned target KV except after a stop/clear.
+        # None means no generation has been committed since invalidation.
         self._last_gen_speculative: bool | None = None
 
         # Apply verbose setting with class-level synchronization
@@ -552,6 +555,7 @@ class Llama:
         model_params.split_mode = cfg.split_mode
         model_params.use_mmap = cfg.use_mmap
         model_params.use_mlock = cfg.use_mlock
+        model_params.load_mtp = cfg.load_mtp
         model_params.check_tensors = cfg.check_tensors
         model_params.no_host = cfg.no_host
 
@@ -587,7 +591,7 @@ class Llama:
 
         try:
             self.ctx = _llama.Context(self.model, ctx_params)
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as e:
             # Ensure model is released if context creation fails
             with contextlib.suppress(Exception):
                 self.model.close()
@@ -717,7 +721,9 @@ class Llama:
                 "Reduce prompt length or increase n_ctx."
             )
 
-    def _validate_speculative(self, speculative: bool) -> None:
+    def _validate_speculative(
+        self, speculative: bool, n_draft_max: int | None = None
+    ) -> None:
         """Validate the precondition for ``speculative=True`` calls.
 
         Speculative decoding requires:
@@ -729,16 +735,24 @@ class Llama:
           (``Context.supports_speculative_mtp()``).
         * The context is **not** embeddings-only.
 
-        Note: ``memory_can_shift()`` is intentionally **not** checked here.
-        Hybrid-attention MTP checkpoints (Qwen3.6-MoE) report
-        ``memory_can_shift()=False`` for their user-facing DEFAULT context
-        but the speculative loop trims rejected drafts via ``n_rs_seq``
-        recurrent-state rollback (set on the draft context), which is a
-        different mechanism than plain KV shift. Empirically, those models
-        run speculative correctly and hit unsloth's published speedup band.
+        Recurrent rollback is configured on the target context. KV shifting
+        is a different operation, so memory_can_shift() is not a capability gate.
         """
         if not speculative:
             return
+        if not self.config.load_mtp:
+            raise ValidationError(
+                "speculative=True requires LlamaConfig(load_mtp=True)"
+            )
+        if (
+            n_draft_max is not None
+            and (self.model.is_hybrid() or self.model.is_recurrent())
+            and self.config.n_rs_seq < n_draft_max
+        ):
+            raise ValidationError(
+                "speculative=True requires n_rs_seq >= n_draft_max on hybrid "
+                f"or recurrent target models; got {self.config.n_rs_seq} < {n_draft_max}"
+            )
         if self.config.embeddings:
             raise ValidationError(
                 "speculative=True is incompatible with embeddings-only contexts"
@@ -753,12 +767,13 @@ class Llama:
             )
         if not self.ctx.supports_speculative_mtp():
             if self.ctx.mtp_predict_layers() > 0:
-                # Metadata says MTP-capable, so the draft-context allocation
-                # failed (e.g. CUDA OOM) — don't tell the user to change models.
+                # A declared layer count is not enough to guarantee a usable
+                # graph: unsupported architectures and allocation can fail.
                 raise ValidationError(
                     "speculative=True: the model declares MTP layers but the "
-                    "draft context could not be created (likely out of "
-                    "device memory). Free VRAM or reduce n_ctx and retry."
+                    "draft context could not be created. The graph may be "
+                    "unsupported by this llama.cpp build, or device memory "
+                    "may be insufficient."
                 )
             raise ValidationError(
                 "speculative=True requires a model with an MTP graph "
@@ -1061,7 +1076,7 @@ class Llama:
         """Return whether the model can drive draft-MTP speculative decoding.
 
         True iff the model declares ``<arch>.nextn_predict_layers > 0``
-        metadata and an MTP draft context can be created. The first call on
+        metadata, MTP weights were loaded, and a draft context can be created. The first call on
         a capable model allocates the draft context (cached until
         ``reset()``/``close()``).
         """
@@ -1072,8 +1087,8 @@ class Llama:
     def mtp_predict_layers(self) -> int:
         """Return the model's declared next-token-prediction layer count.
 
-        Read from the GGUF metadata key ``<arch>.nextn_predict_layers``;
-        0 for every non-MTP checkpoint.
+        Uses the native hyperparameter query; the count can stay positive
+        when ``load_mtp=False`` skips the declared tensors.
         """
         self._check_closed()
         result: int = self.ctx.mtp_predict_layers()
@@ -1273,14 +1288,15 @@ class Llama:
         all models) and invalidate the mirror — the next turn re-primes cleanly
         (correctness over the lost speedup, only on this stranded case).
 
-        This intentionally does NOT fire on the speculative off-by-1, where KV
-        ends one position *behind* the mirror (that is load-bearing and
-        self-heals on the next speculative turn). Only the KV-ahead case is a
-        bug. No-op when the mirror is empty (caching off / nothing to protect).
+        The MTP loop may already have cleared KV on stop/cancellation. Drop
+        its mirror as well. No-op when the mirror is empty.
         """
         if not self._cached_prompt_tokens:
             return
         kv_len = self.ctx.kv_cache_seq_pos_max(0) + 1
+        if kv_len == 0:
+            self._invalidate_prompt_cache()
+            return
         if kv_len > len(self._cached_prompt_tokens):
             self.ctx.kv_cache_clear()
             self._invalidate_prompt_cache()
@@ -1288,71 +1304,21 @@ class Llama:
     def _guard_speculative_mode_switch(
         self, *, speculative: bool, reset_kv_cache: bool
     ) -> bool:
-        """Reconcile KV when a continuation crosses the speculative boundary.
+        """Return whether a mode change needs a fresh prompt decode.
 
-        Continuing the same KV across a speculative↔non-speculative mode change
-        can drift or produce garbage. There are two distinct boundaries, healed
-        differently. Returns the effective ``reset_kv_cache``.
-
-        * **prev speculative → now non-speculative**: two exit shapes need
-          healing, both in place (prefix reuse kept, no reset):
-
-          - *KV behind the mirror* (the common case): the final
-            ``corrected_id`` was emitted but not decoded — the load-bearing
-            off-by-1. Decode the missing tail token(s); the last decode also
-            refreshes the logits.
-          - *KV aligned with the mirror*: ``max_tokens`` ran out exactly on an
-            accepted draft, so every mirror token is already in KV — but the
-            logits buffer still holds the last verify batch's logits at the
-            final *drafted* position, not the mirror tail (stale whenever any
-            draft was rejected that round). A full-LCP continuation decodes
-            nothing and would sample its first token from those stale logits.
-            Trim the last token and re-decode it to refresh; if the trim is
-            refused (hybrid memory), fall back to a full clear + re-prime
-            (correct, speedup lost for that turn).
-
-        * **prev non-speculative → now speculative**: the draft context's
-          recurrent MTP state was never built for this prefix and can only be
-          rebuilt from position 0 — which costs a full prefix decode anyway, so
-          a reset is both necessary and free of any recoverable speedup. We
-          force ``reset_kv_cache=True``.
-
-        Only acts on ``reset_kv_cache=False`` continuations after a prior
-        generation in the other mode; otherwise returns the flag unchanged.
+        MTP now decodes its final sampled token before returning, so a normal
+        spec→nonspec continuation already has current logits and aligned KV.
+        Stops/cancellation can clear KV; rebuild those prefixes. A nonspec→spec
+        switch rebuilds the draft driver's hidden-state carryover.
         """
         if reset_kv_cache or self._last_gen_speculative is None:
             return reset_kv_cache
         if self._last_gen_speculative == speculative:
-            return reset_kv_cache  # same mode: no boundary to cross
-
+            return reset_kv_cache
         if self._last_gen_speculative and not speculative:
-            if self._cached_prompt_tokens:
-                mirror = self._cached_prompt_tokens
-                kv_len = self.ctx.kv_cache_seq_pos_max(0) + 1
-                if kv_len < len(mirror):
-                    # Off-by-1 exit: decode the undecoded tail (the emitted
-                    # corrected_id); the last decode also refreshes the logits
-                    # buffer.
-                    for tok in mirror[kv_len:]:
-                        self.ctx.decode_one(tok)
-                elif kv_len == len(mirror):
-                    # Aligned exit (max_tokens ran out on an accepted draft):
-                    # every mirror token is in KV, but the logits buffer still
-                    # holds the last verify batch's final position — a drafted
-                    # token that may have been rejected and trimmed. A full-LCP
-                    # continuation decodes nothing and would sample from those
-                    # stale logits. Trim the tail token and re-decode it.
-                    if self.ctx.kv_cache_seq_rm(0, kv_len - 1, -1):
-                        # KV memory mutated — invalidate on-device handles.
-                        self._state_epoch += 1
-                        self.ctx.decode_one(mirror[-1])
-                    else:
-                        # Hybrid memory refused the trim: fall back to a full
-                        # reset (caller clears KV + mirror; correct, speedup
-                        # lost for this turn).
-                        return True
-            return False
-        # nonspec → spec: draft state must rebuild from scratch — reset.
+            return bool(
+                self.ctx.kv_cache_seq_pos_max(0) + 1 != len(self._cached_prompt_tokens)
+            )
         return True
 
     def _apply_adapters(self) -> None:
@@ -1451,6 +1417,12 @@ class Llama:
                 }
             )
         params = params_obj.to_native()
+        # Upstream now clamps negative history lengths to zero. Preserve the
+        # Python -1 = full context contract using the resolved context size.
+        if params_obj.repeat_last_n == -1:
+            params.penalty_last_n = self.n_ctx()
+        if params_obj.dry_penalty_last_n == -1:
+            params.dry_penalty_last_n = self.n_ctx()
         return _llama.SamplerChain(self.model, params)
 
     def _format_chat_messages(self, messages: Sequence[dict[str, Any]]) -> str:
@@ -1608,6 +1580,8 @@ class Llama:
 
         try:
             if speculative:
+                # Native rollback/rebuild invalidates on-device snapshot handles.
+                self._state_epoch += 1
                 generated = list(
                     _llama.generate_tokens_speculative_mtp(
                         self.ctx,
@@ -1749,7 +1723,7 @@ class Llama:
         # check (_validate_speculative probes self.ctx) is deferred until
         # after the lock is held — see below.
         effective_n_draft_max = self._validate_n_draft_max(
-            int(n_draft_max)
+            n_draft_max
             if n_draft_max is not None
             else (
                 sampling.n_draft_max
@@ -1810,6 +1784,7 @@ class Llama:
                     return True
 
                 if speculative:
+                    self._state_epoch += 1
                     _llama.generate_tokens_speculative_mtp(
                         self.ctx,
                         sampler,
@@ -1851,7 +1826,7 @@ class Llama:
         self._lock.acquire()
         thread: threading.Thread | None = None
         try:
-            self._validate_speculative(speculative)
+            self._validate_speculative(speculative, effective_n_draft_max)
             sampler = self._build_sampler(sampler_params)
 
             reset_kv_cache = self._guard_speculative_mode_switch(
@@ -1958,6 +1933,78 @@ class Llama:
                     "the process to recover."
                 )
 
+    @overload
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        logprobs: None = None,
+        stream: Literal[False] = False,
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
+    ) -> str: ...
+
+    @overload
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        logprobs: None = None,
+        stream: Literal[True],
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
+    ) -> Iterator[str]: ...
+
+    @overload
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        logprobs: int,
+        stream: Literal[False] = False,
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        logprobs: int | None = None,
+        stream: bool = False,
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
+    ) -> str | Iterator[str] | dict[str, Any]: ...
+
     def generate(
         self,
         prompt: str,
@@ -2009,12 +2056,11 @@ class Llama:
                 f"prompt exceeds maximum length ({_MAX_PROMPT_LENGTH} chars)"
             )
         self._validate_stop_sequences(stop)
-        self._validate_speculative(speculative)
         if speculative and logprobs is not None:
             raise ValidationError("logprobs is not supported on the speculative path")
         # Default n_draft_max from sampling params if caller didn't override.
         effective_n_draft_max = self._validate_n_draft_max(
-            int(n_draft_max)
+            n_draft_max
             if n_draft_max is not None
             else (
                 sampling.n_draft_max
@@ -2023,6 +2069,7 @@ class Llama:
             )
         )
 
+        self._validate_speculative(speculative, effective_n_draft_max)
         sampler_params = sampling or self.sampling
         if seed is not None:
             sampler_params = dc_replace(sampler_params, seed=seed)
@@ -2336,6 +2383,63 @@ class Llama:
         }
 
     # OpenAI-style / llama-cpp-python compatible chat API
+    @overload
+    def create_chat_completion(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        max_tokens: int = 128,
+        stream: Literal[False] = False,
+        stop: Sequence[str | int] | None = None,
+        response_format: dict[str, Any] | None = None,
+        grammar: LlamaGrammar | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
+        **sampling_overrides: Any,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    def create_chat_completion(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        max_tokens: int = 128,
+        stream: Literal[True],
+        stop: Sequence[str | int] | None = None,
+        response_format: dict[str, Any] | None = None,
+        grammar: LlamaGrammar | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
+        **sampling_overrides: Any,
+    ) -> Iterator[dict[str, Any]]: ...
+
+    @overload
+    def create_chat_completion(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        max_tokens: int = 128,
+        stream: bool = False,
+        stop: Sequence[str | int] | None = None,
+        response_format: dict[str, Any] | None = None,
+        grammar: LlamaGrammar | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        speculative: bool = False,
+        n_draft_max: int | None = None,
+        **sampling_overrides: Any,
+    ) -> dict[str, Any] | Iterator[dict[str, Any]]: ...
+
     def create_chat_completion(
         self,
         messages: Sequence[dict[str, Any]],
@@ -2402,12 +2506,13 @@ class Llama:
         # so a closed Llama raises LlamaError, not a misleading
         # ValidationError.
         self._check_closed()
-        self._validate_speculative(speculative)
         effective_n_draft_max = self._validate_n_draft_max(
-            int(n_draft_max)
+            n_draft_max
             if n_draft_max is not None
-            else int(sampling_overrides.get("n_draft_max", self.sampling.n_draft_max))
+            else sampling_overrides.get("n_draft_max", self.sampling.n_draft_max)
         )
+
+        self._validate_speculative(speculative, effective_n_draft_max)
 
         # Tokenize without BOS — the chat template may already include BOS
         # as a literal, and _generate_from_tokens applies its BOS rule based
@@ -2870,6 +2975,70 @@ class Llama:
                 return list(result)
             return result
 
+    @overload
+    async def generate_async(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        logprobs: None = None,
+        stream: Literal[False] = False,
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+    ) -> str: ...
+
+    @overload
+    async def generate_async(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        logprobs: None = None,
+        stream: Literal[True],
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+    ) -> AsyncIterator[str]: ...
+
+    @overload
+    async def generate_async(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        logprobs: int,
+        stream: Literal[False] = False,
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    async def generate_async(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 128,
+        sampling: SamplingParams | None = None,
+        stop: Sequence[str | int] | None = None,
+        echo: bool = False,
+        logprobs: int | None = None,
+        stream: bool = False,
+        seed: int | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+    ) -> str | AsyncIterator[str] | dict[str, Any]: ...
+
     async def generate_async(
         self,
         prompt: str,
@@ -2971,6 +3140,57 @@ class Llama:
             reset_kv_cache=reset_kv_cache,
             cache_prompt=cache_prompt,
         )
+
+    @overload
+    async def create_chat_completion_async(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        max_tokens: int = 128,
+        stream: Literal[False] = False,
+        stop: Sequence[str | int] | None = None,
+        response_format: dict[str, Any] | None = None,
+        grammar: LlamaGrammar | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        **sampling_overrides: Any,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    async def create_chat_completion_async(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        max_tokens: int = 128,
+        stream: Literal[True],
+        stop: Sequence[str | int] | None = None,
+        response_format: dict[str, Any] | None = None,
+        grammar: LlamaGrammar | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        **sampling_overrides: Any,
+    ) -> AsyncIterator[dict[str, Any]]: ...
+
+    @overload
+    async def create_chat_completion_async(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        max_tokens: int = 128,
+        stream: bool = False,
+        stop: Sequence[str | int] | None = None,
+        response_format: dict[str, Any] | None = None,
+        grammar: LlamaGrammar | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        reset_kv_cache: bool = True,
+        cache_prompt: bool = True,
+        **sampling_overrides: Any,
+    ) -> dict[str, Any] | AsyncIterator[dict[str, Any]]: ...
 
     async def create_chat_completion_async(
         self,

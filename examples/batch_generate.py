@@ -171,7 +171,8 @@ def main() -> None:
                 msgs.append({"role": "system", "content": system_prompt})
             msgs.append({"role": "user", "content": user_prompt})
             msgs_tuple = [(m["role"], m["content"]) for m in msgs]
-            return chat_apply_template(llm.model, msgs_tuple, "", True)
+            formatted_prompt: str = chat_apply_template(llm.model, msgs_tuple, "", True)
+            return formatted_prompt
 
         for i, prompt in enumerate(prompts):
             llm.reset()

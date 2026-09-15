@@ -57,8 +57,8 @@ with Llama("model.gguf") as llm:
 - `kv_cache_seq_rm()`, `kv_cache_seq_cp()`, `kv_cache_seq_keep()`, `kv_cache_seq_add()`, `kv_cache_seq_pos_max()` → KV cache management
 - `kv_cache_seq_pos_min()` → `int` – Minimum position in KV cache for sequence
 - `memory_can_shift()` → `bool` – Whether KV cache supports shifting
-- `supports_speculative_mtp()` → `bool` – Whether the model exposes an MTP graph usable as a speculative draft context (gated on `<arch>.nextn_predict_layers > 0` metadata)
-- `mtp_predict_layers()` → `int` – Declared next-token-prediction layer count from `<arch>.nextn_predict_layers` (0 for every non-MTP checkpoint)
+- `supports_speculative_mtp()` → `bool` – Whether the model exposes an MTP graph usable as a speculative draft context (requires declared MTP layers and `load_mtp=True`)
+- `mtp_predict_layers()` → `int` – Native declared MTP-layer count (can stay positive when `load_mtp=False`)
 - `set_embeddings(enabled)` → None – Toggle embedding computation at runtime
 - `set_causal_attn(enabled)` → None – Toggle causal attention at runtime
 
@@ -229,7 +229,8 @@ if __name__ == "__main__":
 | `model_path` | required | GGUF model path |
 | `n_ctx` | 4096 | Context window (must be ≥ 1) |
 | `n_batch` | 2048 | Logical batch (must be ≥ 1) |
-| `n_ubatch` | `n_batch` | Physical micro-batch |
+| `n_ubatch` | 512 | Physical micro-batch |
+| `n_rs_seq` | 2 | Target recurrent rollback snapshots; must be ≥ `n_draft_max` for speculative hybrid/recurrent models, with `n_ubatch > n_rs_seq + 1` |
 | `n_seq_max` | 1 | Max parallel sequences (1 = single sequence) |
 | `n_threads` | `os.cpu_count()` | Threads for generation |
 | `n_threads_batch` | `n_threads` | Threads for prompt/batch |
@@ -238,6 +239,7 @@ if __name__ == "__main__":
 | `split_mode` | 0 | `llama_split_mode` enum |
 | `use_mmap` | True | Memory-map model |
 | `use_mlock` | False | mlock model into RAM |
+| `load_mtp` | True | Load embedded MTP tensors; False saves their weight memory and disables speculative MTP |
 | `offload_kqv` | True | Offload K/Q/V to GPU |
 | `flash_attn` | 1 | Flash-attention mode (required for quantized V cache) |
 | `ctx_type` | `LLAMA_CONTEXT_TYPE_DEFAULT` (0) | Context graph variant. `LLAMA_CONTEXT_TYPE_MTP` (1) selects the MTP graph as the **user-facing** context (used by `tests/test_mtp.py`); for speculative decoding, leave at default — the MTP graph is constructed internally as the draft context. See "MTP context type" below |
@@ -331,6 +333,14 @@ Callers do **not** set `ctx_type=LLAMA_CONTEXT_TYPE_MTP` on the
 user-facing context — the MTP graph is used internally as the draft
 context only.
 
+The driver retains hidden-state carryover for unchanged-prefix continuations.
+Pass the full prompt with `cache_prompt=True` when continuing; prefix edits,
+state loads, and draft-width changes rebuild the draft state. Normal exits
+leave the final returned token decoded and the target logits current. Stops
+and cancellation can clear both the cache and its mirror; the next call
+re-primes. Streaming withholds possible multi-token stop prefixes. Separate
+assistant/draft model files are not supported by this interface.
+
 Kwargs on the generation entry points:
 
 - `speculative: bool = False` — opt-in flag. When `True`, the generate
@@ -368,45 +378,37 @@ text = llm.generate(
   checkpoints). A plain Qwen3.5 checkpoint correctly reports `False`.
   Why metadata and not allocation success: see
   `docs/CHANGELOG-2026-06-03.md`.
-- `LlamaConfig.embeddings` must be `False`.
+- `LlamaConfig.embeddings` must be `False`, and `load_mtp` must be `True`.
+- Hybrid/recurrent targets require `n_rs_seq >= n_draft_max`.
 - `n_draft_max` must be in `[1, 8]` (validated on `SamplingParams` **and** on
   per-call `n_draft_max=` overrides).
 - `speculative=True` is incompatible with `logprobs=...` on `generate()`.
 
 **Hybrid-attention MTP checkpoints** (Qwen3.6-MoE) report
 `memory_can_shift()=False` on their user-facing context, but speculative
-**still works** for them: the loop trims rejected drafts via the draft
-context's `n_rs_seq` recurrent-state rollback, which is a different
-mechanism than plain `kv_cache_seq_rm`. `_validate_speculative`
+**still works** for them: the target uses `n_rs_seq >= n_draft_max`
+recurrent-state snapshots for rejected-draft rollback. The draft context
+uses attention KV with `n_rs_seq=0`. KV shifting is a separate capability. `_validate_speculative`
 deliberately does not check `memory_can_shift()`.
 
-**Reproducibility note:** the speculative path advances the dist sampler's
-RNG once per *position* in each batch rather than once per *step*, so
-seeded *non-greedy* runs give matching distributions but differ in the
-realized sample sequence vs. the per-token baseline. Greedy
-(`temperature=0.0`) is bit-exact.
+**Reproducibility:** the target sampler runs sequentially and stops at the
+first mismatch; it samples no unused positions beyond the token budget.
+Greedy equality with ordinary decoding is tested. Floating-point differences
+between single-token and batched evaluation can still affect near ties or
+seeded trajectories.
 
 **Session continuation & mode switching** (`reset_kv_cache=False`,
-`cache_prompt=True`): mixing speculative and non-speculative turns on the same
-KV is handled automatically. A `speculative=True` turn usually leaves the user
-KV one position behind the prompt-cache mirror (the final corrected token is
-emitted but re-decoded on the next speculative turn — this is intentional).
-When the *next* turn is non-speculative, the wrapper heals in place: it decodes
-that one undecoded token, or — when the turn ended exactly on an accepted draft
-and KV is already aligned — re-decodes the final token to refresh stale verify
-logits. Either way the continuation is correct and the prefix-reuse speedup is
-preserved.
-A non-speculative → speculative switch forces a KV reset (the draft context's
-recurrent state can only rebuild from scratch). Same-mode continuations are
-untouched. You do **not** need to pass `reset_kv_cache=True` manually when
-switching modes — but doing so is always safe.
+`cache_prompt=True`): normal speculative exits leave KV and target logits
+aligned with the returned tokens. A following ordinary turn reuses that
+prefix. Switching from ordinary to speculative generation rebuilds the draft
+hidden-state carryover. Stops/cancellation can clear KV; the next generation
+re-primes automatically.
 
-**Benchmarks** (RTX 4090, see `examples/bench_speculative.py`):
-
-| Model | Variant | Speedup | Unsloth band |
-|---|---|---|---|
-| Qwen3.6-27B-Q4_K_S | dense | 1.53× | 1.4–2.2× |
-| Qwen3.6-35B-A3B-UD-IQ4_XS | MoE (A3B) | 1.31× | 1.15–1.2× |
+**Benchmarks:** run `examples/bench_speculative.py --model /path/to/MTP.gguf`
+for warmed end-to-end throughput, exact generated-token counts, and greedy
+agreement. See [current validation notes](CHANGELOG-2026-09-15.md) for local
+measurements. Historical RTX 4090 Qwen3.6 measurements in older changelogs
+are not performance guarantees for current libraries or other checkpoints.
 
 ### SamplingParams
 
@@ -501,8 +503,8 @@ UnifiedLLM(
 - `verbose`: Enable verbose logging.
 - `family`: Explicit model family override (auto-detects if None).
 - `cache_type_k` / `cache_type_v`: ggml_type for K/V cache. Defaults to F16. Pass e.g. `GGML_TYPE_Q8_0` or `GGML_TYPE_BF16` from `llama_cpp` to quantize. Flash attention is enabled by default (`flash_attn=1`), which is required for quantized V. See [Quantized KV cache](#quantized-kv-cache) above for the full constant list and validation rules.
-- `speculative`: Draft-MTP speculative decoding mode. `"auto"` (default) enables it iff the model exposes an MTP graph; `True` requires it (raises `ValueError` when the model has no MTP graph); `False` disables it without probing. See [Draft-MTP speculative decoding](#draft-mtp-speculative-decoding) above.
-- `n_draft_max`: Max draft tokens per verify round, range `[1, 8]`. `None` defers to the `SamplingParams` default (2).
+- `speculative`: Draft-MTP speculative decoding mode. `"auto"` (default) enables it iff the model exposes an MTP graph; `True` requires it (raises `ValueError` when the model has no MTP graph); `False` skips MTP weights, recurrent rollback snapshots, and the capability probe. See [Draft-MTP speculative decoding](#draft-mtp-speculative-decoding) above.
+- `n_draft_max`: Max draft tokens per verify round, integer range `[1, 8]`. `None` defers to the `SamplingParams` default (2). Target rollback capacity is sized to this value before loading the context.
 
 **Quantized KV cache example**
 

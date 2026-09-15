@@ -88,13 +88,13 @@ if(APPLE)
     RESULT_VARIABLE BREW_RESULT
   )
   if(BREW_RESULT EQUAL 0 AND EXISTS "${BREW_LLAMA_PREFIX}")
-    list(PREPEND CMAKE_PREFIX_PATH "${BREW_LLAMA_PREFIX}")
+    list(APPEND CMAKE_PREFIX_PATH "${BREW_LLAMA_PREFIX}")
     message(STATUS "Added Homebrew llama.cpp to search paths: ${BREW_LLAMA_PREFIX}")
   endif()
 else()
   # On Linux, explicitly prioritize /usr/local for system-installed llama.cpp
   if(EXISTS "/usr/local/include/llama.h")
-    list(PREPEND CMAKE_PREFIX_PATH "/usr/local")
+    list(APPEND CMAKE_PREFIX_PATH "/usr/local")
     message(STATUS "Using system llama.cpp from /usr/local")
   endif()
 endif()
@@ -105,6 +105,8 @@ message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 # Find llama.cpp headers
 find_path(LLAMA_INCLUDE_DIR llama.h REQUIRED)
 message(STATUS "Found llama.h: ${LLAMA_INCLUDE_DIR}")
+find_path(LLAMA_COMMON_INCLUDE_DIR speculative.h
+  HINTS "${LLAMA_INCLUDE_DIR}" PATH_SUFFIXES llama common REQUIRED)
 
 # Find llama.cpp shared libraries
 find_library(LLAMA_LIB llama REQUIRED)
@@ -118,6 +120,38 @@ message(STATUS "Found libggml: ${GGML_LIB}")
 message(STATUS "Found libggml-base: ${GGML_BASE_LIB}")
 message(STATUS "Found libggml-cpu: ${GGML_CPU_LIB}")
 message(STATUS "Found libllama-common: ${LLAMA_COMMON_LIB}")
+
+# common/speculative and llama-ext are evolving C++ interfaces. Fail at
+# configure time with a useful message instead of building against stale
+# headers (or accidentally mixing headers and libraries from two installs).
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_INCLUDES "${LLAMA_INCLUDE_DIR}" "${LLAMA_COMMON_INCLUDE_DIR}")
+set(CMAKE_REQUIRED_LIBRARIES "${LLAMA_LIB}" "${LLAMA_COMMON_LIB}")
+check_cxx_source_compiles("
+  #include <llama.h>
+  #include <llama-ext.h>
+  #include <speculative.h>
+  int main() {
+    auto m = llama_model_default_params();
+    m.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
+    m.load_mtp = true;
+    auto c = llama_context_default_params();
+    c.ctx_other = nullptr;
+    c.n_outputs_max = 1;
+    common_speculative_draft_params d{};
+    d.pos0 = 0;
+    auto * penalties = llama_sampler_init_penalties(32, 8, 1.0f, 0.0f, 0.0f);
+    auto * dry = llama_sampler_init_dry(nullptr, 0.0f, 1.75f, 2, 8, nullptr, 0);
+    return llama_model_n_layer_nextn(nullptr);
+  }" LLAMA_HAS_CURRENT_MTP_API)
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_LIBRARIES)
+if(NOT LLAMA_HAS_CURRENT_MTP_API)
+  message(FATAL_ERROR
+    "Incompatible llama.cpp headers/libraries. Install a matching current llama.cpp "
+    "build including llama-common and llama-ext.h (validated with 7cf1c54a9, "
+    "2026-09-14), then rebuild this extension. See docs/SYSTEM_LIBRARIES.md.")
+endif()
 
 # Optional GPU backend libraries
 find_library(GGML_CUDA_LIB ggml-cuda)
@@ -155,6 +189,7 @@ nanobind_add_module(
 target_include_directories(_llama
   PRIVATE
   ${LLAMA_INCLUDE_DIR}
+  ${LLAMA_COMMON_INCLUDE_DIR}
 )
 
 # Enable LTO if supported
@@ -211,4 +246,3 @@ set_target_properties(_llama PROPERTIES
 install(TARGETS _llama
   LIBRARY DESTINATION llama_cpp
   COMPONENT python)
-

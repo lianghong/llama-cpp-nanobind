@@ -13,7 +13,7 @@ import re
 import time
 from typing import TypedDict
 
-from llama_cpp import Llama  # type: ignore[import-untyped]
+from llama_cpp import Llama
 from llama_cpp import LlamaConfig
 from llama_cpp import SamplingParams
 
@@ -66,7 +66,7 @@ def get_today(tz: timezone | None = None) -> str:
     return datetime.now(tz).strftime("%Y-%m-%d")
 
 
-def gpt_oss_config(model_path: str):
+def gpt_oss_config(model_path: str) -> LlamaConfig:
     # GPU-optimized config
     config = LlamaConfig(
         model_path=model_path,
@@ -82,7 +82,9 @@ def gpt_oss_config(model_path: str):
     return config
 
 
-def model_sampling(temperature: float = 1.0, top_p: float = 1.0, top_k: int = 0):
+def model_sampling(
+    temperature: float = 1.0, top_p: float = 1.0, top_k: int = 0
+) -> SamplingParams:
     return SamplingParams(temperature=temperature, top_p=top_p, top_k=top_k)
 
 
@@ -180,9 +182,7 @@ def main(model_path: str, reasoning_level: str, user_prompt: str) -> GenerationR
 
         result = extract_channels(response)
         if not result:
-            raise ValueError(
-                f"Unexpected response format. Got: {response[:200]}..."
-            )
+            raise ValueError(f"Unexpected response format. Got: {response[:200]}...")
 
         return {
             "analysis": result[0],

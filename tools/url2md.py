@@ -149,8 +149,6 @@ class BrowserSession:
         Args:
             config: Fetch configuration including timeout and retry settings.
         """
-        import requests  # type: ignore[import-untyped]
-
         self._session = requests.Session()
         self._config = config
         self._user_agent = config.user_agent or random.choice(USER_AGENTS)

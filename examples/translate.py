@@ -21,7 +21,6 @@ import argparse
 from pathlib import Path
 import time
 
-from llama_cpp.unified import GPTOSSBackend
 from llama_cpp.unified import UnifiedLLM
 
 
@@ -158,9 +157,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--thinking", action="store_true", help="Enable thinking mode (Qwen3)"
     )
-    parser.add_argument(
-        "--reasoning_level", default="medium", choices=["low", "medium", "high"]
-    )
     parser.add_argument("--max_tokens", type=int, help="Max output tokens")
     parser.add_argument("--stop", type=str, nargs="*", help="Stop sequences")
     parser.add_argument(
@@ -247,10 +243,6 @@ def main() -> int:
             n_gpu_layers=args.n_gpu_layers,
             verbose=False,
         ) as llm:
-            # Configure model-specific settings
-            if isinstance(llm.backend, GPTOSSBackend):
-                llm.set_reasoning_level(args.reasoning_level)
-
             # Override temperature for translation (lower = more faithful)
             llm.model_config.temperature = args.temperature
 

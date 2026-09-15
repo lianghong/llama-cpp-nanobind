@@ -82,7 +82,8 @@ def main() -> None:
         )
 
     # Map the CLI choice to UnifiedLLM's bool | "auto" contract.
-    spec_arg: bool | str = {"auto": "auto", "on": True, "off": False}[args.speculative]
+    spec_modes: dict[str, bool | str] = {"auto": "auto", "on": True, "off": False}
+    spec_arg = spec_modes[args.speculative]
 
     print(f"Loading model: {args.model}")
     try:

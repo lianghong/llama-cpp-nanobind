@@ -7,6 +7,7 @@ genuine MTP checkpoint and skips when it is absent.
 """
 
 import pytest
+from conftest import MODEL_PATH, MTP_MODEL_PATH, requires_model, requires_mtp_model
 
 from llama_cpp import (
     LLAMA_CONTEXT_TYPE_DEFAULT,
@@ -15,8 +16,6 @@ from llama_cpp import (
     SamplingParams,
 )
 from llama_cpp.llama import ValidationError
-
-from conftest import MODEL_PATH, MTP_MODEL_PATH, requires_model, requires_mtp_model
 
 
 @requires_model
@@ -143,3 +142,102 @@ def test_generate_tokens_speculative_mtp_symbol_exists():
     from llama_cpp import _llama
 
     assert hasattr(_llama, "generate_tokens_speculative_mtp")
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, "2"])
+def test_n_draft_max_requires_integer(value):
+    with pytest.raises(ValidationError, match="n_draft_max"):
+        SamplingParams(n_draft_max=value)
+
+
+@requires_mtp_model
+def test_mtp_weights_can_be_disabled():
+    cfg = LlamaConfig(
+        model_path=MTP_MODEL_PATH,
+        n_ctx=512,
+        n_gpu_layers=-1,
+        load_mtp=False,
+        verbose=False,
+    )
+    with Llama(MTP_MODEL_PATH, config=cfg) as llm:
+        assert llm.supports_speculative_mtp() is False
+        with pytest.raises(ValidationError, match="load_mtp"):
+            llm.generate("Hello", max_tokens=1, speculative=True)
+        assert llm.generate("Hello", max_tokens=2)
+
+
+@requires_mtp_model
+def test_insufficient_target_rollback_rejected_before_decode():
+    cfg = LlamaConfig(
+        model_path=MTP_MODEL_PATH,
+        n_ctx=512,
+        n_gpu_layers=-1,
+        n_rs_seq=0,
+        verbose=False,
+    )
+    with Llama(MTP_MODEL_PATH, config=cfg) as llm:
+        if not (llm.model.is_hybrid() or llm.model.is_recurrent()):
+            pytest.skip("target does not require recurrent rollback")
+        with pytest.raises(ValidationError, match="n_rs_seq"):
+            llm.generate("Hello", max_tokens=8, speculative=True)
+        assert llm.ctx.kv_cache_seq_pos_max(0) == -1
+
+
+@requires_model
+def test_recurrent_rollback_ubatch_rejected(llm):
+    from llama_cpp import ModelLoadError
+
+    if not (llm.model.is_hybrid() or llm.model.is_recurrent()):
+        pytest.skip("target does not require recurrent rollback")
+    cfg = LlamaConfig(
+        model_path=MODEL_PATH,
+        n_ctx=128,
+        n_ubatch=8,
+        n_rs_seq=8,
+        n_gpu_layers=-1,
+        verbose=False,
+    )
+    with pytest.raises(ModelLoadError, match="n_ubatch"):
+        Llama(MODEL_PATH, config=cfg)
+
+
+@requires_model
+@pytest.mark.parametrize("window", ["dry_penalty_last_n", "repeat_last_n"])
+def test_full_context_history_window_matches_explicit_size(llm, window):
+    """Upstream clamps -1 to zero; the wrapper must resolve it before that."""
+    common = {
+        "temperature": 0.0,
+        "seed": 0,
+        "dry_multiplier": 100.0,
+        "repeat_penalty": 1.5,
+    }
+    prompt = "red green blue red green blue red green blue red green"
+    negative = llm.generate(
+        prompt,
+        max_tokens=12,
+        sampling=SamplingParams(**common, **{window: -1}),
+    )
+    explicit = llm.generate(
+        prompt,
+        max_tokens=12,
+        sampling=SamplingParams(**common, **{window: llm.n_ctx()}),
+    )
+    assert negative == explicit
+
+
+@requires_model
+@pytest.mark.parametrize(
+    "method", ["generate", "generate_stream", "create_chat_completion"]
+)
+@pytest.mark.parametrize("value", [True, 1.5, "2"])
+def test_override_draft_width_is_not_coerced(llm, method, value):
+    with pytest.raises(ValidationError, match="n_draft_max"):
+        if method == "create_chat_completion":
+            llm.create_chat_completion(
+                [{"role": "user", "content": "Hello"}],
+                n_draft_max=value,
+            )
+        elif method == "generate_stream":
+            list(llm.generate_stream("Hello", n_draft_max=value))
+        else:
+            llm.generate("Hello", n_draft_max=value)

@@ -9,6 +9,8 @@ with ``model_size * pool_size``.
 """
 
 from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -26,7 +28,7 @@ pool: LlamaPool | None = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Load pool on startup, drain in-flight requests on shutdown."""
     global pool
     config = LlamaConfig(
@@ -65,16 +67,17 @@ class ChatRequest(BaseModel):
     stream: bool = False
 
 
-@app.post("/generate")
-async def generate(request: GenerateRequest):
+@app.post("/generate", response_model=None)
+async def generate(request: GenerateRequest) -> dict[str, str] | StreamingResponse:
     """Generate text. Non-streaming runs on a pooled instance in parallel."""
-    assert pool is not None  # set by lifespan
+    active_pool = pool
+    assert active_pool is not None  # set by lifespan
     sampling = SamplingParams(temperature=request.temperature)
     if request.stream:
         # Manual checkout so we can stream from a held instance, then return it.
-        instance = await pool._checkout_instance()  # type: ignore[attr-defined]
+        instance = await active_pool._checkout_instance()
 
-        async def stream_response():
+        async def stream_response() -> AsyncIterator[str]:
             try:
                 async for chunk in await instance.generate_async(
                     request.prompt,
@@ -84,11 +87,11 @@ async def generate(request: GenerateRequest):
                 ):
                     yield chunk
             finally:
-                pool._return_instance(instance)  # type: ignore[union-attr]
+                active_pool._return_instance(instance)
 
         return StreamingResponse(stream_response(), media_type="text/plain")
 
-    text = await pool.generate(
+    text = await active_pool.generate(
         request.prompt,
         max_tokens=request.max_tokens,
         sampling=sampling,
@@ -96,16 +99,17 @@ async def generate(request: GenerateRequest):
     return {"text": text}
 
 
-@app.post("/chat")
-async def chat(request: ChatRequest):
+@app.post("/chat", response_model=None)
+async def chat(request: ChatRequest) -> dict[str, Any] | StreamingResponse:
     """Chat completion. Non-streaming runs on a pooled instance in parallel."""
-    assert pool is not None
+    active_pool = pool
+    assert active_pool is not None
     messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
     if request.stream:
-        instance = await pool._checkout_instance()  # type: ignore[attr-defined]
+        instance = await active_pool._checkout_instance()
 
-        async def stream_response():
+        async def stream_response() -> AsyncIterator[str]:
             try:
                 async for chunk in await instance.create_chat_completion_async(
                     messages,
@@ -115,11 +119,11 @@ async def chat(request: ChatRequest):
                 ):
                     yield chunk["choices"][0]["delta"].get("content", "")
             finally:
-                pool._return_instance(instance)  # type: ignore[union-attr]
+                active_pool._return_instance(instance)
 
         return StreamingResponse(stream_response(), media_type="text/plain")
 
-    return await pool.create_chat_completion(
+    return await active_pool.create_chat_completion(
         messages,
         max_tokens=request.max_tokens,
         temperature=request.temperature,
@@ -127,7 +131,7 @@ async def chat(request: ChatRequest):
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, str | bool | int]:
     return {
         "status": "ok",
         "pool_loaded": pool is not None,

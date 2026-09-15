@@ -2,6 +2,24 @@
 
 **Purpose:** This document explains how llama-cpp-nanobind uses system-installed llama.cpp from `/usr/local` and how to verify the setup.
 
+## Supported upstream interfaces
+
+Validated against **llama.cpp b10972**, commit
+[`7cf1c54a96d4e950ffa614b94babf762803a8de7`](https://github.com/ggml-org/llama.cpp/commit/7cf1c54a96d4e950ffa614b94babf762803a8de7)
+(2026-09-14). CMake checks for the current `load_mode`, `load_mtp`, sampler,
+and speculative `pos0` interfaces. The older b9592 integration is no longer
+supported by this source revision.
+
+Install `llama.h`, `llama-ext.h`, the common headers (`common.h`,
+`speculative.h` and their dependencies), and **libllama-common** together
+with libllama/ggml from the same upstream build. These common/staging C++
+interfaces have no stable ABI: rebuild this Python extension after upgrading
+upstream, even if the shared-library SONAME is unchanged. Explicit
+`CMAKE_PREFIX_PATH` entries take precedence over `/usr/local` or Homebrew.
+
+See [upstream research](UPSTREAM_RESEARCH-2026-09-15.md) for changes and
+[validation notes](CHANGELOG-2026-09-15.md) for tested behavior.
+
 ---
 
 ## Design Philosophy
@@ -28,7 +46,7 @@ This project **does not bundle or manage llama.cpp**. Instead, it links against 
 
 ```bash
 # Clone llama.cpp repository
-git clone https://github.com/ggerganov/llama.cpp.git
+git clone https://github.com/ggml-org/llama.cpp.git
 cd llama.cpp
 
 # Create build directory

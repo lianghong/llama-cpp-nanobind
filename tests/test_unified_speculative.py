@@ -8,10 +8,10 @@ Default model: ``./models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf`` (override via
 ``LLAMA_MTP_TEST_MODEL``). Tests skip cleanly when the file is absent.
 """
 
-from llama_cpp.unified import UnifiedLLM
-
+import pytest
 from conftest import MTP_MODEL_PATH, requires_mtp_model
 
+from llama_cpp.unified import UnifiedLLM
 
 # MTP test model (35B-A3B) is large; keep n_ctx tiny to fit common VRAM budgets.
 _MTP_TEST_NCTX = 1024
@@ -33,6 +33,8 @@ def test_unified_llm_speculative_explicit_false_on_mtp():
         MTP_MODEL_PATH, verbose=False, n_ctx=_MTP_TEST_NCTX, speculative=False
     ) as llm:
         assert llm.speculative_enabled is False
+        assert llm.llm.config.load_mtp is False
+        assert llm.llm.config.n_rs_seq == 0
         kwargs = llm.backend._sampling_kwargs(None)
         assert "speculative" not in kwargs
 
@@ -51,3 +53,13 @@ def test_unified_llm_speculative_smoke_generation():
         assert llm.speculative_enabled is True
         response = llm.generate("Say hi.", max_tokens=256)
         assert isinstance(response, str)
+
+
+@requires_mtp_model
+@pytest.mark.parametrize("width", [4, 8])
+def test_unified_sizes_target_rollback_for_draft_width(width):
+    with UnifiedLLM(
+        MTP_MODEL_PATH, verbose=False, n_ctx=_MTP_TEST_NCTX, n_draft_max=width
+    ) as llm:
+        assert llm.llm.config.n_rs_seq >= width
+        assert isinstance(llm.generate("Say hi.", max_tokens=8), str)

@@ -28,7 +28,7 @@ QUERIES = [
 ]
 
 
-async def serial_inference_baseline():
+async def serial_inference_baseline() -> tuple[list[str], float]:
     """Baseline: Serial processing with single Llama instance.
 
     This is what happens when you use a single Llama instance with async
@@ -60,7 +60,7 @@ async def serial_inference_baseline():
     return results, elapsed
 
 
-async def parallel_inference_pool():
+async def parallel_inference_pool() -> tuple[list[str], float]:
     """Improved: True parallel processing with LlamaPool.
 
     Multiple instances can process requests concurrently, achieving
@@ -90,7 +90,7 @@ async def parallel_inference_pool():
         return results, elapsed
 
 
-async def demonstrate_concurrent_requests():
+async def demonstrate_concurrent_requests() -> None:
     """Show that pool handles concurrent requests correctly."""
     print("=" * 60)
     print("CONCURRENT REQUEST HANDLING")
@@ -124,7 +124,7 @@ async def demonstrate_concurrent_requests():
             print(f"    → {result[:50]}...\n")
 
 
-async def chat_completion_example():
+async def chat_completion_example() -> None:
     """Example: Parallel chat completions."""
     print("=" * 60)
     print("PARALLEL CHAT COMPLETIONS")
@@ -155,7 +155,7 @@ async def chat_completion_example():
             print(f"[{i}] {content}\n")
 
 
-async def demonstrate_warmup():
+async def demonstrate_warmup() -> None:
     """Show warmup feature for production deployments."""
     print("=" * 60)
     print("MODEL WARMUP (Optional)")
@@ -195,7 +195,7 @@ async def demonstrate_warmup():
     print("ℹ️  Warmup recommended for production APIs with strict SLA requirements\n")
 
 
-async def main():
+async def main() -> None:
     """Run all examples and show performance comparison."""
     print("\n" + "=" * 60)
     print("PARALLEL INFERENCE DEMO")

@@ -39,6 +39,13 @@ dev = [
     "ruff>=0.14",
     "mypy>=1.19",
     "isort>=7.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "gguf>=0.19",
+    "requests>=2.32",
+    "types-requests>=2.32",
+    "beautifulsoup4>=4.13",
+    "markdownify>=1.2",
 ]
 
 [project.urls]
@@ -75,10 +82,18 @@ strict = true
 python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
+files = ["src/llama_cpp", "examples", "tools", "tests/typing"]
+mypy_path = "$MYPY_CONFIG_FILE_DIR/src"
+
+[[tool.mypy.overrides]]
+# nanobind's compiled implementation has no stubs; the Python facade is typed.
+module = "llama_cpp._llama"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-v --tb=short"
 
 [tool.isort]

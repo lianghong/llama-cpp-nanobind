@@ -1,4 +1,4 @@
-.PHONY: all build test wheel wheel-portable clean install dev
+.PHONY: all build test lint typecheck check wheel wheel-portable clean install dev
 
 PYTHON ?= python3.14
 VENV := .venv
@@ -9,13 +9,22 @@ $(VENV):
 	uv venv --python $(PYTHON) $(VENV)
 
 dev: $(VENV)
-	. $(VENV)/bin/activate && uv pip install -e .[test]
+	. $(VENV)/bin/activate && uv pip install -e ".[dev]"
 
 build: $(VENV)
 	. $(VENV)/bin/activate && uv pip install -e .
 
 test: dev
 	. $(VENV)/bin/activate && uv run pytest -q
+
+lint:
+	$(VENV)/bin/ruff check src/ tests/ examples/ tools/
+	$(VENV)/bin/ruff format --check src/ tests/ examples/ tools/
+
+typecheck:
+	$(VENV)/bin/mypy
+
+check: lint typecheck
 
 wheel: $(VENV)
 	. $(VENV)/bin/activate && uv pip install build && python -m build --wheel

@@ -1589,14 +1589,14 @@ def main() -> int:
                             break
 
                         try:
-                            result = process_file(
+                            output_path = process_file(
                                 file_path,
                                 translator,
                                 config,
                                 output_dir=output_dir,
                                 overwrite=args.overwrite,
                             )
-                            if result is not None:
+                            if output_path is not None:
                                 processed += 1
                         except (
                             OSError,

@@ -9,14 +9,13 @@ location is `models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf`, overridable via
 import os
 
 import pytest
+from conftest import MTP_MODEL_PATH, requires_mtp_model
 
 from llama_cpp import (
     Llama,
     LlamaConfig,
     SamplingParams,
 )
-
-from conftest import MTP_MODEL_PATH, requires_mtp_model
 
 
 def _make_mtp_llm(**overrides):
@@ -158,7 +157,7 @@ def test_speculative_with_cache_prompt():
 def test_speculative_n_draft_max_bounds():
     """Both n_draft_max=1 and n_draft_max=8 must work end-to-end.
 
-    n_rs_seq must be >= n_draft_max so the recurrent draft context can
+    n_rs_seq must be >= n_draft_max so the recurrent target context can
     roll back rejected drafts on hybrid attention models.
     """
     for n in (1, 8):
@@ -195,17 +194,8 @@ def test_speculative_stop_sequence():
 
 
 # --- Continuation / mode-switch regression tests ---------------------------
-# These guard the load-bearing speculative off-by-1 (user KV ends 1 behind the
-# prompt-cache mirror; the next speculative turn self-heals) and the mode-switch
-# guard that forces a KV reset across a speculative↔non-speculative boundary.
-# A length invariant alone never caught these — only a differential
-# "continuation output == fresh full re-prime" check does.
-#
-# All tests below share ONE module-scoped 35B instance. Each test resets KV
-# (reset_kv_cache=True) at its start, so sharing is safe — and it keeps the
-# 35B model's VRAM footprint to a single load, which matters because the full
-# suite already loads it several times and a 20GB card has no headroom for the
-# extra per-test loads (transient OOM → ModelLoadError elsewhere in the suite).
+# Differential continuation tests compare each mode transition with a fresh
+# prime. The shared model keeps GPU residency to one checkpoint at a time.
 
 _CONT_PROMPT = "The capital of France is"
 
@@ -256,16 +246,7 @@ def _spec_continue(llm, first_spec, second_spec):
 
 @requires_mtp_model
 def test_speculative_continuation_modes(mtp_llm):
-    """Differential check across all four mode transitions on the same shared
-    instance:
-
-    * spec→spec / nonspec→nonspec: same-mode continuation must byte-match a
-      fresh re-prime (spec→spec exercises the load-bearing off-by-1 self-heal).
-    * spec→nonspec: the guard heals the off-by-1 in place (decodes the undecoded
-      tail token) and continues WITHOUT a reset — output correct, prefix reused.
-    * nonspec→spec: the draft recurrent state can't be resumed, so the guard
-      forces a reset; output must still be correct.
-    """
+    """Every mode transition must match a fresh prime of the same prefix."""
     for first, second in [(True, True), (False, False), (True, False), (False, True)]:
         cont, fresh = _spec_continue(mtp_llm, first, second)
         assert cont == fresh, f"mode transition spec={first}->{second} diverged"
@@ -335,8 +316,7 @@ def test_speculative_stop_then_continue_does_not_crash(mtp_llm):
 
 @requires_mtp_model
 def test_speculative_max_tokens_one(mtp_llm):
-    """Extreme early termination: max_tokens=1 exits the loop after a single
-    emitted token (the corrected_id tail). Must return non-empty text and keep
+    """Extreme early termination: max_tokens=1 returns one target token. Must return non-empty text and keep
     the mirror aligned for a clean continuation."""
     sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=4)
     one = mtp_llm.generate(
@@ -386,3 +366,131 @@ def test_speculative_streaming_callback_cancel(mtp_llm):
         reset_kv_cache=True,
     )
     assert isinstance(out, str)
+
+
+@requires_mtp_model
+def test_speculative_prefill_exceeds_batch():
+    """Every prefill chunk must feed its hidden rows to MTP before the next."""
+    llm = _make_mtp_llm(n_batch=32, n_ubatch=16)
+    try:
+        prompt = "A red ball and a blue box. " * 12 + "The ball is"
+        sp = SamplingParams(temperature=0.0, seed=0)
+        assert len(llm.tokenize(prompt)) > llm.config.n_batch
+        baseline = llm.generate(prompt, max_tokens=16, sampling=sp)
+        result = llm.generate(prompt, max_tokens=16, sampling=sp, speculative=True)
+        assert result == baseline
+    finally:
+        llm.close()
+
+
+@requires_mtp_model
+def test_speculative_stream_holds_stop_prefix(mtp_llm):
+    """Use actual generated token IDs so the multi-token stop definitely fires."""
+    from llama_cpp import _llama
+
+    llm = mtp_llm
+    sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=4)
+    prompt = llm.tokenize("Count from one to twenty:", add_special=False)
+    llm.kv_cache_clear()
+    baseline = _llama.generate_tokens_speculative_mtp(
+        llm.ctx,
+        llm._build_sampler(sp),
+        None,
+        prompt,
+        24,
+        llm._effective_add_bos,
+        llm.model.eos(),
+        4,
+        [],
+        None,
+        0,
+    )
+    assert len(baseline) >= 8
+    stop = baseline[3:6]
+    # Use the first occurrence, in case the model generated a repetition.
+    stop_at = next(
+        i
+        for i in range(len(baseline) - len(stop) + 1)
+        if baseline[i : i + len(stop)] == stop
+    )
+    seen = []
+    llm.kv_cache_clear()
+    result = _llama.generate_tokens_speculative_mtp(
+        llm.ctx,
+        llm._build_sampler(sp),
+        None,
+        prompt,
+        24,
+        llm._effective_add_bos,
+        llm.model.eos(),
+        4,
+        [stop],
+        lambda token: seen.append(token) is None,
+        0,
+    )
+    assert seen == result == baseline[:stop_at]
+
+
+@requires_mtp_model
+@pytest.mark.parametrize("budget", [1, 2, 5, 9])
+def test_speculative_finishes_with_current_logits(mtp_llm, budget):
+    llm = mtp_llm
+    sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=4)
+    out = llm.generate(_CONT_PROMPT, max_tokens=budget, sampling=sp, speculative=True)
+    assert llm.ctx.kv_cache_seq_pos_max(0) + 1 == len(llm._cached_prompt_tokens)
+    # An unchanged full-prefix continuation must sample current target logits.
+    continuation = llm.generate(
+        _CONT_PROMPT + out,
+        max_tokens=4,
+        sampling=sp,
+        reset_kv_cache=False,
+        speculative=True,
+    )
+    fresh = llm.generate(_CONT_PROMPT + out, max_tokens=4, sampling=sp)
+    assert continuation == fresh
+
+
+@requires_mtp_model
+def test_speculative_near_context_limit(mtp_llm):
+    """The draft driver must not decode its fixed draft width past n_ctx."""
+    from llama_cpp import _llama
+
+    llm = mtp_llm
+    sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=8)
+    token = llm.tokenize(" a", add_special=False)[0]
+    prompt = [token] * (llm.n_ctx() - 3)
+    llm.kv_cache_clear()
+    result = _llama.generate_tokens_speculative_mtp(
+        llm.ctx,
+        llm._build_sampler(sp),
+        None,
+        prompt,
+        8,
+        False,
+        llm.model.eos(),
+        8,
+        [],
+        None,
+        0,
+    )
+    assert len(result) <= 3
+    assert llm.ctx.kv_cache_seq_pos_max(0) < llm.n_ctx()
+
+
+@requires_mtp_model
+def test_speculative_continuation_invalidates_device_snapshot(mtp_llm):
+    from llama_cpp import LlamaError
+
+    llm = mtp_llm
+    sp = SamplingParams(temperature=0.0, seed=0)
+    text = llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp, speculative=True)
+    handle = llm.save_seq_state_on_device()
+    llm.generate(
+        _CONT_PROMPT + text,
+        max_tokens=4,
+        sampling=sp,
+        speculative=True,
+        reset_kv_cache=False,
+    )
+    with pytest.raises(LlamaError, match="stale"):
+        llm.load_seq_state_on_device(handle)

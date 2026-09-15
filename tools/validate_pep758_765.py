@@ -111,7 +111,7 @@ def check_pep_765(file_path: Path) -> list[Violation]:
     class FinallyVisitor(ast.NodeVisitor):
         """Visit AST nodes to find control flow in finally blocks."""
 
-        def __init__(self):
+        def __init__(self) -> None:
             self.in_finally_depth = 0
             self.violations: list[Violation] = []
 
