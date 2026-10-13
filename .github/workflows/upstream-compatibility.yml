@@ -1,0 +1,94 @@
+name: Upstream compatibility
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: "20 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream ref to check alongside the validated baseline
+        default: master
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    name: ${{ matrix.lane }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: validated-b11552
+            ref: 23b0202a189c44a54625aadcb37a946dd1d6278d
+          - lane: upstream
+            ref: ${{ inputs.upstream_ref || 'master' }}
+    env:
+      CC: gcc
+      CXX: g++
+      CMAKE_ARGS: -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/upstream-prefix -DLLAMA_PORTABLE=ON
+      LD_LIBRARY_PATH: ${{ github.workspace }}/build/upstream-prefix/lib
+      LLAMA_TEST_MODEL: /nonexistent/ordinary.gguf
+      LLAMA_MTP_TEST_MODEL: /nonexistent/mtp.gguf
+      LLAMA_MOE_TEST_MODEL: /nonexistent/moe.gguf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Check out upstream
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ matrix.ref }}
+          path: build/upstream-source
+          persist-credentials: false
+      - name: Build matching upstream headers and libraries
+        run: |
+          cmake -S build/upstream-source -B build/upstream-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/build/upstream-prefix" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_COMMON=ON \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF \
+            -DLLAMA_OPENSSL=OFF -DGGML_CUDA=OFF -DGGML_NATIVE=OFF
+          cmake --build build/upstream-build --parallel 2
+          cmake --install build/upstream-build
+          install -m 644 build/upstream-source/src/llama-ext.h build/upstream-prefix/include/
+          install -d build/upstream-prefix/include/llama
+          install -m 644 build/upstream-source/common/{common,speculative}.h \
+            build/upstream-prefix/include/llama/
+      - name: Build and install the extension
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip wheel . --no-deps --wheel-dir build/wheels --verbose
+          python -m pip install build/wheels/*.whl pytest pytest-asyncio fastapi gguf
+      - name: Verify native runtime provenance
+        run: |
+          python tools/check_runtime.py \
+            --prefix build/upstream-prefix \
+            --expected-commit "$(git -C build/upstream-source rev-parse HEAD)" \
+            --output build/runtime.json
+      - name: Run model-free tests
+        run: python -m pytest -q --junitxml=build/pytest.xml
+      - name: Preserve validation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-${{ matrix.lane }}
+          path: |
+            build/runtime.json
+            build/pytest.xml
+            build/upstream-build/CMakeCache.txt
+          if-no-files-found: ignore

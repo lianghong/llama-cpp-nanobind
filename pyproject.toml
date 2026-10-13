@@ -1,26 +1,39 @@
 [build-system]
 requires = [
-  "scikit-build-core>=0.11",
-  "nanobind>=2.10",
-  "packaging"
+    "scikit-build-core>=1.1.1",
+    "nanobind>=3.1.0",
+    "packaging>=26.3",
 ]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "llama-cpp-nanobind"
 version = "0.6.0"
-description = "High-performance nanobind bindings for llama.cpp with CUDA"
+description = "Terminal chat app and high-performance nanobind bindings for llama.cpp"
 readme = "README.md"
 requires-python = ">=3.14"
-authors = [{name = "llama-cpp-nanobind"}]
-license = {text = "MIT"}
+authors = [{ name = "llama-cpp-nanobind" }]
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []
-keywords = ["llama", "llama.cpp", "llm", "inference", "nanobind", "cuda", "ai", "machine-learning"]
+keywords = [
+    "llama",
+    "llama.cpp",
+    "llm",
+    "chat",
+    "cli",
+    "inference",
+    "nanobind",
+    "cuda",
+    "ai",
+    "machine-learning",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
@@ -31,21 +44,22 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=9.0", "pytest-asyncio>=1.0"]
+test = ["pytest>=9.1.1", "pytest-asyncio>=1.4.0"]
 dev = [
-    "pytest>=9.0",
-    "pytest-asyncio>=1.0",
-    "black>=26.0",
-    "ruff>=0.14",
-    "mypy>=1.19",
-    "isort>=7.0",
-    "fastapi>=0.115",
-    "uvicorn>=0.34",
-    "gguf>=0.19",
-    "requests>=2.32",
-    "types-requests>=2.32",
-    "beautifulsoup4>=4.13",
-    "markdownify>=1.2",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "build>=1.6.1",
+    "black>=26.10.1",
+    "ruff>=0.17.0",
+    "mypy>=2.4.0",
+    "isort>=9.0.2",
+    "fastapi>=0.143.0",
+    "uvicorn>=0.54.0",
+    "gguf>=0.19.0",
+    "requests>=2.34.2",
+    "types-requests>=2.33.0.20261006",
+    "beautifulsoup4>=4.15.0",
+    "markdownify>=1.2.3",
 ]
 
 [project.urls]
@@ -53,7 +67,11 @@ Homepage = "https://github.com/pplmx/llama-cpp-nanobind"
 Repository = "https://github.com/pplmx/llama-cpp-nanobind"
 Issues = "https://github.com/pplmx/llama-cpp-nanobind/issues"
 
+[project.scripts]
+llama-chat = "llama_cpp.cli:main"
+
 [tool.scikit-build]
+minimum-version = "build-system.requires"
 cmake.version = ">=3.26"
 cmake.build-type = "Release"
 wheel.packages = ["src/llama_cpp"]

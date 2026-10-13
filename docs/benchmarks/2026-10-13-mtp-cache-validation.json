@@ -1,0 +1,3066 @@
+{
+  "schema_version": 1,
+  "source_sha256": {
+    "src/bindings/llama_cpp.cpp": "3ded5f530d608d5719363b051a9ce0a1d27c1739d5a34a741e7f550dd8b76c6e",
+    "src/llama_cpp/llama.py": "9198aad18d85bf5d88d557d6e9468d0b199ee5608692553c511e763bda348242",
+    "CMakeLists.txt": "f3e744d64a2a3716b34b033b4b9df9c395ecede7622f8aaf1b66393eec8d22de",
+    "tests/test_mtp_cache_reuse.py": "7495129a0991218b376831d00ad404a02a9161dd87839fe1eef198f575f213c0",
+    "tools/benchmark_mtp_chat.py": "4f216c82bc99bb30a6f364ceae1c1654b8680328f81a879cfb28af57ac4fc517",
+    "tools/benchmark_mtp_sweep.py": "755441403709065c9ac77410add47d8a5e6d7805855e9b906da924adfc36be90"
+  },
+  "runtimes": {
+    "final": {
+      "commit": "cbe28bb3cb",
+      "build_number": 11577,
+      "compiler": "GNU 15.2.0",
+      "libraries": [
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-base.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cpu.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cuda.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama-common.so.0.6.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama.so.0.6.0"
+      ],
+      "extension": "/tmp/mtp-cache-head/venv/lib/python3.14/site-packages/llama_cpp/_llama.cpython-314-x86_64-linux-gnu.so",
+      "system_info": "CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | ",
+      "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+      "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43"
+    },
+    "reference": {
+      "commit": "cbe28bb3cb",
+      "build_number": 11577,
+      "compiler": "GNU 15.2.0",
+      "libraries": [
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-base.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cpu.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cuda.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama-common.so.0.6.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama.so.0.6.0"
+      ],
+      "extension": "/tmp/mtp-cache-reference/venv/lib/python3.14/site-packages/llama_cpp/_llama.cpython-314-x86_64-linux-gnu.so",
+      "system_info": "CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | ",
+      "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+      "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43"
+    },
+    "clang-final": {
+      "commit": "cbe28bb3cb",
+      "build_number": 11577,
+      "compiler": "GNU 15.2.0",
+      "libraries": [
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-base.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cpu.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cuda.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml.so.0.26.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama-common.so.0.6.0",
+        "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama.so.0.6.0"
+      ],
+      "extension": "/tmp/mtp-cache-head/clang-venv/lib/python3.14/site-packages/llama_cpp/_llama.cpython-314-x86_64-linux-gnu.so",
+      "system_info": "CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | ",
+      "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+      "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43"
+    },
+    "baseline": {
+      "commit": "23b0202",
+      "build_number": 11552,
+      "compiler": "GNU 15.2.0",
+      "libraries": [
+        "/usr/local/lib/libggml-base.so.0.26.0",
+        "/usr/local/lib/libggml-blas.so.0.26.0",
+        "/usr/local/lib/libggml-cpu.so.0.26.0",
+        "/usr/local/lib/libggml-cuda.so.0.26.0",
+        "/usr/local/lib/libggml.so.0.26.0",
+        "/usr/local/lib/libllama-common.so.0.6.0",
+        "/usr/local/lib/libllama.so.0.6.0"
+      ],
+      "extension": "/data/storage/Projects/github_projects/llama-cpp-nanobind/.venv/lib/python3.14/site-packages/llama_cpp/_llama.cpython-314-x86_64-linux-gnu.so",
+      "system_info": "CUDA : ARCHS = 860 | NO_PEER_COPY = 1 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | ",
+      "python": "3.14.4 (main, Apr  8 2026, 04:02:31) [GCC 15.2.0]",
+      "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43"
+    }
+  },
+  "native_extension_sha256": {
+    "final": "16bc11828af6727c0acfc19263d34de674fced122462c6ea894088ca8b490056",
+    "reference": "e47dadbcee0e99351b6d45405e7f594dbdd69d94676c4e865fa8536c526884eb",
+    "clang-final": "c972d2ef46d6a445b1345ee9f3f63ad5eebb21645ea074053eb3f5b724afacb4",
+    "baseline": "c41445b8ed3a19a569d9b603e70dfb1afaedb378c52d2456abe7d9a5fd475413"
+  },
+  "test_runs": {
+    "head-main": {
+      "xml_sha256": "43bb86adeaf3bf32aca8373eaf579a0171dc3f367785fd45f0b16544eef87195",
+      "passed": 354,
+      "skipped": 10,
+      "cases": {
+        "tests.test_adaptive_p::test_adaptive_p_disabled_by_default": {
+          "status": "passed",
+          "seconds": 0.168,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_adaptive_p_to_native_passes_through": {
+          "status": "passed",
+          "seconds": 0.17,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_adaptive_p_negative_target_disables": {
+          "status": "passed",
+          "seconds": 0.174,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_adaptive_p_target_above_one_rejected": {
+          "status": "passed",
+          "seconds": 0.175,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_adaptive_p_decay_out_of_range_rejected": {
+          "status": "passed",
+          "seconds": 0.177,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_adaptive_p_target_zero_allowed": {
+          "status": "passed",
+          "seconds": 0.178,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_adaptive_p_target_one_allowed": {
+          "status": "passed",
+          "seconds": 0.179,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_new_ggml_type_constants_exposed": {
+          "status": "passed",
+          "seconds": 0.18,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_new_ggml_types_NOT_in_kv_cache_whitelist": {
+          "status": "passed",
+          "seconds": 0.182,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_adaptive_p_generation_smoke": {
+          "status": "passed",
+          "seconds": 0.844,
+          "reason": null
+        },
+        "tests.test_adaptive_p::test_adaptive_p_disabled_matches_normal_path": {
+          "status": "passed",
+          "seconds": 0.25,
+          "reason": null
+        },
+        "tests.test_async::test_generate_async": {
+          "status": "passed",
+          "seconds": 0.368,
+          "reason": null
+        },
+        "tests.test_async::test_generate_async_stream": {
+          "status": "passed",
+          "seconds": 0.213,
+          "reason": null
+        },
+        "tests.test_async::test_chat_completion_async": {
+          "status": "passed",
+          "seconds": 0.237,
+          "reason": null
+        },
+        "tests.test_async::test_chat_completion_async_stream": {
+          "status": "passed",
+          "seconds": 0.22,
+          "reason": null
+        },
+        "tests.test_async::test_embed_async": {
+          "status": "passed",
+          "seconds": 0.418,
+          "reason": null
+        },
+        "tests.test_async::test_concurrent_async": {
+          "status": "passed",
+          "seconds": 0.225,
+          "reason": null
+        },
+        "tests.test_async::test_generate_async_stream_is_incremental": {
+          "status": "passed",
+          "seconds": 0.198,
+          "reason": null
+        },
+        "tests.test_async::test_chat_completion_async_stream_is_incremental": {
+          "status": "passed",
+          "seconds": 0.261,
+          "reason": null
+        },
+        "tests.test_async::test_generate_async_stream_early_break": {
+          "status": "passed",
+          "seconds": 0.374,
+          "reason": null
+        },
+        "tests.test_async::test_chat_completion_async_stream_early_break": {
+          "status": "passed",
+          "seconds": 0.374,
+          "reason": null
+        },
+        "tests.test_async::test_generate_async_stream_task_cancellation": {
+          "status": "passed",
+          "seconds": 0.522,
+          "reason": null
+        },
+        "tests.test_async::test_generate_async_stream_slow_consumer_no_loss": {
+          "status": "passed",
+          "seconds": 0.825,
+          "reason": null
+        },
+        "tests.test_close_exception_safety::test_close_normal_path_works": {
+          "status": "passed",
+          "seconds": 0.392,
+          "reason": null
+        },
+        "tests.test_close_exception_safety::test_close_is_idempotent": {
+          "status": "passed",
+          "seconds": 0.393,
+          "reason": null
+        },
+        "tests.test_close_exception_safety::test_close_in_context_manager": {
+          "status": "passed",
+          "seconds": 0.364,
+          "reason": null
+        },
+        "tests.test_close_exception_safety::test_close_clears_lora_tracking": {
+          "status": "passed",
+          "seconds": 0.363,
+          "reason": null
+        },
+        "tests.test_code_review_suggestions::test_reset_verbose_classmethod": {
+          "status": "passed",
+          "seconds": 0.171,
+          "reason": null
+        },
+        "tests.test_code_review_suggestions::test_max_prompt_multiplier_default": {
+          "status": "passed",
+          "seconds": 0.368,
+          "reason": null
+        },
+        "tests.test_code_review_suggestions::test_dataclass_replace_used": {
+          "status": "passed",
+          "seconds": 0.171,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_double_close": {
+          "status": "passed",
+          "seconds": 0.364,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_context_manager_then_close": {
+          "status": "passed",
+          "seconds": 0.377,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_sequential_cycles": {
+          "status": "passed",
+          "seconds": 0.793,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_state_roundtrip_close": {
+          "status": "passed",
+          "seconds": 0.395,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_state_file_close": {
+          "status": "passed",
+          "seconds": 0.593,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_gc_pressure": {
+          "status": "passed",
+          "seconds": 0.393,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_use_after_close_raises": {
+          "status": "passed",
+          "seconds": 0.361,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_multi_instance_close_creation_order": {
+          "status": "passed",
+          "seconds": 0.524,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_multi_instance_close_reverse_order": {
+          "status": "passed",
+          "seconds": 0.523,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_rapid_create_close": {
+          "status": "passed",
+          "seconds": 2.137,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_del_without_close": {
+          "status": "passed",
+          "seconds": 0.377,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_double_close": {
+          "status": "skipped",
+          "seconds": 0.171,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_double_free_scenarios::test_unified_context_manager_then_close": {
+          "status": "skipped",
+          "seconds": 0.172,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_double_free_scenarios::test_unified_sequential_cycles": {
+          "status": "skipped",
+          "seconds": 0.172,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_double_free_scenarios::test_unified_del": {
+          "status": "skipped",
+          "seconds": 0.173,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_double_free_scenarios::test_unified_close_then_del": {
+          "status": "skipped",
+          "seconds": 0.174,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_double_free_scenarios::test_unified_use_after_close_raises": {
+          "status": "skipped",
+          "seconds": 0.176,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_double_free_scenarios::test_unified_and_llama_mixed_close_order": {
+          "status": "skipped",
+          "seconds": 0.178,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_double_free_scenarios::test_unified_rapid_create_close": {
+          "status": "skipped",
+          "seconds": 0.18,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_double_free_scenarios::test_unified_inner_llm_is_none_after_close": {
+          "status": "skipped",
+          "seconds": 0.181,
+          "reason": "UnifiedLLM rejected MODEL_PATH: Model 'LFM2.5-350M-Q4_K_M.gguf' does not match any supported family. UnifiedLLM supports Qwen 3.5, Qwen 3.6, Gemma 4, and IBM Granite 4.1. Use the lower-level Llama class for other models."
+        },
+        "tests.test_examples::test_streaming_demo_timing[chunks0-demo_buffered_streaming]": {
+          "status": "passed",
+          "seconds": 0.186,
+          "reason": null
+        },
+        "tests.test_examples::test_streaming_demo_timing[chunks0-demo_true_streaming]": {
+          "status": "passed",
+          "seconds": 0.188,
+          "reason": null
+        },
+        "tests.test_examples::test_streaming_demo_timing[chunks1-demo_buffered_streaming]": {
+          "status": "passed",
+          "seconds": 0.188,
+          "reason": null
+        },
+        "tests.test_examples::test_streaming_demo_timing[chunks1-demo_true_streaming]": {
+          "status": "passed",
+          "seconds": 0.19,
+          "reason": null
+        },
+        "tests.test_examples::test_server_stream_returns_instance_to_owning_pool[False-generate]": {
+          "status": "passed",
+          "seconds": 0.948,
+          "reason": null
+        },
+        "tests.test_examples::test_server_stream_returns_instance_to_owning_pool[False-chat]": {
+          "status": "passed",
+          "seconds": 0.196,
+          "reason": null
+        },
+        "tests.test_examples::test_server_stream_returns_instance_to_owning_pool[True-generate]": {
+          "status": "passed",
+          "seconds": 0.197,
+          "reason": null
+        },
+        "tests.test_examples::test_server_stream_returns_instance_to_owning_pool[True-chat]": {
+          "status": "passed",
+          "seconds": 0.195,
+          "reason": null
+        },
+        "tests.test_examples::test_metadata_detection_preserves_normal_tensor_reading": {
+          "status": "passed",
+          "seconds": 0.648,
+          "reason": null
+        },
+        "tests.test_examples::test_gptoss_tool_calls_are_strings": {
+          "status": "passed",
+          "seconds": 0.216,
+          "reason": null
+        },
+        "tests.test_examples::test_model_stops_helper_accepts_explicit_text_options": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_inference::test_short_generation": {
+          "status": "passed",
+          "seconds": 0.406,
+          "reason": null
+        },
+        "tests.test_inference::test_custom_sampling": {
+          "status": "passed",
+          "seconds": 0.22,
+          "reason": null
+        },
+        "tests.test_inference::test_chat_completion_api": {
+          "status": "passed",
+          "seconds": 0.209,
+          "reason": null
+        },
+        "tests.test_inference::test_tokenize_detokenize": {
+          "status": "passed",
+          "seconds": 0.2,
+          "reason": null
+        },
+        "tests.test_inference::test_n_tokens": {
+          "status": "passed",
+          "seconds": 0.194,
+          "reason": null
+        },
+        "tests.test_inference::test_special_tokens": {
+          "status": "passed",
+          "seconds": 0.196,
+          "reason": null
+        },
+        "tests.test_inference::test_model_info": {
+          "status": "passed",
+          "seconds": 0.196,
+          "reason": null
+        },
+        "tests.test_inference::test_metadata_cached": {
+          "status": "passed",
+          "seconds": 0.195,
+          "reason": null
+        },
+        "tests.test_inference::test_kv_cache_operations": {
+          "status": "passed",
+          "seconds": 0.228,
+          "reason": null
+        },
+        "tests.test_inference::test_state_bytes": {
+          "status": "passed",
+          "seconds": 0.223,
+          "reason": null
+        },
+        "tests.test_inference::test_call_returns_dict": {
+          "status": "passed",
+          "seconds": 0.209,
+          "reason": null
+        },
+        "tests.test_inference::test_call_logprobs_echo_completion_tokens_excludes_prompt": {
+          "status": "passed",
+          "seconds": 0.229,
+          "reason": null
+        },
+        "tests.test_inference::test_streaming": {
+          "status": "passed",
+          "seconds": 0.208,
+          "reason": null
+        },
+        "tests.test_inference::test_grammar_from_string": {
+          "status": "passed",
+          "seconds": 0.197,
+          "reason": null
+        },
+        "tests.test_inference::test_grammar_from_json_schema": {
+          "status": "passed",
+          "seconds": 0.195,
+          "reason": null
+        },
+        "tests.test_inference::test_grammar_from_json_schema_warns_on_top_level_unsupported": {
+          "status": "passed",
+          "seconds": 0.196,
+          "reason": null
+        },
+        "tests.test_inference::test_grammar_from_json_schema_warns_on_nested_unsupported": {
+          "status": "passed",
+          "seconds": 0.198,
+          "reason": null
+        },
+        "tests.test_inference::test_grammar_from_json_schema_warns_on_generic_fallback": {
+          "status": "passed",
+          "seconds": 0.197,
+          "reason": null
+        },
+        "tests.test_inference::test_grammar_from_json_schema_quiet_for_supported": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_inference::test_json_mode": {
+          "status": "passed",
+          "seconds": 0.323,
+          "reason": null
+        },
+        "tests.test_inference::test_perf_metrics": {
+          "status": "passed",
+          "seconds": 0.208,
+          "reason": null
+        },
+        "tests.test_inference::test_config_verbose_false": {
+          "status": "passed",
+          "seconds": 0.394,
+          "reason": null
+        },
+        "tests.test_inference::test_invalid_max_tokens": {
+          "status": "passed",
+          "seconds": 0.195,
+          "reason": null
+        },
+        "tests.test_inference::test_invalid_prompt": {
+          "status": "passed",
+          "seconds": 0.196,
+          "reason": null
+        },
+        "tests.test_inference::test_invalid_config_n_ctx": {
+          "status": "passed",
+          "seconds": 0.195,
+          "reason": null
+        },
+        "tests.test_inference::test_invalid_config_n_batch": {
+          "status": "passed",
+          "seconds": 0.193,
+          "reason": null
+        },
+        "tests.test_inference::test_invalid_sampling_params": {
+          "status": "passed",
+          "seconds": 0.199,
+          "reason": null
+        },
+        "tests.test_inference::test_model_load_error": {
+          "status": "passed",
+          "seconds": 0.22,
+          "reason": null
+        },
+        "tests.test_inference::test_context_manager": {
+          "status": "passed",
+          "seconds": 0.474,
+          "reason": null
+        },
+        "tests.test_inference::test_double_close_safe": {
+          "status": "passed",
+          "seconds": 0.436,
+          "reason": null
+        },
+        "tests.test_inference::test_stop_sequences": {
+          "status": "passed",
+          "seconds": 0.222,
+          "reason": null
+        },
+        "tests.test_inference::test_stop_sequence_validation": {
+          "status": "passed",
+          "seconds": 0.204,
+          "reason": null
+        },
+        "tests.test_inference::test_logprobs_basic": {
+          "status": "passed",
+          "seconds": 0.221,
+          "reason": null
+        },
+        "tests.test_inference::test_logprobs_short_prompt": {
+          "status": "passed",
+          "seconds": 0.207,
+          "reason": null
+        },
+        "tests.test_inference::test_logprobs_with_stop_sequences": {
+          "status": "passed",
+          "seconds": 0.198,
+          "reason": null
+        },
+        "tests.test_inference::test_model_architecture_introspection": {
+          "status": "passed",
+          "seconds": 0.194,
+          "reason": null
+        },
+        "tests.test_inference::test_special_tokens_extended": {
+          "status": "passed",
+          "seconds": 0.196,
+          "reason": null
+        },
+        "tests.test_inference::test_auto_detect_bos": {
+          "status": "passed",
+          "seconds": 0.191,
+          "reason": null
+        },
+        "tests.test_inference::test_memory_introspection": {
+          "status": "passed",
+          "seconds": 0.218,
+          "reason": null
+        },
+        "tests.test_inference::test_set_causal_attn": {
+          "status": "passed",
+          "seconds": 0.198,
+          "reason": null
+        },
+        "tests.test_inference::test_dry_sampler_params": {
+          "status": "passed",
+          "seconds": 0.206,
+          "reason": null
+        },
+        "tests.test_inference::test_xtc_sampler_params": {
+          "status": "passed",
+          "seconds": 0.204,
+          "reason": null
+        },
+        "tests.test_inference::test_dynamic_temp_params": {
+          "status": "passed",
+          "seconds": 0.205,
+          "reason": null
+        },
+        "tests.test_inference::test_top_n_sigma_params": {
+          "status": "passed",
+          "seconds": 0.204,
+          "reason": null
+        },
+        "tests.test_inference::test_dry_sampler_generation": {
+          "status": "passed",
+          "seconds": 0.251,
+          "reason": null
+        },
+        "tests.test_inference::test_xtc_sampler_generation": {
+          "status": "passed",
+          "seconds": 0.223,
+          "reason": null
+        },
+        "tests.test_inference::test_dynamic_temp_generation": {
+          "status": "passed",
+          "seconds": 0.223,
+          "reason": null
+        },
+        "tests.test_inference::test_top_n_sigma_generation": {
+          "status": "passed",
+          "seconds": 0.225,
+          "reason": null
+        },
+        "tests.test_inference::test_lora_clear": {
+          "status": "passed",
+          "seconds": 0.253,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_eager_grammar_is_not_lazy": {
+          "status": "passed",
+          "seconds": 0.193,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_lazy_with_pattern_marks_lazy": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_lazy_with_tokens_marks_lazy": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_lazy_with_both_pattern_and_tokens": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_lazy_without_triggers_rejected": {
+          "status": "passed",
+          "seconds": 0.201,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_lazy_with_empty_lists_rejected": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_constructor_kwargs_path": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_lazy_grammar_constructs_native_sampler": {
+          "status": "passed",
+          "seconds": 0.379,
+          "reason": null
+        },
+        "tests.test_lazy_grammar::test_lazy_grammar_does_not_constrain_until_trigger": {
+          "status": "passed",
+          "seconds": 0.249,
+          "reason": null
+        },
+        "tests.test_logging_reenable::test_logging_can_be_reenabled": {
+          "status": "passed",
+          "seconds": 0.82,
+          "reason": null
+        },
+        "tests.test_logging_reenable::test_logging_functions_work_correctly": {
+          "status": "passed",
+          "seconds": 0.401,
+          "reason": null
+        },
+        "tests.test_logging_reenable::test_concurrent_verbose_configuration_is_thread_safe": {
+          "status": "passed",
+          "seconds": 0.207,
+          "reason": null
+        },
+        "tests.test_logging_reenable::test_verbose_false_then_true_in_sequence": {
+          "status": "passed",
+          "seconds": 0.647,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_disabled_by_default": {
+          "status": "passed",
+          "seconds": 0.193,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_dict_round_trips_to_native": {
+          "status": "passed",
+          "seconds": 0.198,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_empty_dict_is_disabled": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_neg_inf_for_ban_accepted": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_negative_token_id_rejected": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_nan_rejected": {
+          "status": "passed",
+          "seconds": 0.205,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_non_numeric_rejected": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_bool_value_rejected": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_bool_token_id_rejected": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_does_not_affect_default_path": {
+          "status": "passed",
+          "seconds": 0.42,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_changes_sampling_decisions": {
+          "status": "passed",
+          "seconds": 0.208,
+          "reason": null
+        },
+        "tests.test_logit_bias::test_logit_bias_token_id_out_of_range_raises": {
+          "status": "passed",
+          "seconds": 0.249,
+          "reason": null
+        },
+        "tests.test_mtp::test_constants_exposed": {
+          "status": "passed",
+          "seconds": 0.191,
+          "reason": null
+        },
+        "tests.test_mtp::test_default_ctx_type_is_default": {
+          "status": "passed",
+          "seconds": 0.199,
+          "reason": null
+        },
+        "tests.test_mtp::test_mtp_ctx_type_accepted_in_config": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_mtp::test_invalid_ctx_type_rejected": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_mtp::test_negative_ctx_type_rejected": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_mtp::test_default_ctx_type_loads": {
+          "status": "passed",
+          "seconds": 0.37,
+          "reason": null
+        },
+        "tests.test_mtp::test_mtp_on_non_mtp_model_raises": {
+          "status": "passed",
+          "seconds": 0.328,
+          "reason": null
+        },
+        "tests.test_mtp::test_mtp_context_rejects_token_only_generation": {
+          "status": "passed",
+          "seconds": 1.221,
+          "reason": null
+        },
+        "tests.test_mtp::test_mtp_default_ctx_also_loads_on_mtp_model": {
+          "status": "passed",
+          "seconds": 1.225,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_first_natural_eog_retains_prefill[5]": {
+          "status": "passed",
+          "seconds": 1.259,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_first_natural_eog_retains_prefill[70]": {
+          "status": "passed",
+          "seconds": 1.342,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-1]": {
+          "status": "passed",
+          "seconds": 1.585,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-2]": {
+          "status": "passed",
+          "seconds": 1.543,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-4]": {
+          "status": "passed",
+          "seconds": 1.55,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-1]": {
+          "status": "passed",
+          "seconds": 2.562,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-2]": {
+          "status": "passed",
+          "seconds": 2.598,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-4]": {
+          "status": "passed",
+          "seconds": 2.662,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_noop_tail_trim_retains_driver": {
+          "status": "passed",
+          "seconds": 1.343,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[1]": {
+          "status": "passed",
+          "seconds": 1.35,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[3]": {
+          "status": "passed",
+          "seconds": 1.359,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[5]": {
+          "status": "passed",
+          "seconds": 1.411,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_public_logits_describe_retained_eog_prefix": {
+          "status": "passed",
+          "seconds": 1.333,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_preparation_parses_template_markers": {
+          "status": "passed",
+          "seconds": 1.214,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_generation_uses_template_tokens[False]": {
+          "status": "passed",
+          "seconds": 1.216,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_generation_uses_template_tokens[True]": {
+          "status": "passed",
+          "seconds": 1.223,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_completed_chat_reuses_only_new_turn_tokens[False]": {
+          "status": "passed",
+          "seconds": 1.49,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_completed_chat_reuses_only_new_turn_tokens[True]": {
+          "status": "passed",
+          "seconds": 1.574,
+          "reason": null
+        },
+        "tests.test_optimizations::test_embedding_validation_disabled": {
+          "status": "passed",
+          "seconds": 0.403,
+          "reason": null
+        },
+        "tests.test_optimizations::test_embedding_batch": {
+          "status": "passed",
+          "seconds": 0.377,
+          "reason": null
+        },
+        "tests.test_optimizations::test_reset_kv_cache_option": {
+          "status": "passed",
+          "seconds": 0.389,
+          "reason": null
+        },
+        "tests.test_optimizations::test_reset_kv_cache_no_cache_prompt": {
+          "status": "passed",
+          "seconds": 0.216,
+          "reason": null
+        },
+        "tests.test_optimizations::test_generate_stream": {
+          "status": "passed",
+          "seconds": 0.238,
+          "reason": null
+        },
+        "tests.test_optimizations::test_n_seq_max_config": {
+          "status": "passed",
+          "seconds": 0.209,
+          "reason": null
+        },
+        "tests.test_optimizations::test_grammar_cache_reuse": {
+          "status": "passed",
+          "seconds": 0.363,
+          "reason": null
+        },
+        "tests.test_optimizations::test_backend_guard_functions": {
+          "status": "passed",
+          "seconds": 0.292,
+          "reason": null
+        },
+        "tests.test_partial_init::test_close_safe_after_unknown_family": {
+          "status": "passed",
+          "seconds": 0.195,
+          "reason": null
+        },
+        "tests.test_partial_init::test_close_safe_after_unknown_model_family_enum": {
+          "status": "passed",
+          "seconds": 0.208,
+          "reason": null
+        },
+        "tests.test_partial_init::test_manual_close_on_partially_built_instance_no_raise": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_basic_generation": {
+          "status": "passed",
+          "seconds": 0.644,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_batch_generation": {
+          "status": "passed",
+          "seconds": 0.664,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_concurrent_requests": {
+          "status": "passed",
+          "seconds": 0.667,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_chat_completion": {
+          "status": "passed",
+          "seconds": 0.635,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_chat_completion_batch": {
+          "status": "passed",
+          "seconds": 0.641,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_invalid_size": {
+          "status": "passed",
+          "seconds": 0.192,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_context_manager": {
+          "status": "passed",
+          "seconds": 0.631,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_manual_close": {
+          "status": "passed",
+          "seconds": 0.606,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_repr": {
+          "status": "passed",
+          "seconds": 0.599,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_with_sampling_params": {
+          "status": "passed",
+          "seconds": 0.627,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_with_stop_sequences": {
+          "status": "passed",
+          "seconds": 0.609,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_load_balancing": {
+          "status": "passed",
+          "seconds": 0.652,
+          "reason": null
+        },
+        "tests.test_pool::test_pool_warmup": {
+          "status": "passed",
+          "seconds": 0.637,
+          "reason": null
+        },
+        "tests.test_pool_close::test_close_wakes_all_blocked_waiters": {
+          "status": "passed",
+          "seconds": 0.246,
+          "reason": null
+        },
+        "tests.test_pool_close::test_close_graceful_wakes_all_blocked_waiters": {
+          "status": "passed",
+          "seconds": 0.334,
+          "reason": null
+        },
+        "tests.test_pool_close::test_checkout_after_close_raises": {
+          "status": "passed",
+          "seconds": 0.211,
+          "reason": null
+        },
+        "tests.test_pool_close::test_close_is_idempotent_under_concurrent_calls": {
+          "status": "passed",
+          "seconds": 0.209,
+          "reason": null
+        },
+        "tests.test_pool_close::test_close_graceful_does_not_busy_loop_on_sentinel": {
+          "status": "passed",
+          "seconds": 0.425,
+          "reason": null
+        },
+        "tests.test_pool_close::test_pool_cross_event_loop_raises_clear_error": {
+          "status": "passed",
+          "seconds": 0.21,
+          "reason": null
+        },
+        "tests.test_pool_close::test_sentinel_reinjection_survives_multiple_waiters": {
+          "status": "passed",
+          "seconds": 0.208,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_mirror_starts_empty": {
+          "status": "passed",
+          "seconds": 0.4,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_full_prime_populates_mirror": {
+          "status": "passed",
+          "seconds": 0.21,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_identical_prompt_full_lcp": {
+          "status": "passed",
+          "seconds": 0.229,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_partial_lcp_trims_kv": {
+          "status": "passed",
+          "seconds": 0.221,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_kv_cache_clear_invalidates_mirror": {
+          "status": "passed",
+          "seconds": 0.21,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_kv_cache_seq_rm_invalidates_mirror": {
+          "status": "passed",
+          "seconds": 0.209,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_set_state_data_invalidates_mirror": {
+          "status": "passed",
+          "seconds": 0.212,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_reset_invalidates_mirror": {
+          "status": "passed",
+          "seconds": 0.227,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_cache_prompt_false_clears_mirror": {
+          "status": "passed",
+          "seconds": 0.22,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_prefix_reuse_output_matches_full_reprime": {
+          "status": "passed",
+          "seconds": 0.252,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_multi_token_stop_keeps_mirror_aligned": {
+          "status": "passed",
+          "seconds": 0.29,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_chat_completion_cache_prompt": {
+          "status": "passed",
+          "seconds": 0.222,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_set_state_failure_clears_mirror": {
+          "status": "passed",
+          "seconds": 0.204,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_load_seq_state_on_device_failure_clears_mirror": {
+          "status": "passed",
+          "seconds": 0.215,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_embed_clears_mirror": {
+          "status": "passed",
+          "seconds": 0.427,
+          "reason": null
+        },
+        "tests.test_prefix_reuse::test_close_clears_mirror": {
+          "status": "passed",
+          "seconds": 0.446,
+          "reason": null
+        },
+        "tests.test_regressions::test_state_load_then_generate": {
+          "status": "passed",
+          "seconds": 0.442,
+          "reason": null
+        },
+        "tests.test_regressions::test_state_file_load_then_generate": {
+          "status": "passed",
+          "seconds": 0.426,
+          "reason": null
+        },
+        "tests.test_regressions::test_grammar_respects_sampling_params": {
+          "status": "passed",
+          "seconds": 0.43,
+          "reason": null
+        },
+        "tests.test_regressions::test_lora_persistence_across_reset": {
+          "status": "passed",
+          "seconds": 0.438,
+          "reason": null
+        },
+        "tests.test_regressions::test_kv_cache_ops_update_position": {
+          "status": "passed",
+          "seconds": 0.431,
+          "reason": null
+        },
+        "tests.test_runtime_provenance::test_runtime_accepts_matching_isolated_prefix": {
+          "status": "passed",
+          "seconds": 0.193,
+          "reason": null
+        },
+        "tests.test_runtime_provenance::test_runtime_rejects_unexpected_commit[cbe28bb3]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_runtime_provenance::test_runtime_rejects_unexpected_commit[unknown]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_runtime_provenance::test_runtime_rejects_unexpected_commit[23]": {
+          "status": "passed",
+          "seconds": 0.2,
+          "reason": null
+        },
+        "tests.test_runtime_provenance::test_runtime_rejects_system_library_mixed_into_prefix": {
+          "status": "passed",
+          "seconds": 0.201,
+          "reason": null
+        },
+        "tests.test_runtime_provenance::test_runtime_rejects_missing_native_library": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_sanitize_history::test_strip_thinking_gemma4_channel_block": {
+          "status": "passed",
+          "seconds": 0.204,
+          "reason": null
+        },
+        "tests.test_sanitize_history::test_strip_thinking_qwen_think_tags": {
+          "status": "passed",
+          "seconds": 0.2,
+          "reason": null
+        },
+        "tests.test_sanitize_history::test_strip_thinking_no_thinking_markup_passthrough": {
+          "status": "passed",
+          "seconds": 0.201,
+          "reason": null
+        },
+        "tests.test_sanitize_history::test_strip_thinking_bracket_style": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_sanitize_history::test_sanitize_history_strips_assistant_only": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_sanitize_history::test_sanitize_history_does_not_mutate_input": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_sanitize_history::test_sanitize_history_preserves_extra_keys": {
+          "status": "passed",
+          "seconds": 0.204,
+          "reason": null
+        },
+        "tests.test_sanitize_history::test_sanitize_history_non_string_content_passes_through": {
+          "status": "passed",
+          "seconds": 0.204,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[1-12]": {
+          "status": "passed",
+          "seconds": 1.435,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[1-24]": {
+          "status": "passed",
+          "seconds": 1.465,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[1-70]": {
+          "status": "passed",
+          "seconds": 1.583,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[8-12]": {
+          "status": "passed",
+          "seconds": 1.653,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[8-24]": {
+          "status": "passed",
+          "seconds": 1.678,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[8-70]": {
+          "status": "passed",
+          "seconds": 1.801,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_reuses_graph_mode_after_kv_clear": {
+          "status": "passed",
+          "seconds": 2.542,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[1-False]": {
+          "status": "passed",
+          "seconds": 1.446,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[1-True]": {
+          "status": "passed",
+          "seconds": 0.504,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[2-False]": {
+          "status": "passed",
+          "seconds": 0.497,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[2-True]": {
+          "status": "passed",
+          "seconds": 0.487,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[3-False]": {
+          "status": "passed",
+          "seconds": 0.498,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[3-True]": {
+          "status": "passed",
+          "seconds": 0.5,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[4-False]": {
+          "status": "passed",
+          "seconds": 0.496,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[4-True]": {
+          "status": "passed",
+          "seconds": 0.495,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_token_stop_skips_final_draft_prefill[1]": {
+          "status": "passed",
+          "seconds": 0.4,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_token_stop_skips_final_draft_prefill[2]": {
+          "status": "passed",
+          "seconds": 0.395,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_token_stop_skips_final_draft_prefill[3]": {
+          "status": "passed",
+          "seconds": 0.386,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_token_stop_skips_final_draft_prefill[4]": {
+          "status": "passed",
+          "seconds": 0.385,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_ordinary_decode_restores_graph_mode[decode]": {
+          "status": "passed",
+          "seconds": 0.457,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_ordinary_decode_restores_graph_mode[decode_one]": {
+          "status": "passed",
+          "seconds": 0.43,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_ordinary_decode_restores_graph_mode[decode_multi]": {
+          "status": "passed",
+          "seconds": 0.426,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_graph_mode_after_context_reset": {
+          "status": "passed",
+          "seconds": 0.583,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_performance_counters": {
+          "status": "passed",
+          "seconds": 1.541,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_smoke": {
+          "status": "passed",
+          "seconds": 1.548,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_matches_baseline_greedy": {
+          "status": "passed",
+          "seconds": 2.791,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_with_grammar": {
+          "status": "passed",
+          "seconds": 1.702,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming": {
+          "status": "passed",
+          "seconds": 2.816,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_with_cache_prompt": {
+          "status": "passed",
+          "seconds": 1.483,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_n_draft_max_bounds": {
+          "status": "passed",
+          "seconds": 2.731,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stop_sequence": {
+          "status": "passed",
+          "seconds": 1.847,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_continuation_modes": {
+          "status": "passed",
+          "seconds": 1.775,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_to_nonspeculative_preserves_prefix": {
+          "status": "passed",
+          "seconds": 0.426,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stop_then_continue_does_not_crash": {
+          "status": "passed",
+          "seconds": 1.667,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_max_tokens_one": {
+          "status": "passed",
+          "seconds": 0.302,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming_callback_cancel[1]": {
+          "status": "passed",
+          "seconds": 0.573,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming_callback_cancel[2]": {
+          "status": "passed",
+          "seconds": 0.542,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming_callback_cancel[3]": {
+          "status": "passed",
+          "seconds": 0.544,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming_callback_cancel[4]": {
+          "status": "passed",
+          "seconds": 0.574,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_prefill_exceeds_batch": {
+          "status": "passed",
+          "seconds": 1.78,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stream_holds_stop_prefix[1]": {
+          "status": "passed",
+          "seconds": 0.544,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stream_holds_stop_prefix[2]": {
+          "status": "passed",
+          "seconds": 0.488,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stream_holds_stop_prefix[3]": {
+          "status": "passed",
+          "seconds": 0.503,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stream_holds_stop_prefix[4]": {
+          "status": "passed",
+          "seconds": 0.506,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[1-512]": {
+          "status": "passed",
+          "seconds": 2.17,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[1-2048]": {
+          "status": "passed",
+          "seconds": 3.423,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[1-4096]": {
+          "status": "passed",
+          "seconds": 5.173,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[2-512]": {
+          "status": "passed",
+          "seconds": 2.132,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[2-2048]": {
+          "status": "passed",
+          "seconds": 3.403,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[2-4096]": {
+          "status": "passed",
+          "seconds": 5.146,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[3-512]": {
+          "status": "passed",
+          "seconds": 2.128,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[3-2048]": {
+          "status": "passed",
+          "seconds": 3.382,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[3-4096]": {
+          "status": "passed",
+          "seconds": 5.099,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[4-512]": {
+          "status": "passed",
+          "seconds": 2.101,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[4-2048]": {
+          "status": "passed",
+          "seconds": 3.385,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[4-4096]": {
+          "status": "passed",
+          "seconds": 5.114,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_finishes_with_current_logits[1]": {
+          "status": "passed",
+          "seconds": 0.368,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_finishes_with_current_logits[2]": {
+          "status": "passed",
+          "seconds": 0.393,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_finishes_with_current_logits[5]": {
+          "status": "passed",
+          "seconds": 0.426,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_finishes_with_current_logits[9]": {
+          "status": "passed",
+          "seconds": 0.482,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_near_context_limit": {
+          "status": "passed",
+          "seconds": 0.367,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_continuation_invalidates_device_snapshot": {
+          "status": "passed",
+          "seconds": 0.414,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_supports_speculative_mtp_default_ctx_returns_false": {
+          "status": "passed",
+          "seconds": 0.368,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_supports_speculative_mtp_real_mtp_model_returns_true": {
+          "status": "passed",
+          "seconds": 1.234,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_default_is_two": {
+          "status": "passed",
+          "seconds": 0.192,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_zero_rejected": {
+          "status": "passed",
+          "seconds": 0.195,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_nine_rejected": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_eight_accepted": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_one_accepted": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_validate_speculative_non_mtp_model_raises": {
+          "status": "passed",
+          "seconds": 0.372,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_validate_speculative_false_is_noop": {
+          "status": "passed",
+          "seconds": 0.367,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_validate_speculative_with_embeddings_raises": {
+          "status": "passed",
+          "seconds": 0.363,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_decode_multi_smoke": {
+          "status": "passed",
+          "seconds": 0.402,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_generate_tokens_speculative_mtp_symbol_exists": {
+          "status": "passed",
+          "seconds": 0.191,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_requires_integer[True]": {
+          "status": "passed",
+          "seconds": 0.2,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_requires_integer[False]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_requires_integer[1.5]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_requires_integer[2]": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_mtp_weights_can_be_disabled": {
+          "status": "passed",
+          "seconds": 1.256,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_insufficient_target_rollback_rejected_before_decode": {
+          "status": "passed",
+          "seconds": 1.264,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_recurrent_rollback_ubatch_rejected": {
+          "status": "passed",
+          "seconds": 0.537,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_full_context_history_window_matches_explicit_size[dry_penalty_last_n]": {
+          "status": "passed",
+          "seconds": 0.256,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_full_context_history_window_matches_explicit_size[repeat_last_n]": {
+          "status": "passed",
+          "seconds": 0.253,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[True-generate]": {
+          "status": "passed",
+          "seconds": 0.193,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[True-generate_stream]": {
+          "status": "passed",
+          "seconds": 0.198,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[True-create_chat_completion]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[1.5-generate]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[1.5-generate_stream]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[1.5-create_chat_completion]": {
+          "status": "passed",
+          "seconds": 0.201,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[2-generate]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[2-generate_stream]": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[2-create_chat_completion]": {
+          "status": "passed",
+          "seconds": 0.256,
+          "reason": null
+        },
+        "tests.test_state_on_device::test_save_seq_state_on_device_returns_bytes": {
+          "status": "passed",
+          "seconds": 0.398,
+          "reason": null
+        },
+        "tests.test_state_on_device::test_on_device_round_trip_preserves_generation": {
+          "status": "passed",
+          "seconds": 0.267,
+          "reason": null
+        },
+        "tests.test_state_on_device::test_on_device_load_invalidates_prompt_cache": {
+          "status": "passed",
+          "seconds": 0.23,
+          "reason": null
+        },
+        "tests.test_state_on_device::test_on_device_state_after_close_raises": {
+          "status": "passed",
+          "seconds": 0.395,
+          "reason": null
+        },
+        "tests.test_state_on_device::test_stale_handle_after_kv_clear_raises": {
+          "status": "passed",
+          "seconds": 0.222,
+          "reason": null
+        },
+        "tests.test_state_on_device::test_stale_handle_after_resave_raises": {
+          "status": "passed",
+          "seconds": 0.222,
+          "reason": null
+        },
+        "tests.test_state_on_device::test_load_rejects_garbage_handle": {
+          "status": "passed",
+          "seconds": 0.269,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_incremental": {
+          "status": "passed",
+          "seconds": 0.518,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_basic": {
+          "status": "passed",
+          "seconds": 0.464,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_stop_sequences": {
+          "status": "passed",
+          "seconds": 0.411,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_early_termination": {
+          "status": "passed",
+          "seconds": 0.455,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_vs_generate_consistency": {
+          "status": "passed",
+          "seconds": 0.523,
+          "reason": null
+        },
+        "tests.test_streaming::test_create_chat_completion_stream_is_incremental": {
+          "status": "passed",
+          "seconds": 0.495,
+          "reason": null
+        },
+        "tests.test_streaming_logic::test_queue_based_streaming_pattern": {
+          "status": "passed",
+          "seconds": 0.248,
+          "reason": null
+        },
+        "tests.test_streaming_logic::test_exception_propagation": {
+          "status": "passed",
+          "seconds": 0.209,
+          "reason": null
+        },
+        "tests.test_streaming_logic::test_early_termination": {
+          "status": "passed",
+          "seconds": 0.26,
+          "reason": null
+        },
+        "tests.test_streaming_logic::test_streaming_performance": {
+          "status": "passed",
+          "seconds": 0.429,
+          "reason": null
+        },
+        "tests.test_typical_p::test_typical_p_disabled_by_default": {
+          "status": "passed",
+          "seconds": 0.222,
+          "reason": null
+        },
+        "tests.test_typical_p::test_typical_p_to_native_passes_through": {
+          "status": "passed",
+          "seconds": 0.219,
+          "reason": null
+        },
+        "tests.test_typical_p::test_typical_p_zero_rejected": {
+          "status": "passed",
+          "seconds": 0.217,
+          "reason": null
+        },
+        "tests.test_typical_p::test_typical_p_negative_rejected": {
+          "status": "passed",
+          "seconds": 0.215,
+          "reason": null
+        },
+        "tests.test_typical_p::test_typical_p_above_one_rejected": {
+          "status": "passed",
+          "seconds": 0.208,
+          "reason": null
+        },
+        "tests.test_typical_p::test_typical_p_one_allowed": {
+          "status": "passed",
+          "seconds": 0.207,
+          "reason": null
+        },
+        "tests.test_typical_p::test_typical_p_disabled_matches_default_path": {
+          "status": "passed",
+          "seconds": 0.453,
+          "reason": null
+        },
+        "tests.test_typical_p::test_typical_p_smoke_generation": {
+          "status": "passed",
+          "seconds": 0.279,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_llm_speculative_auto_enables_on_mtp": {
+          "status": "passed",
+          "seconds": 1.254,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_llm_speculative_explicit_false_on_mtp": {
+          "status": "passed",
+          "seconds": 1.215,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_llm_speculative_smoke_generation": {
+          "status": "passed",
+          "seconds": 1.428,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_sizes_target_rollback_for_draft_width[4]": {
+          "status": "passed",
+          "seconds": 1.385,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_sizes_target_rollback_for_draft_width[8]": {
+          "status": "passed",
+          "seconds": 1.405,
+          "reason": null
+        },
+        "tests.test_upstream_integration::test_moe_cache_rejects_invalid_byte_counts[-1]": {
+          "status": "passed",
+          "seconds": 0.196,
+          "reason": null
+        },
+        "tests.test_upstream_integration::test_moe_cache_rejects_invalid_byte_counts[True]": {
+          "status": "passed",
+          "seconds": 0.201,
+          "reason": null
+        },
+        "tests.test_upstream_integration::test_moe_cache_rejects_invalid_byte_counts[1.5]": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_upstream_integration::test_moe_cache_rejects_invalid_byte_counts[1024]": {
+          "status": "passed",
+          "seconds": 0.201,
+          "reason": null
+        },
+        "tests.test_upstream_integration::test_prompt_batch_reuse_after_growth_clear_and_reset": {
+          "status": "passed",
+          "seconds": 0.612,
+          "reason": null
+        },
+        "tests.test_upstream_integration::test_fixed_greedy_matches_logprobs_and_streaming": {
+          "status": "passed",
+          "seconds": 0.445,
+          "reason": null
+        },
+        "tests.test_upstream_integration::test_moe_cache_budget_reaches_native_context": {
+          "status": "passed",
+          "seconds": 0.405,
+          "reason": null
+        },
+        "tests.test_upstream_integration::test_moe_cache_generates_on_host_experts": {
+          "status": "skipped",
+          "seconds": 0.238,
+          "reason": "set LLAMA_MOE_TEST_MODEL to a MoE GGUF for cache validation"
+        },
+        "tests.test_validation::test_validate_sampling_overrides_unknown_raises": {
+          "status": "passed",
+          "seconds": 0.188,
+          "reason": null
+        },
+        "tests.test_validation::test_validate_sampling_overrides_typo_raises": {
+          "status": "passed",
+          "seconds": 0.193,
+          "reason": null
+        },
+        "tests.test_validation::test_validate_sampling_overrides_accepts_valid": {
+          "status": "passed",
+          "seconds": 0.196,
+          "reason": null
+        },
+        "tests.test_validation::test_validate_sampling_overrides_empty_ok": {
+          "status": "passed",
+          "seconds": 0.202,
+          "reason": null
+        },
+        "tests.test_validation::test_validate_sampling_overrides_reports_multiple_unknowns": {
+          "status": "passed",
+          "seconds": 0.2,
+          "reason": null
+        },
+        "tests.test_validation::test_to_native_sets_every_native_field": {
+          "status": "passed",
+          "seconds": 0.203,
+          "reason": null
+        }
+      }
+    },
+    "head-qwen": {
+      "xml_sha256": "f67b4a867cbb323829b33677232749d1fd4da9376044168f42953404a9f3ee07",
+      "passed": 64,
+      "skipped": 0,
+      "cases": {
+        "tests.test_unified::test_supported_families_only": {
+          "status": "passed",
+          "seconds": 0.167,
+          "reason": null
+        },
+        "tests.test_unified::test_model_configs_keys": {
+          "status": "passed",
+          "seconds": 0.168,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_qwen35_default_thinking": {
+          "status": "passed",
+          "seconds": 0.173,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_qwen35_small_sizes_skip_thinking": {
+          "status": "passed",
+          "seconds": 0.172,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_qwen35_large_keeps_thinking": {
+          "status": "passed",
+          "seconds": 0.173,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_qwen36_default_thinking": {
+          "status": "passed",
+          "seconds": 0.174,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_qwen36_instruct": {
+          "status": "passed",
+          "seconds": 0.175,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_qwen36_instruct_reasoning": {
+          "status": "passed",
+          "seconds": 0.176,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_gemma4_small_128k": {
+          "status": "passed",
+          "seconds": 0.178,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_gemma4_large_256k": {
+          "status": "passed",
+          "seconds": 0.179,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_granite_4_1": {
+          "status": "passed",
+          "seconds": 0.178,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[Qwen3-8B-Q6_K.gguf]": {
+          "status": "passed",
+          "seconds": 0.181,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf]": {
+          "status": "passed",
+          "seconds": 0.183,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[gemma-2-9b-it-Q6_K.gguf]": {
+          "status": "passed",
+          "seconds": 0.186,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[gemma-3-27b-it-Q4_K_M.gguf]": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[GLM-4.7-Flash-23B-Q4_K_M.gguf]": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[glm-4-9b-chat-Q6_K.gguf]": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[MiniCPM-3-4B-Q6_K.gguf]": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[Phi-4-Q6_K.gguf]": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[Mistral-Small-Q5_K_M.gguf]": {
+          "status": "passed",
+          "seconds": 0.186,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[Ministral-3-14B-Reasoning-Q6_K.gguf]": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[gpt-oss-20b-Q4_K_M.gguf]": {
+          "status": "passed",
+          "seconds": 0.182,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[llama-3.1-8B-instruct-Q5_K_M.gguf]": {
+          "status": "passed",
+          "seconds": 0.185,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[unknown_model.gguf]": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_unsupported_models_raise[granite-3.2-8b-Q6_K.gguf]": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_detect_ignores_directory_names": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_qwen35_default_preset": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_qwen35_coding_preset": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_qwen36_default_preset": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_qwen36_instruct_presets": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_gemma4_presets": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_granite_preset_deterministic": {
+          "status": "passed",
+          "seconds": 0.184,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_family_detected": {
+          "status": "passed",
+          "seconds": 1.503,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_generate": {
+          "status": "passed",
+          "seconds": 0.446,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_chat_basic": {
+          "status": "passed",
+          "seconds": 0.251,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_chat_streaming": {
+          "status": "passed",
+          "seconds": 0.337,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_chat_history_sanitization": {
+          "status": "passed",
+          "seconds": 0.531,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_context_manager": {
+          "status": "passed",
+          "seconds": 1.377,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_close_idempotent": {
+          "status": "passed",
+          "seconds": 1.19,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_kv_cache_clear": {
+          "status": "passed",
+          "seconds": 1.394,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_invalid_max_tokens": {
+          "status": "passed",
+          "seconds": 1.186,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_speculative_explicit_false": {
+          "status": "passed",
+          "seconds": 1.169,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_speculative_invalid_mode": {
+          "status": "passed",
+          "seconds": 1.27,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_double_close": {
+          "status": "passed",
+          "seconds": 1.184,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_context_manager_then_close": {
+          "status": "passed",
+          "seconds": 1.238,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_sequential_cycles": {
+          "status": "passed",
+          "seconds": 3.401,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_state_roundtrip_close": {
+          "status": "passed",
+          "seconds": 1.366,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_state_file_close": {
+          "status": "passed",
+          "seconds": 2.4,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_gc_pressure": {
+          "status": "passed",
+          "seconds": 1.255,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_use_after_close_raises": {
+          "status": "passed",
+          "seconds": 1.188,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_multi_instance_close_creation_order": {
+          "status": "passed",
+          "seconds": 1.949,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_multi_instance_close_reverse_order": {
+          "status": "passed",
+          "seconds": 1.943,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_rapid_create_close": {
+          "status": "passed",
+          "seconds": 10.371,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_llama_del_without_close": {
+          "status": "passed",
+          "seconds": 1.236,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_double_close": {
+          "status": "passed",
+          "seconds": 1.187,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_context_manager_then_close": {
+          "status": "passed",
+          "seconds": 1.28,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_sequential_cycles": {
+          "status": "passed",
+          "seconds": 3.534,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_del": {
+          "status": "passed",
+          "seconds": 1.279,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_close_then_del": {
+          "status": "passed",
+          "seconds": 1.303,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_use_after_close_raises": {
+          "status": "passed",
+          "seconds": 1.19,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_and_llama_mixed_close_order": {
+          "status": "passed",
+          "seconds": 1.948,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_rapid_create_close": {
+          "status": "passed",
+          "seconds": 5.296,
+          "reason": null
+        },
+        "tests.test_double_free_scenarios::test_unified_inner_llm_is_none_after_close": {
+          "status": "passed",
+          "seconds": 1.188,
+          "reason": null
+        },
+        "tests.test_streaming::test_create_chat_completion_stream_early_termination": {
+          "status": "passed",
+          "seconds": 1.321,
+          "reason": null
+        }
+      }
+    },
+    "head-non-mtp": {
+      "xml_sha256": "9a2b0ec864a8f2dbf899ebf7b3eca75b6bbf8e1832a622efdcfb68658819b97c",
+      "passed": 2,
+      "skipped": 0,
+      "cases": {
+        "tests.test_unified::test_unified_llm_speculative_auto_disabled_on_non_mtp": {
+          "status": "passed",
+          "seconds": 5.223,
+          "reason": null
+        },
+        "tests.test_unified::test_unified_llm_speculative_force_true_rejects_non_mtp": {
+          "status": "passed",
+          "seconds": 1.61,
+          "reason": null
+        }
+      }
+    },
+    "clang-cache": {
+      "xml_sha256": "26f60c26ade515e45beaff26c490f1d02672befdd8d4bdf4894f1b8d4b302f85",
+      "passed": 18,
+      "skipped": 0,
+      "cases": {
+        "tests.test_mtp_cache_reuse::test_first_natural_eog_retains_prefill[5]": {
+          "status": "passed",
+          "seconds": 1.441,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_first_natural_eog_retains_prefill[70]": {
+          "status": "passed",
+          "seconds": 1.296,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-1]": {
+          "status": "passed",
+          "seconds": 1.542,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-2]": {
+          "status": "passed",
+          "seconds": 1.508,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-4]": {
+          "status": "passed",
+          "seconds": 1.496,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-1]": {
+          "status": "passed",
+          "seconds": 2.675,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-2]": {
+          "status": "passed",
+          "seconds": 2.725,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-4]": {
+          "status": "passed",
+          "seconds": 2.788,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_noop_tail_trim_retains_driver": {
+          "status": "passed",
+          "seconds": 1.304,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[1]": {
+          "status": "passed",
+          "seconds": 1.309,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[3]": {
+          "status": "passed",
+          "seconds": 1.318,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[5]": {
+          "status": "passed",
+          "seconds": 1.363,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_public_logits_describe_retained_eog_prefix": {
+          "status": "passed",
+          "seconds": 1.295,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_preparation_parses_template_markers": {
+          "status": "passed",
+          "seconds": 1.176,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_generation_uses_template_tokens[False]": {
+          "status": "passed",
+          "seconds": 1.183,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_generation_uses_template_tokens[True]": {
+          "status": "passed",
+          "seconds": 1.178,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_completed_chat_reuses_only_new_turn_tokens[False]": {
+          "status": "passed",
+          "seconds": 1.461,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_completed_chat_reuses_only_new_turn_tokens[True]": {
+          "status": "passed",
+          "seconds": 1.515,
+          "reason": null
+        }
+      }
+    },
+    "baseline-mtp": {
+      "xml_sha256": "297ca0d987d90be64840b1013fae7ba5af6bd5b2f2bab03913f0d95dc2fb1ddc",
+      "passed": 130,
+      "skipped": 0,
+      "cases": {
+        "tests.test_mtp::test_constants_exposed": {
+          "status": "passed",
+          "seconds": 0.166,
+          "reason": null
+        },
+        "tests.test_mtp::test_default_ctx_type_is_default": {
+          "status": "passed",
+          "seconds": 0.167,
+          "reason": null
+        },
+        "tests.test_mtp::test_mtp_ctx_type_accepted_in_config": {
+          "status": "passed",
+          "seconds": 0.172,
+          "reason": null
+        },
+        "tests.test_mtp::test_invalid_ctx_type_rejected": {
+          "status": "passed",
+          "seconds": 0.173,
+          "reason": null
+        },
+        "tests.test_mtp::test_negative_ctx_type_rejected": {
+          "status": "passed",
+          "seconds": 0.173,
+          "reason": null
+        },
+        "tests.test_mtp::test_default_ctx_type_loads": {
+          "status": "passed",
+          "seconds": 0.519,
+          "reason": null
+        },
+        "tests.test_mtp::test_mtp_on_non_mtp_model_raises": {
+          "status": "passed",
+          "seconds": 0.298,
+          "reason": null
+        },
+        "tests.test_mtp::test_mtp_context_rejects_token_only_generation": {
+          "status": "passed",
+          "seconds": 1.163,
+          "reason": null
+        },
+        "tests.test_mtp::test_mtp_default_ctx_also_loads_on_mtp_model": {
+          "status": "passed",
+          "seconds": 1.177,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_first_natural_eog_retains_prefill[5]": {
+          "status": "passed",
+          "seconds": 1.247,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_first_natural_eog_retains_prefill[70]": {
+          "status": "passed",
+          "seconds": 1.287,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-1]": {
+          "status": "passed",
+          "seconds": 1.539,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-2]": {
+          "status": "passed",
+          "seconds": 1.495,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ Paris-4]": {
+          "status": "passed",
+          "seconds": 1.493,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-1]": {
+          "status": "passed",
+          "seconds": 2.5,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-2]": {
+          "status": "passed",
+          "seconds": 2.515,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_verified_eog_retains_returned_prefix[ one two three four five six seven-4]": {
+          "status": "passed",
+          "seconds": 2.585,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_noop_tail_trim_retains_driver": {
+          "status": "passed",
+          "seconds": 1.299,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[1]": {
+          "status": "passed",
+          "seconds": 1.347,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[3]": {
+          "status": "passed",
+          "seconds": 1.317,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_prefix_edit_reuses_only_supported_history[5]": {
+          "status": "passed",
+          "seconds": 1.368,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_public_logits_describe_retained_eog_prefix": {
+          "status": "passed",
+          "seconds": 1.292,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_preparation_parses_template_markers": {
+          "status": "passed",
+          "seconds": 1.174,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_generation_uses_template_tokens[False]": {
+          "status": "passed",
+          "seconds": 1.176,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_chat_generation_uses_template_tokens[True]": {
+          "status": "passed",
+          "seconds": 1.18,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_completed_chat_reuses_only_new_turn_tokens[False]": {
+          "status": "passed",
+          "seconds": 1.439,
+          "reason": null
+        },
+        "tests.test_mtp_cache_reuse::test_completed_chat_reuses_only_new_turn_tokens[True]": {
+          "status": "passed",
+          "seconds": 1.506,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[1-12]": {
+          "status": "passed",
+          "seconds": 1.387,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[1-24]": {
+          "status": "passed",
+          "seconds": 1.42,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[1-70]": {
+          "status": "passed",
+          "seconds": 1.536,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[8-12]": {
+          "status": "passed",
+          "seconds": 1.609,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[8-24]": {
+          "status": "passed",
+          "seconds": 1.63,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_callback_precedes_final_draft_prefill[8-70]": {
+          "status": "passed",
+          "seconds": 1.742,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_reuses_graph_mode_after_kv_clear": {
+          "status": "passed",
+          "seconds": 2.478,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[1-False]": {
+          "status": "passed",
+          "seconds": 1.404,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[1-True]": {
+          "status": "passed",
+          "seconds": 0.466,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[2-False]": {
+          "status": "passed",
+          "seconds": 0.463,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[2-True]": {
+          "status": "passed",
+          "seconds": 0.468,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[3-False]": {
+          "status": "passed",
+          "seconds": 0.462,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[3-True]": {
+          "status": "passed",
+          "seconds": 0.466,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[4-False]": {
+          "status": "passed",
+          "seconds": 0.469,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_abnormal_callback_restores_graph_mode[4-True]": {
+          "status": "passed",
+          "seconds": 0.474,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_token_stop_skips_final_draft_prefill[1]": {
+          "status": "passed",
+          "seconds": 0.372,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_token_stop_skips_final_draft_prefill[2]": {
+          "status": "passed",
+          "seconds": 0.362,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_token_stop_skips_final_draft_prefill[3]": {
+          "status": "passed",
+          "seconds": 0.355,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_first_token_stop_skips_final_draft_prefill[4]": {
+          "status": "passed",
+          "seconds": 0.36,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_ordinary_decode_restores_graph_mode[decode]": {
+          "status": "passed",
+          "seconds": 0.432,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_ordinary_decode_restores_graph_mode[decode_one]": {
+          "status": "passed",
+          "seconds": 0.4,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_ordinary_decode_restores_graph_mode[decode_multi]": {
+          "status": "passed",
+          "seconds": 0.404,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_graph_mode_after_context_reset": {
+          "status": "passed",
+          "seconds": 0.561,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_performance_counters": {
+          "status": "passed",
+          "seconds": 1.513,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_smoke": {
+          "status": "passed",
+          "seconds": 1.51,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_matches_baseline_greedy": {
+          "status": "passed",
+          "seconds": 2.745,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_with_grammar": {
+          "status": "passed",
+          "seconds": 1.664,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming": {
+          "status": "passed",
+          "seconds": 2.763,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_with_cache_prompt": {
+          "status": "passed",
+          "seconds": 1.447,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_n_draft_max_bounds": {
+          "status": "passed",
+          "seconds": 2.693,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stop_sequence": {
+          "status": "passed",
+          "seconds": 1.804,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_continuation_modes": {
+          "status": "passed",
+          "seconds": 1.713,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_to_nonspeculative_preserves_prefix": {
+          "status": "passed",
+          "seconds": 0.401,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stop_then_continue_does_not_crash": {
+          "status": "passed",
+          "seconds": 1.574,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_max_tokens_one": {
+          "status": "passed",
+          "seconds": 0.276,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming_callback_cancel[1]": {
+          "status": "passed",
+          "seconds": 0.54,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming_callback_cancel[2]": {
+          "status": "passed",
+          "seconds": 0.507,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming_callback_cancel[3]": {
+          "status": "passed",
+          "seconds": 0.515,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_streaming_callback_cancel[4]": {
+          "status": "passed",
+          "seconds": 0.534,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_prefill_exceeds_batch": {
+          "status": "passed",
+          "seconds": 1.756,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stream_holds_stop_prefix[1]": {
+          "status": "passed",
+          "seconds": 0.516,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stream_holds_stop_prefix[2]": {
+          "status": "passed",
+          "seconds": 0.459,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stream_holds_stop_prefix[3]": {
+          "status": "passed",
+          "seconds": 0.47,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_stream_holds_stop_prefix[4]": {
+          "status": "passed",
+          "seconds": 0.473,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[1-512]": {
+          "status": "passed",
+          "seconds": 2.143,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[1-2048]": {
+          "status": "passed",
+          "seconds": 3.401,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[1-4096]": {
+          "status": "passed",
+          "seconds": 5.138,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[2-512]": {
+          "status": "passed",
+          "seconds": 2.081,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[2-2048]": {
+          "status": "passed",
+          "seconds": 3.334,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[2-4096]": {
+          "status": "passed",
+          "seconds": 5.096,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[3-512]": {
+          "status": "passed",
+          "seconds": 2.078,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[3-2048]": {
+          "status": "passed",
+          "seconds": 3.355,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[3-4096]": {
+          "status": "passed",
+          "seconds": 5.101,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[4-512]": {
+          "status": "passed",
+          "seconds": 2.068,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[4-2048]": {
+          "status": "passed",
+          "seconds": 3.334,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_long_prompt_stop_and_cancel[4-4096]": {
+          "status": "passed",
+          "seconds": 5.079,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_finishes_with_current_logits[1]": {
+          "status": "passed",
+          "seconds": 0.341,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_finishes_with_current_logits[2]": {
+          "status": "passed",
+          "seconds": 0.366,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_finishes_with_current_logits[5]": {
+          "status": "passed",
+          "seconds": 0.402,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_finishes_with_current_logits[9]": {
+          "status": "passed",
+          "seconds": 0.456,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_near_context_limit": {
+          "status": "passed",
+          "seconds": 0.344,
+          "reason": null
+        },
+        "tests.test_speculative_mtp::test_speculative_continuation_invalidates_device_snapshot": {
+          "status": "passed",
+          "seconds": 0.376,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_supports_speculative_mtp_default_ctx_returns_false": {
+          "status": "passed",
+          "seconds": 0.326,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_supports_speculative_mtp_real_mtp_model_returns_true": {
+          "status": "passed",
+          "seconds": 1.207,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_default_is_two": {
+          "status": "passed",
+          "seconds": 0.168,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_zero_rejected": {
+          "status": "passed",
+          "seconds": 0.173,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_nine_rejected": {
+          "status": "passed",
+          "seconds": 0.173,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_eight_accepted": {
+          "status": "passed",
+          "seconds": 0.174,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_one_accepted": {
+          "status": "passed",
+          "seconds": 0.174,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_validate_speculative_non_mtp_model_raises": {
+          "status": "passed",
+          "seconds": 0.375,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_validate_speculative_false_is_noop": {
+          "status": "passed",
+          "seconds": 0.364,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_validate_speculative_with_embeddings_raises": {
+          "status": "passed",
+          "seconds": 0.329,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_decode_multi_smoke": {
+          "status": "passed",
+          "seconds": 0.352,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_generate_tokens_speculative_mtp_symbol_exists": {
+          "status": "passed",
+          "seconds": 0.168,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_requires_integer[True]": {
+          "status": "passed",
+          "seconds": 0.173,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_requires_integer[False]": {
+          "status": "passed",
+          "seconds": 0.173,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_requires_integer[1.5]": {
+          "status": "passed",
+          "seconds": 0.175,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_n_draft_max_requires_integer[2]": {
+          "status": "passed",
+          "seconds": 0.176,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_mtp_weights_can_be_disabled": {
+          "status": "passed",
+          "seconds": 1.239,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_insufficient_target_rollback_rejected_before_decode": {
+          "status": "passed",
+          "seconds": 1.201,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_recurrent_rollback_ubatch_rejected": {
+          "status": "passed",
+          "seconds": 0.505,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_full_context_history_window_matches_explicit_size[dry_penalty_last_n]": {
+          "status": "passed",
+          "seconds": 0.241,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_full_context_history_window_matches_explicit_size[repeat_last_n]": {
+          "status": "passed",
+          "seconds": 0.228,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[True-generate]": {
+          "status": "passed",
+          "seconds": 0.169,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[True-generate_stream]": {
+          "status": "passed",
+          "seconds": 0.174,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[True-create_chat_completion]": {
+          "status": "passed",
+          "seconds": 0.175,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[1.5-generate]": {
+          "status": "passed",
+          "seconds": 0.175,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[1.5-generate_stream]": {
+          "status": "passed",
+          "seconds": 0.177,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[1.5-create_chat_completion]": {
+          "status": "passed",
+          "seconds": 0.178,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[2-generate]": {
+          "status": "passed",
+          "seconds": 0.178,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[2-generate_stream]": {
+          "status": "passed",
+          "seconds": 0.181,
+          "reason": null
+        },
+        "tests.test_speculative_validation::test_override_draft_width_is_not_coerced[2-create_chat_completion]": {
+          "status": "passed",
+          "seconds": 0.232,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_llm_speculative_auto_enables_on_mtp": {
+          "status": "passed",
+          "seconds": 1.307,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_llm_speculative_explicit_false_on_mtp": {
+          "status": "passed",
+          "seconds": 1.181,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_llm_speculative_smoke_generation": {
+          "status": "passed",
+          "seconds": 1.397,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_sizes_target_rollback_for_draft_width[4]": {
+          "status": "passed",
+          "seconds": 1.351,
+          "reason": null
+        },
+        "tests.test_unified_speculative::test_unified_sizes_target_rollback_for_draft_width[8]": {
+          "status": "passed",
+          "seconds": 1.374,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_incremental": {
+          "status": "passed",
+          "seconds": 0.452,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_basic": {
+          "status": "passed",
+          "seconds": 0.437,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_stop_sequences": {
+          "status": "passed",
+          "seconds": 0.428,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_early_termination": {
+          "status": "passed",
+          "seconds": 0.423,
+          "reason": null
+        },
+        "tests.test_streaming::test_generate_stream_vs_generate_consistency": {
+          "status": "passed",
+          "seconds": 0.478,
+          "reason": null
+        },
+        "tests.test_streaming::test_create_chat_completion_stream_is_incremental": {
+          "status": "passed",
+          "seconds": 0.435,
+          "reason": null
+        }
+      }
+    },
+    "baseline-chat-cancel": {
+      "xml_sha256": "13bc5f870d7807fd2d5889e867b68af5ece2dcfedc466ea5161725413346f1f7",
+      "passed": 1,
+      "skipped": 0,
+      "cases": {
+        "tests.test_streaming::test_create_chat_completion_stream_early_termination": {
+          "status": "passed",
+          "seconds": 1.567,
+          "reason": null
+        }
+      }
+    }
+  },
+  "head_unique": {
+    "total": 410,
+    "passed": 409,
+    "skipped": {
+      "tests.test_upstream_integration::test_moe_cache_generates_on_host_experts": {
+        "status": "skipped",
+        "seconds": 0.238,
+        "reason": "set LLAMA_MOE_TEST_MODEL to a MoE GGUF for cache validation"
+      }
+    }
+  },
+  "default_two_snapshot_public_chat": {
+    "head": {
+      "eager_and_streamed_three_turns": "passed",
+      "source": "from pathlib import Path\nimport sys\nsys.path.insert(0, str(Path.cwd() / \"tests\"))\nfrom test_mtp_cache_reuse import test_completed_chat_reuses_only_new_turn_tokens\nfrom llama_cpp import Llama, LlamaConfig, disable_logging\ndisable_logging()\nmodel=\"/home/lianghong/Projects/llama_cpp_projects/models/Qwen3.5-4B-Q4_K_M-MTP.gguf\"\nfor stream in [False, True]:\n    cfg=LlamaConfig(model_path=model,n_ctx=512,n_batch=32,n_ubatch=16,n_threads=4,n_threads_batch=4,n_gpu_layers=-1)\n    assert cfg.n_rs_seq == 2\n    with Llama(model, config=cfg) as llm:\n        test_completed_chat_reuses_only_new_turn_tokens(llm, stream)\n        print(\"default snapshots=2\", \"stream\",stream,\"passed\",flush=True)\n",
+      "log": "default snapshots=2 stream False passed\ndefault snapshots=2 stream True passed\n"
+    },
+    "baseline": {
+      "eager_and_streamed_three_turns": "passed",
+      "source": "from pathlib import Path\nimport sys\nsys.path.insert(0, str(Path.cwd() / \"tests\"))\nfrom test_mtp_cache_reuse import test_completed_chat_reuses_only_new_turn_tokens\nfrom llama_cpp import Llama, LlamaConfig, disable_logging\ndisable_logging()\nmodel=\"/home/lianghong/Projects/llama_cpp_projects/models/Qwen3.5-4B-Q4_K_M-MTP.gguf\"\nfor stream in [False, True]:\n    cfg=LlamaConfig(model_path=model,n_ctx=512,n_batch=32,n_ubatch=16,n_threads=4,n_threads_batch=4,n_gpu_layers=-1)\n    assert cfg.n_rs_seq == 2\n    with Llama(model, config=cfg) as llm:\n        test_completed_chat_reuses_only_new_turn_tokens(llm, stream)\n        print(\"default snapshots=2\", \"stream\",stream,\"passed\",flush=True)\n",
+      "log": "default snapshots=2 stream False passed\ndefault snapshots=2 stream True passed\n"
+    }
+  },
+  "static_analysis": {
+    "static-final-ruff.log": "All checks passed!\n",
+    "static-final-ruff-format.log": "63 files already formatted\n",
+    "static-final-mypy.log": "Success: no issues found in 31 source files\n",
+    "static-clang-format.log": "",
+    "static-final-pycompile.log": "",
+    "static-final-diff.log": "",
+    "clang-tidy-final.log": "75341 warnings generated.\n/data/storage/Projects/github_projects/llama-cpp-nanobind/src/bindings/llama_cpp.cpp:1047:30: warning: 'mem' declared with a const-qualified typedef; results in the type being 'llama_memory_i *const' instead of 'const llama_memory_i *' [misc-misplaced-const]\n 1047 |         llama_memory_t const mem = llama_get_memory(ctx_);\n      |                              ^\n/usr/local/include/llama.h:66:37: note: typedef declared here\n   66 |     typedef struct llama_memory_i * llama_memory_t;\n      |                                     ^\n/data/storage/Projects/github_projects/llama-cpp-nanobind/src/bindings/llama_cpp.cpp:1049:9: warning: use `std::max` instead of `<` [readability-use-std-min-max]\n 1049 |         if (new_pos < 0) new_pos = 0;\n      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n      |         new_pos = std::max(new_pos, 0);\n/data/storage/Projects/github_projects/llama-cpp-nanobind/src/bindings/llama_cpp.cpp:1136:30: warning: 'mem' declared with a const-qualified typedef; results in the type being 'llama_memory_i *const' instead of 'const llama_memory_i *' [misc-misplaced-const]\n 1136 |         llama_memory_t const mem = llama_get_memory(ctx_);\n      |                              ^\n/usr/local/include/llama.h:66:37: note: typedef declared here\n   66 |     typedef struct llama_memory_i * llama_memory_t;\n      |                                     ^\n/data/storage/Projects/github_projects/llama-cpp-nanobind/src/bindings/llama_cpp.cpp:1138:9: warning: use `std::max` instead of `<` [readability-use-std-min-max]\n 1138 |         if (new_pos < 0) new_pos = 0;\n      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n      |         new_pos = std::max(new_pos, 0);\nSuppressed 75355 warnings (75337 in non-user code, 18 NOLINT).\nUse -header-filter=.* to display errors from all non-system headers. Use -system-headers to display errors from system headers as well.\n",
+    "static-final-report-mdqa.log": "mdqa: markdownlint valid\nmdqa: local targets valid (4 checked, 0 skipped)\n"
+  },
+  "clang_tidy_note": "Four existing state-loading warnings; no new binding diagnostics",
+  "documentation": {
+    "new_report": "Markdown lint and local targets passed",
+    "historical_reports": "Markdown lint and local targets passed",
+    "README_API_CLAUDE_SYSTEM_LIBRARIES": "Local targets passed; existing document-wide lint findings remain"
+  }
+}

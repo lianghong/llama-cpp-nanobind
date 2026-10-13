@@ -1,6 +1,40 @@
 # llama-cpp-nanobind
 
-High-performance nanobind bindings for `llama.cpp`, packaged as a wheel-ready Python library with CUDA enabled by default. The interface mirrors `llama-cpp-python` where it does not conflict with upstream `llama.cpp`.
+Run local GGUF models as a terminal chat app or use the high-performance
+nanobind Python bindings for `llama.cpp`. The library interface mirrors
+`llama-cpp-python` where it does not conflict with upstream `llama.cpp`.
+
+## Terminal chat app
+
+After installing the project into `.venv`, start a conversation:
+
+```bash
+rtk proxy .venv/bin/llama-chat --model /path/to/model.gguf
+```
+
+Replies stream as they are generated. Completed turns reuse the conversation
+cache; supported models automatically use MTP at draft width 2. Type `/clear`
+to start over or `/exit` to quit. When launched directly, Ctrl+C interrupts
+the current reply; through `rtk proxy`, it ends the session.
+
+Completed turns and model settings are saved locally. Continue the last chat
+without repeating its model arguments:
+
+```bash
+rtk proxy .venv/bin/llama-chat --resume last
+```
+
+Use `--new --model /path/to/model.gguf` to start fresh. The next completed reply
+replaces the previous saved conversation.
+
+For a single prompt:
+
+```bash
+rtk proxy .venv/bin/llama-chat -m /path/to/model.gguf -p "Explain KV caching."
+```
+
+See [terminal app usage](docs/CLI.md) for piped input, model settings, and
+interruption behavior.
 
 ## Platform Support
 
@@ -10,6 +44,7 @@ High-performance nanobind bindings for `llama.cpp`, packaged as a wheel-ready Py
 
 ## Project layout
 
+- `src/llama_cpp/cli.py` – Terminal chat app (`llama-chat`)
 - `src/llama_cpp/llama.py` – Pythonic wrapper (`Llama` class)
 - `src/llama_cpp/unified.py` – Multi-model wrapper (`UnifiedLLM` class)
 - `src/bindings/` – nanobind extension (C++)
@@ -45,22 +80,38 @@ brew install llama.cpp
 # CMake auto-detects Homebrew paths — no manual setup needed
 ```
 
+The installation must include compatible common/staging headers and
+`libllama-common`. If the package omits them, use the source-build instructions
+below.
+
 ### Option 2: Build and install llama.cpp from source
 
 ```bash
-git clone https://github.com/ggerganov/llama.cpp
+git clone https://github.com/ggml-org/llama.cpp
 cd llama.cpp
+# Tested upstream revision; use matching headers and libraries.
+git checkout 23b0202a189c44a54625aadcb37a946dd1d6278d
 
 # Linux (CUDA)
-cmake -B build -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=ON
+cmake -B build -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_COMMON=ON
 cmake --build build --config Release
 sudo cmake --install build
 
 # macOS (Metal)
-cmake -B build -DGGML_METAL=ON -DBUILD_SHARED_LIBS=ON
+cmake -B build -DGGML_METAL=ON -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_COMMON=ON
 cmake --build build --config Release
 sudo cmake --install build
+
+# Upstream does not install these common/staging headers automatically.
+sudo install -m 644 src/llama-ext.h /usr/local/include/llama-ext.h
+sudo install -d /usr/local/include/llama
+sudo install -m 644 common/common.h common/speculative.h /usr/local/include/llama/
 ```
+
+Validated with **b11552 / `23b0202a1`**. The CMake interface check also
+requires `libllama-common` and the extended batch API. Rebuild this extension
+after upgrading upstream; see [system-library setup](docs/SYSTEM_LIBRARIES.md)
+for custom prefixes and state compatibility.
 
 ### Custom install prefix
 
@@ -81,14 +132,26 @@ huggingface-cli download Qwen/Qwen3-8B-GGUF Qwen3-8B-Q6_K.gguf --local-dir model
 
 ## Build & install
 
+The project's `.python-version` selects Python 3.14. Create an environment
+using that interpreter and install the package into it explicitly:
+
 ```bash
 # Create virtual environment with uv
-uv venv --python 3.14 .venv
-source .venv/bin/activate
+rtk proxy uv venv --python 3.14 .venv
 
 # Install build deps and the package (editable)
-uv pip install -e .
+rtk proxy uv pip install --python .venv/bin/python -e .
 ```
+
+To upgrade only the uv-managed Python 3.14 series:
+
+```bash
+rtk proxy uv python upgrade 3.14
+```
+
+Without the version argument, uv upgrades all installed managed CPython
+versions. It does not replace system Python. An older environment created from
+system Python must be recreated to use the managed interpreter.
 
 `scikit-build-core` drives the build; it links against system-installed llama.cpp libraries found via CMake's `find_library()`.
 
@@ -103,9 +166,44 @@ uv pip install -e .
 
 The script composes `CMAKE_ARGS` for you and respects `LLAMA_PREFIX`, `CMAKE_BUILD_TYPE`, `JOBS`, and pre-existing `CMAKE_ARGS` env vars. It does *not* override `CMAKE_PREFIX_PATH` — scikit-build-core needs to inject its own path so `find_package(nanobind)` resolves inside the isolated build env.
 
-**Note**: Release builds use `-O3`, `-march=native`, `-flto=auto`, `-funroll-loops` by default. `-ffast-math` is **off by default** (it alters softmax/sampling numerics and can set FTZ/DAZ process-wide); enable explicitly via `-DLLAMA_FAST_MATH=ON` or the `--fast-math` flag above.
+**Note**: Release builds use `-O3`, `-march=native`, and `-funroll-loops` by
+default, plus compiler-specific LTO when CMake verifies support. `CC` / `CXX`
+overrides are respected. `-ffast-math` is **off by default** (it alters
+softmax/sampling numerics and can set FTZ/DAZ process-wide); enable explicitly
+via `-DLLAMA_FAST_MATH=ON` or the `--fast-math` flag above.
 
 **Recent Updates**:
+
+**2026-10-13** - Extended batch integration and inference overhead:
+
+- Migrated MTP to upstream `common_batch` / `llama_process`, restoring
+  compatibility with b11552. CMake checks the required common interface.
+- Standalone MTP token-only decode raises an exception because upstream
+  requires target hidden-state inputs; use the default context with
+  `speculative=True` for generation.
+- Reuse prompt batch allocations across calls; fixed zero-temperature
+  sampling uses a greedy terminal while preserving sampler-adjusted logprobs.
+- Added `cpu_moe=True` for host expert placement, plus experimental
+  `moe_cache_size` in bytes for their GPU cache. The cache defaults to zero
+  and is disabled on draft contexts.
+- See [upstream research](docs/UPSTREAM_RESEARCH-2026-10-13.md) and
+  [validation notes](docs/CHANGELOG-2026-10-13.md).
+- Added a longer-context draft-width sweep with exact-output checks, cached
+  chat measurements, and sampled peak GPU memory. See
+  [tuning results and recommended settings](docs/MTP_TUNING-2026-10-13.md).
+- Added [upstream compatibility CI and reproducible benchmarks](docs/UPSTREAM_VALIDATION.md),
+  including native-library provenance checks and MTP acceptance counters.
+- Reuse MTP graph reservations across successful requests, reducing warmed
+  first-token latency. Ordinary decoding and cancelled or failed MTP requests
+  restore normal graph mode. See [latency measurements](docs/MTP_LATENCY-2026-10-13.md).
+- Defer final draft prefill until after the first token callback, preserving
+  hidden-state sequencing and stop buffering. See
+  [streaming latency and multi-turn chat results](docs/MTP_FIRST_TOKEN-2026-10-13.md).
+- Retain MTP KV, hidden state, and current logits after natural EOG. Small
+  suffix edits can reuse the latest verify batch when rollback succeeds.
+  See [cache reuse measurements](docs/MTP_CACHE-2026-10-13.md).
+- Chat templates now parse registered role delimiters in eager and streamed
+  completions. Raw prompts retain their configured tokenizer behavior.
 
 **2026-09-15** - Current upstream compatibility and MTP update:
 - Updated for llama.cpp b10972: model loading modes, sampler signatures, and the `pos0` speculative interface. Embedded MTP weights remain enabled by default; `LlamaConfig(load_mtp=False)` skips them.
@@ -591,7 +689,7 @@ text = llm.generate(
 
 The architecture is **dual-context**: the user-facing context (DEFAULT graph) is the verifier; an internal draft context (MTP graph) is constructed against the same model on first speculative call. The draft-verify loop drafts up to `n_draft_max` tokens (default 2, range [1, 8]) per round, verifies via the standard sampler chain, and accepts matching drafts. Greedy outputs (`temperature=0.0`) are checked against the per-token path in differential tests; batching can still change floating-point rounding near ties.
 
-**Preconditions:** model contains MTP layers; `load_mtp=True` (default); user-facing `ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT`; `embeddings=False`. Hybrid/recurrent targets require `n_rs_seq >= n_draft_max` (both default to 2). KV shifting is not required. Continue with the full prompt and `cache_prompt=True`; changing the prefix or draft width rebuilds hidden-state carryover. Separate assistant/draft GGUF models are not exposed by this binding.
+**Preconditions:** model contains MTP layers; `load_mtp=True` (default); user-facing `ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT`; `embeddings=False`. Hybrid/recurrent targets require `n_rs_seq >= n_draft_max` (both default to 2). KV shifting is not required. Continue with the full prompt and `cache_prompt=True`; unsupported prefix edits and draft-width changes rebuild hidden-state carryover. Separate assistant/draft GGUF models are not exposed by this binding.
 
 ```bash
 python examples/bench_speculative.py --model models/Qwen3.5-4B-Q4_K_M-MTP.gguf --draft-max 1 2 4 --runs 3

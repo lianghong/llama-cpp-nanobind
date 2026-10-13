@@ -30,6 +30,299 @@ def _make_mtp_llm(**overrides):
 
 
 @requires_mtp_model
+@pytest.mark.parametrize("prompt_count", [12, 24, 70])
+@pytest.mark.parametrize("budget", [1, 8])
+def test_first_callback_precedes_final_draft_prefill(prompt_count, budget):
+    """Earlier chunks catch up immediately; the last waits for the callback."""
+    from llama_cpp import _llama
+
+    with _make_mtp_llm(n_batch=32, n_ubatch=16) as llm:
+        sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=2)
+        prompt = llm.tokenize(
+            "A red ball and a blue box. " * 10 + "The ball is",
+            add_special=False,
+        )[:prompt_count]
+        assert len(prompt) == prompt_count
+
+        def ordinary(tokens, count):
+            llm.kv_cache_clear()
+            return _llama.generate_tokens(
+                llm.ctx,
+                llm._build_sampler(sp),
+                tokens,
+                count,
+                False,
+                llm.model.eos(),
+                [],
+            )
+
+        expected = ordinary(prompt, budget)
+        assert expected
+        llm.kv_cache_clear()
+        llm.perf_reset()
+        seen = []
+        prefilled_at_first = []
+
+        def callback(token):
+            if not seen:
+                prefilled_at_first.append(llm.perf()["n_mtp_prefill"])
+            seen.append(token)
+            return True
+
+        actual = _llama.generate_tokens_speculative_mtp(
+            llm.ctx,
+            llm._build_sampler(sp),
+            None,
+            prompt,
+            budget,
+            False,
+            llm.model.eos(),
+            2,
+            [],
+            callback,
+            0,
+        )
+        assert seen == actual == expected
+        final_chunk = (prompt_count - 1) % 16 + 1
+        assert prefilled_at_first == [prompt_count - final_chunk]
+        assert llm.perf()["n_mtp_prefill"] == prompt_count
+        # A one-token exit must still process that last chunk and its final
+        # sampled token, leaving the pending hidden row valid for continuation.
+        prefix = prompt + actual
+        cached_ordinary = _llama.generate_tokens(
+            llm.ctx,
+            llm._build_sampler(sp),
+            prefix,
+            4,
+            False,
+            llm.model.eos(),
+            [],
+            len(prefix),
+        )
+        # Replay the same MTP prefill to reproduce KV AND current logits.
+        # Serialized state only restores KV; a fresh whole-prefix prefill can
+        # change near-tied greedy choices because recurrent batching differs.
+        llm.kv_cache_clear()
+        assert (
+            _llama.generate_tokens_speculative_mtp(
+                llm.ctx,
+                llm._build_sampler(sp),
+                None,
+                prompt,
+                budget,
+                False,
+                llm.model.eos(),
+                2,
+                [],
+                None,
+                0,
+            )
+            == actual
+        )
+        continuation = _llama.generate_tokens_speculative_mtp(
+            llm.ctx,
+            llm._build_sampler(sp),
+            None,
+            prefix,
+            4,
+            False,
+            llm.model.eos(),
+            2,
+            [],
+            None,
+            len(prefix),
+        )
+        assert continuation == cached_ordinary
+
+
+@requires_mtp_model
+def test_speculative_reuses_graph_mode_after_kv_clear():
+    """Repeated requests retain graph shape while the invalid driver is rebuilt."""
+    sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=2)
+    with _make_mtp_llm() as llm:
+        prompt = "Count from one to twenty:"
+        expected = llm.generate(prompt, max_tokens=16, sampling=sp)
+        llm.perf_reset()
+        for _ in range(3):
+            actual = llm.generate(prompt, max_tokens=16, sampling=sp, speculative=True)
+            assert actual == expected
+            assert llm.perf()["n_mtp_graph_switches"] == 1
+
+        # Ordinary generation restores its graph mode once.
+        assert llm.generate(prompt, max_tokens=16, sampling=sp) == expected
+        assert llm.perf()["n_mtp_graph_switches"] == 2
+        assert llm.generate(prompt, max_tokens=16, sampling=sp) == expected
+        assert llm.perf()["n_mtp_graph_switches"] == 2
+        assert (
+            llm.generate(prompt, max_tokens=16, sampling=sp, speculative=True)
+            == expected
+        )
+        assert llm.perf()["n_mtp_graph_switches"] == 3
+
+
+@requires_mtp_model
+@pytest.mark.parametrize("raise_error", [False, True])
+@pytest.mark.parametrize("draft_max", [1, 2, 3, 4])
+def test_speculative_abnormal_callback_restores_graph_mode(
+    mtp_llm, raise_error, draft_max
+):
+    from llama_cpp import _llama
+
+    llm = mtp_llm
+    sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=draft_max)
+    expected = llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp)
+    llm.kv_cache_clear()
+    llm.perf_reset()
+
+    def callback(token):
+        if raise_error:
+            raise RuntimeError("callback failed")
+        return False
+
+    def run():
+        return _llama.generate_tokens_speculative_mtp(
+            llm.ctx,
+            llm._build_sampler(sp),
+            None,
+            llm.tokenize(_CONT_PROMPT, add_special=False),
+            8,
+            llm._effective_add_bos,
+            llm.model.eos(),
+            draft_max,
+            [],
+            callback,
+            0,
+        )
+
+    if raise_error:
+        with pytest.raises(RuntimeError, match="callback failed"):
+            run()
+    else:
+        assert run() == []
+    assert llm.ctx.kv_cache_seq_pos_max(0) == -1
+    assert llm.perf()["n_mtp_graph_switches"] == 2
+    assert llm.perf()["n_mtp_prefill"] == 0
+    assert llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp) == expected
+    assert llm.perf()["n_mtp_graph_switches"] == 2
+    assert (
+        llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp, speculative=True)
+        == expected
+    )
+    assert llm.perf()["n_mtp_graph_switches"] == 3
+
+
+@requires_mtp_model
+@pytest.mark.parametrize("draft_max", [1, 2, 3, 4])
+def test_first_token_stop_skips_final_draft_prefill(mtp_llm, draft_max):
+    from llama_cpp import _llama
+
+    llm = mtp_llm
+    sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=draft_max)
+    prompt = llm.tokenize(_CONT_PROMPT, add_special=False)
+    llm.kv_cache_clear()
+    expected = _llama.generate_tokens(
+        llm.ctx, llm._build_sampler(sp), prompt, 4, False, llm.model.eos(), []
+    )
+    assert expected
+    llm.kv_cache_clear()
+    llm.perf_reset()
+    seen = []
+    result = _llama.generate_tokens_speculative_mtp(
+        llm.ctx,
+        llm._build_sampler(sp),
+        None,
+        prompt,
+        8,
+        False,
+        llm.model.eos(),
+        draft_max,
+        [[expected[0]]],
+        lambda token: seen.append(token) is None,
+        0,
+    )
+    assert result == seen == []
+    assert llm.perf()["n_mtp_prefill"] == 0
+    assert llm.ctx.kv_cache_seq_pos_max(0) == -1
+    assert (
+        _llama.generate_tokens_speculative_mtp(
+            llm.ctx,
+            llm._build_sampler(sp),
+            None,
+            prompt,
+            4,
+            False,
+            llm.model.eos(),
+            draft_max,
+            [],
+            None,
+            0,
+        )
+        == expected
+    )
+
+
+@requires_mtp_model
+@pytest.mark.parametrize("method", ["decode", "decode_one", "decode_multi"])
+def test_ordinary_decode_restores_graph_mode(mtp_llm, method):
+    llm = mtp_llm
+    sp = SamplingParams(temperature=0.0, seed=0)
+    expected = llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp)
+    llm.perf_reset()
+    llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp, speculative=True)
+    llm.kv_cache_clear()
+    assert llm.perf()["n_mtp_graph_switches"] == 1
+    token = llm.tokenize("Hello", add_special=False)[0]
+    getattr(llm.ctx, method)(token if method == "decode_one" else [token])
+    assert llm.perf()["n_mtp_graph_switches"] == 2
+    assert llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp) == expected
+    assert llm.perf()["n_mtp_graph_switches"] == 2
+
+
+@requires_mtp_model
+def test_speculative_graph_mode_after_context_reset(mtp_llm):
+    llm = mtp_llm
+    sp = SamplingParams(temperature=0.0, seed=0)
+    expected = llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp)
+    llm.perf_reset()
+    llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp, speculative=True)
+    assert llm.perf()["n_mtp_graph_switches"] == 1
+    llm.reset()
+    assert (
+        llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp, speculative=True)
+        == expected
+    )
+    assert llm.perf()["n_mtp_graph_switches"] == 2
+    assert llm.generate(_CONT_PROMPT, max_tokens=4, sampling=sp) == expected
+    assert llm.perf()["n_mtp_graph_switches"] == 3
+
+
+@requires_mtp_model
+def test_speculative_performance_counters():
+    """Accepted/proposed counts survive KV clearing and reset with perf_reset."""
+    with _make_mtp_llm() as llm:
+        fields = ("n_drafted", "n_accepted", "n_verify", "n_mtp_prefill")
+        llm.perf_reset()
+        assert all(llm.perf()[key] == 0 for key in fields)
+        llm.generate(
+            "Count from one to twenty:",
+            max_tokens=24,
+            sampling=SamplingParams(temperature=0.0, seed=0, n_draft_max=2),
+            speculative=True,
+        )
+        metrics = llm.perf()
+        assert metrics["n_mtp_prefill"] > 0
+        assert metrics["n_verify"] > 0
+        assert 0 < metrics["n_drafted"] <= 2 * metrics["n_verify"]
+        assert 0 <= metrics["n_accepted"] <= metrics["n_drafted"]
+        llm.kv_cache_clear()
+        assert all(llm.perf()[key] == metrics[key] for key in fields)
+        llm.perf_reset()
+        assert all(llm.perf()[key] == 0 for key in fields)
+        llm.generate("Hello", max_tokens=2)
+        assert all(llm.perf()[key] == 0 for key in fields)
+
+
+@requires_mtp_model
 def test_speculative_smoke():
     """speculative=True must produce non-empty output and not raise."""
     llm = _make_mtp_llm()
@@ -341,22 +634,28 @@ def test_speculative_max_tokens_one(mtp_llm):
 
 
 @requires_mtp_model
-def test_speculative_streaming_callback_cancel(mtp_llm):
+@pytest.mark.parametrize("draft_max", [1, 2, 3, 4])
+def test_speculative_streaming_callback_cancel(mtp_llm, draft_max):
     """Cancelling a speculative stream early (consumer stops iterating) must
     not crash and must leave the instance reusable."""
-    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=4)
+    sp = SamplingParams(seed=0, temperature=0.0, n_draft_max=draft_max)
+    expected = mtp_llm.generate("Hello", max_tokens=4, sampling=sp)
     collected = []
-    for chunk in mtp_llm.generate_stream(
+    stream = mtp_llm.generate_stream(
         "Tell me a long story about a robot.",
         max_tokens=64,
         sampling=sp,
         speculative=True,
         reset_kv_cache=True,
-    ):
-        collected.append(chunk)
-        if len(collected) >= 3:
-            break  # early cancellation
-    assert collected
+    )
+    try:
+        for chunk in stream:
+            collected.append(chunk)
+            if len(collected) >= 3:
+                break  # early cancellation
+    finally:
+        stream.close()
+    assert len(collected) == 3
     # Instance must remain usable after an early-cancelled stream.
     out = mtp_llm.generate(
         "Hello",
@@ -365,7 +664,8 @@ def test_speculative_streaming_callback_cancel(mtp_llm):
         speculative=True,
         reset_kv_cache=True,
     )
-    assert isinstance(out, str)
+    assert out == expected
+    assert mtp_llm.generate("Hello", max_tokens=4, sampling=sp) == expected
 
 
 @requires_mtp_model
@@ -384,12 +684,13 @@ def test_speculative_prefill_exceeds_batch():
 
 
 @requires_mtp_model
-def test_speculative_stream_holds_stop_prefix(mtp_llm):
+@pytest.mark.parametrize("draft_max", [1, 2, 3, 4])
+def test_speculative_stream_holds_stop_prefix(mtp_llm, draft_max):
     """Use actual generated token IDs so the multi-token stop definitely fires."""
     from llama_cpp import _llama
 
     llm = mtp_llm
-    sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=4)
+    sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=draft_max)
     prompt = llm.tokenize("Count from one to twenty:", add_special=False)
     llm.kv_cache_clear()
     baseline = _llama.generate_tokens_speculative_mtp(
@@ -400,7 +701,7 @@ def test_speculative_stream_holds_stop_prefix(mtp_llm):
         24,
         llm._effective_add_bos,
         llm.model.eos(),
-        4,
+        draft_max,
         [],
         None,
         0,
@@ -423,12 +724,78 @@ def test_speculative_stream_holds_stop_prefix(mtp_llm):
         24,
         llm._effective_add_bos,
         llm.model.eos(),
-        4,
+        draft_max,
         [stop],
         lambda token: seen.append(token) is None,
         0,
     )
     assert seen == result == baseline[:stop_at]
+
+
+@requires_mtp_model
+@pytest.mark.parametrize("prompt_count", [512, 2048, 4096])
+@pytest.mark.parametrize("draft_max", [1, 2, 3, 4])
+def test_speculative_long_prompt_stop_and_cancel(prompt_count, draft_max):
+    """Stops and callback cancellation must recover at each sweep setting."""
+    from llama_cpp import _llama
+
+    cfg = LlamaConfig(
+        model_path=MTP_MODEL_PATH,
+        n_ctx=8192,
+        n_batch=512,
+        n_ubatch=512,
+        n_rs_seq=4,
+        n_gpu_layers=-1,
+        verbose=False,
+    )
+    with Llama(MTP_MODEL_PATH, config=cfg) as llm:
+        sp = SamplingParams(temperature=0.0, seed=0, n_draft_max=draft_max)
+        prompt = llm.tokenize(
+            "A red ball and a blue box. " * prompt_count,
+            add_special=False,
+        )[:prompt_count]
+        assert len(prompt) == prompt_count
+
+        def run(stops, callback):
+            return _llama.generate_tokens_speculative_mtp(
+                llm.ctx,
+                llm._build_sampler(sp),
+                None,
+                prompt,
+                16,
+                False,
+                llm.model.eos(),
+                draft_max,
+                stops,
+                callback,
+                0,
+            )
+
+        expected = run([], None)
+        assert len(expected) >= 8
+        stop = expected[4:7]
+        stop_at = next(
+            i
+            for i in range(len(expected) - len(stop) + 1)
+            if expected[i : i + len(stop)] == stop
+        )
+        seen = []
+        llm.kv_cache_clear()
+        stopped = run([stop], lambda token: seen.append(token) is None)
+        assert stopped == seen == expected[:stop_at]
+        assert llm.ctx.kv_cache_seq_pos_max(0) == -1
+
+        seen = []
+
+        def cancel(token):
+            if len(seen) == 4:
+                return False
+            seen.append(token)
+            return True
+
+        assert run([], cancel) == seen == expected[:4]
+        assert llm.ctx.kv_cache_seq_pos_max(0) == -1
+        assert run([], None) == expected
 
 
 @requires_mtp_model

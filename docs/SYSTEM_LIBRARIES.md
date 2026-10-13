@@ -4,21 +4,31 @@
 
 ## Supported upstream interfaces
 
-Validated against **llama.cpp b10972**, commit
-[`7cf1c54a96d4e950ffa614b94babf762803a8de7`](https://github.com/ggml-org/llama.cpp/commit/7cf1c54a96d4e950ffa614b94babf762803a8de7)
-(2026-09-14). CMake checks for the current `load_mode`, `load_mtp`, sampler,
-and speculative `pos0` interfaces. The older b9592 integration is no longer
-supported by this source revision.
+Validated against **llama.cpp b11552**, commit
+[`23b0202a189c44a54625aadcb37a946dd1d6278d`](https://github.com/ggml-org/llama.cpp/commit/23b0202a189c44a54625aadcb37a946dd1d6278d)
+(2026-10-10 UTC). CMake checks `load_mode`, `load_mtp`, sampler signatures,
+`moe_cache_size`, and the `common_batch` / `llama_process` speculative
+interfaces. The older b10972 integration is no longer supported by this
+source revision.
+
+Pinned HEAD `cbe28bb3` also passed isolated runtime validation. See
+[compatibility CI, isolated builds, and benchmarks](UPSTREAM_VALIDATION.md)
+for its scope and results; b11552 remains the reference baseline.
 
 Install `llama.h`, `llama-ext.h`, the common headers (`common.h`,
 `speculative.h` and their dependencies), and **libllama-common** together
 with libllama/ggml from the same upstream build. These common/staging C++
 interfaces have no stable ABI: rebuild this Python extension after upgrading
 upstream, even if the shared-library SONAME is unchanged. Explicit
-`CMAKE_PREFIX_PATH` entries take precedence over `/usr/local` or Homebrew.
+`CMAKE_PREFIX_PATH` entries, including the environment variable on Linux, take
+precedence over `/usr/local` or Homebrew.
 
-See [upstream research](UPSTREAM_RESEARCH-2026-09-15.md) for changes and
-[validation notes](CHANGELOG-2026-09-15.md) for tested behavior.
+Upstream session format is now **11** and sequence-state format **4**.
+Regenerate serialized states after upgrading from the previous upstream
+build; raw state buffers and device handles are not portable across versions.
+
+See [upstream research](UPSTREAM_RESEARCH-2026-10-13.md) for changes and
+[validation notes](CHANGELOG-2026-10-13.md) for tested behavior.
 
 ---
 
@@ -48,6 +58,7 @@ This project **does not bundle or manage llama.cpp**. Instead, it links against 
 # Clone llama.cpp repository
 git clone https://github.com/ggml-org/llama.cpp.git
 cd llama.cpp
+git checkout 23b0202a189c44a54625aadcb37a946dd1d6278d
 
 # Create build directory
 mkdir build && cd build
@@ -56,6 +67,8 @@ mkdir build && cd build
 cmake .. \
   -DCMAKE_INSTALL_PREFIX=/usr/local \
   -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DLLAMA_BUILD_COMMON=ON \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES=native
 
@@ -63,6 +76,8 @@ cmake .. \
 cmake .. \
   -DCMAKE_INSTALL_PREFIX=/usr/local \
   -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DLLAMA_BUILD_COMMON=ON \
   -DGGML_METAL=ON
 
 # Build (use all CPU cores)
@@ -70,13 +85,30 @@ make -j$(nproc)
 
 # Install to /usr/local (requires sudo)
 sudo make install
+
+# Run from the llama.cpp source root. Use your installation prefix here.
+cd ..
+sudo install -m 644 src/llama-ext.h /usr/local/include/llama-ext.h
+sudo install -d /usr/local/include/llama
+sudo install -m 644 common/common.h common/speculative.h /usr/local/include/llama/
 ```
+
+Upstream installs the public llama/ggml headers and shared libraries, but
+does not install these common/staging headers. The two common headers above
+are sufficient for this binding; both depend on public headers from the same
+build. For a custom prefix, substitute its `include` directory in all three
+`install` commands. Package-manager installations also need these interfaces;
+the CMake probe reports when they are missing.
 
 **Installed Files:**
 ```
 /usr/local/include/llama.h           # C API header
+/usr/local/include/llama-ext.h       # Staging MTP interface
+/usr/local/include/llama/common.h    # Common C++ interface
+/usr/local/include/llama/speculative.h
 /usr/local/include/ggml.h            # GGML header
 /usr/local/lib/libllama.so           # Main library
+/usr/local/lib/libllama-common.so    # Speculative driver and batch wrapper
 /usr/local/lib/libggml.so            # GGML library
 /usr/local/lib/libggml-base.so       # GGML base
 /usr/local/lib/libggml-cpu.so        # CPU backend
@@ -120,8 +152,7 @@ uv pip install -e .
 
 **Expected CMake Output:**
 ```
--- Using system llama.cpp from /usr/local
--- CMAKE_PREFIX_PATH: /usr/local
+-- System llama.cpp available in /usr/local
 -- Found llama.h: /usr/local/include
 -- Found libllama: /usr/local/lib/libllama.so
 -- Found libggml: /usr/local/lib/libggml.so
@@ -255,17 +286,20 @@ sudo rm -rf /usr/lib/libllama.so  # Example: remove old system package
 ```bash
 # Rebuild llama.cpp with GPU support
 cd /path/to/llama.cpp
-rm -rf build && mkdir build && cd build
 
 # For CUDA:
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_CUDA=ON
-make -j$(nproc)
-sudo make install
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_CUDA=ON \
+  -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_COMMON=ON
 
 # For Metal (macOS):
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_METAL=ON
-make -j$(nproc)
-sudo make install
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_METAL=ON \
+  -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_COMMON=ON
+
+cmake --build build -j$(nproc)
+sudo cmake --install build
+sudo install -m 644 src/llama-ext.h /usr/local/include/llama-ext.h
+sudo install -d /usr/local/include/llama
+sudo install -m 644 common/common.h common/speculative.h /usr/local/include/llama/
 
 # Rebuild Python bindings
 cd /path/to/llama-cpp-nanobind
@@ -281,11 +315,15 @@ When llama.cpp releases a new version:
 ```bash
 # 1. Update llama.cpp
 cd /path/to/llama.cpp
+git switch master
 git pull
-cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_CUDA=ON
-make -j$(nproc)
-sudo make install
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DGGML_CUDA=ON \
+  -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_COMMON=ON
+cmake --build build -j$(nproc)
+sudo cmake --install build
+sudo install -m 644 src/llama-ext.h /usr/local/include/llama-ext.h
+sudo install -d /usr/local/include/llama
+sudo install -m 644 common/common.h common/speculative.h /usr/local/include/llama/
 
 # 2. Rebuild Python bindings
 cd /path/to/llama-cpp-nanobind
@@ -300,6 +338,10 @@ python -c "from llama_cpp import Llama; print('OK')"
 ## Alternative: Using System Package Managers
 
 ### Homebrew (macOS)
+
+Verify that the package supplies compatible `libllama-common` and the
+common/staging headers described above. If they are absent, build upstream
+from source with `LLAMA_BUILD_COMMON=ON`.
 
 ```bash
 # Install llama.cpp via Homebrew

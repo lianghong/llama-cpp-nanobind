@@ -1,0 +1,384 @@
+{
+  "schema_version": 2,
+  "created_at": "2026-10-13T02:38:02.736547+00:00",
+  "runtime": {
+    "commit": "cbe28bb3cb",
+    "build_number": 11577,
+    "compiler": "GNU 15.2.0",
+    "libraries": [
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-base.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cpu.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cuda.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama-common.so.0.6.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama.so.0.6.0"
+    ],
+    "extension": "/tmp/mtp-latency-final-head/venv/lib/python3.14/site-packages/llama_cpp/_llama.cpython-314-x86_64-linux-gnu.so",
+    "system_info": "CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | ",
+    "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43"
+  },
+  "native_extension_sha256": "beec4e5ee95d719db4bd8b6202d2651c99c305e16965a5a53d48e0d535d390cb",
+  "gpu": "NVIDIA GeForce RTX 3080, 595.91.07, 20480",
+  "binding_source_sha256": {
+    "CMakeLists.txt": "d514df6f372a6a4d8d2b73303a1daf1966cacf666b0f971303dc35af3858aceb",
+    "src/bindings/llama_cpp.cpp": "d940190c4e95dff687680dff08fd08bc469cb03d90878c80f1d0e13acdc30717",
+    "src/llama_cpp/llama.py": "69c410522f4845e7df6ae6019efdf8f1c78a7a97981dfb8132503d5839c73e8c",
+    "tools/benchmark_upstream.py": "3fda78eeee5f3ba71767f368dfa55b2b7c60abc8fc79c3c39e6309c734fdc64e",
+    "tools/check_runtime.py": "239b5011e53611ee4dd78a6071f392b11855f280d0a867d8c109f31d5e572015"
+  },
+  "settings": {
+    "output": "docs/benchmarks/2026-10-13-mtp-latency-single-token.json",
+    "prompt_tokens": [
+      64
+    ],
+    "max_tokens": 1,
+    "draft_max": [
+      2
+    ],
+    "runs": 7,
+    "warmup": 2,
+    "n_ctx": 2048,
+    "n_batch": 512,
+    "n_gpu_layers": -1,
+    "threads": 4
+  },
+  "timing_scope": "Warmed native streaming from fixed token IDs; excludes model load, tokenization, sampler creation, and detokenization. First-token time includes prefill; decode rate counts subsequent tokens. Memory is a point sample after generation, not peak usage.",
+  "models": [
+    {
+      "model": "/data/storage/Projects/llama_cpp_projects/models/Qwen3.5-4B-Q4_K_M-MTP.gguf",
+      "model_bytes": 2834975040,
+      "model_sha256": "3874209241c9a397e2f62cd3f70f80fd2dfbf0dfccb6838416bdb48a714e8630",
+      "workloads": [
+        {
+          "prompt_tokens": 64,
+          "prompt_sha256": "d6ed5f773c0a2ef4f4b112cfae513deb2bc190cc0779589cfddcaf543457028b",
+          "draft_max": 0,
+          "greedy_stable": true,
+          "greedy_matches_baseline": true,
+          "memory_after_run": {
+            "rss_bytes": 1227943936,
+            "gpu_process_bytes": 3873439744
+          },
+          "prefill_tokens_per_second": 2860.794585058892,
+          "runs": [
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.033301684001344256,
+              "first_token_seconds": 0.027738011001929408,
+              "tokens_per_second": 30.02851146985942,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.03193496200037771,
+              "first_token_seconds": 0.026203372002783,
+              "tokens_per_second": 31.313643021969856,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.03266812799847685,
+              "first_token_seconds": 0.026644843001122354,
+              "tokens_per_second": 30.610875531240268,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.03239626700087683,
+              "first_token_seconds": 0.02662699600114138,
+              "tokens_per_second": 30.867753990696958,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.03213791400048649,
+              "first_token_seconds": 0.026593005000904668,
+              "tokens_per_second": 31.115896320615658,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.03176901499682572,
+              "first_token_seconds": 0.025767434999579564,
+              "tokens_per_second": 31.477211367740473,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.03236811200258671,
+              "first_token_seconds": 0.026591964000544976,
+              "tokens_per_second": 30.894603921294035,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            }
+          ],
+          "warmup_runs": [
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.04919897400031914,
+              "first_token_seconds": 0.022447339000791544,
+              "tokens_per_second": 20.325627115588087,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.03291663100026199,
+              "first_token_seconds": 0.026681858998927055,
+              "tokens_per_second": 30.379779753038544,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            }
+          ],
+          "median_elapsed_seconds": 0.03236811200258671,
+          "median_first_token_seconds": 0.026593005000904668,
+          "median_tokens_per_second": 30.894603921294035,
+          "median_decode_tokens_per_second": null,
+          "median_acceptance_rate": null
+        },
+        {
+          "prompt_tokens": 64,
+          "prompt_sha256": "d6ed5f773c0a2ef4f4b112cfae513deb2bc190cc0779589cfddcaf543457028b",
+          "draft_max": 2,
+          "greedy_stable": true,
+          "greedy_matches_baseline": true,
+          "memory_after_run": {
+            "rss_bytes": 1279533056,
+            "gpu_process_bytes": 4022337536
+          },
+          "prefill_tokens_per_second": null,
+          "runs": [
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.04194551700129523,
+              "first_token_seconds": 0.03269997399911517,
+              "tokens_per_second": 23.840449981081914,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.043125313000928145,
+              "first_token_seconds": 0.033184004001668654,
+              "tokens_per_second": 23.188237497046757,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.04155861799881677,
+              "first_token_seconds": 0.03224192299967399,
+              "tokens_per_second": 24.062397840767257,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.0423894300001848,
+              "first_token_seconds": 0.03186700600053882,
+              "tokens_per_second": 23.590786665346535,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.04359727799965185,
+              "first_token_seconds": 0.0337162210016686,
+              "tokens_per_second": 22.937211814186785,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.04543936100162682,
+              "first_token_seconds": 0.03472651500123902,
+              "tokens_per_second": 22.007351731116948,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.04435552100039786,
+              "first_token_seconds": 0.03473695900174789,
+              "tokens_per_second": 22.545107744107668,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            }
+          ],
+          "warmup_runs": [
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.08079912800167222,
+              "first_token_seconds": 0.07162809200235642,
+              "tokens_per_second": 12.37637119028443,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 1,
+              "acceptance_rate": null
+            },
+            {
+              "tokens": [
+                321
+              ],
+              "elapsed_seconds": 0.042444834998605074,
+              "first_token_seconds": 0.03253503999803797,
+              "tokens_per_second": 23.559992635920587,
+              "decode_tokens_per_second": null,
+              "drafted": 0,
+              "accepted": 0,
+              "verify_rounds": 0,
+              "mtp_graph_switches": 0,
+              "acceptance_rate": null
+            }
+          ],
+          "median_elapsed_seconds": 0.043125313000928145,
+          "median_first_token_seconds": 0.033184004001668654,
+          "median_tokens_per_second": 23.188237497046757,
+          "median_decode_tokens_per_second": null,
+          "median_acceptance_rate": null
+        }
+      ],
+      "config": {
+        "model_path": "/home/lianghong/Projects/llama_cpp_projects/models/Qwen3.5-4B-Q4_K_M-MTP.gguf",
+        "n_ctx": 2048,
+        "n_batch": 512,
+        "n_ubatch": 512,
+        "n_seq_max": 1,
+        "n_rs_seq": 2,
+        "n_threads": 4,
+        "n_threads_batch": 4,
+        "n_gpu_layers": -1,
+        "main_gpu": 0,
+        "split_mode": 0,
+        "use_mmap": true,
+        "use_mlock": false,
+        "load_mtp": true,
+        "check_tensors": false,
+        "no_host": false,
+        "flash_attn": 1,
+        "ctx_type": 0,
+        "offload_kqv": true,
+        "embeddings": false,
+        "rope_freq_base": 0.0,
+        "rope_freq_scale": 0.0,
+        "cache_type_k": 1,
+        "cache_type_v": 1,
+        "add_bos": null,
+        "parse_special": false,
+        "chat_format": null,
+        "verbose": false,
+        "seed": -1,
+        "cpu_moe": false,
+        "moe_cache_size": 0
+      },
+      "mtp_available": true
+    }
+  ]
+}

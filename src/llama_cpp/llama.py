@@ -390,6 +390,11 @@ class LlamaConfig:
     chat_format: str | None = None  # e.g. "llama-2", "chatml", "gemma", etc.
     verbose: bool = True  # WARNING: Affects logging GLOBALLY (llama.cpp limitation)
     seed: int = -1  # RNG seed (-1 for random)
+    # Append new controls to preserve existing positional configuration arguments.
+    cpu_moe: bool = False  # keep MoE expert weights on CPU (upstream --cpu-moe)
+    # Experimental GPU cache for host experts, divided among devices like layers.
+    # Bytes; 0 disables the cache.
+    moe_cache_size: int = 0
 
     def __post_init__(self) -> None:
         """Validate configuration parameters."""
@@ -411,6 +416,14 @@ class LlamaConfig:
             or self.n_rs_seq < 0
         ):
             raise ValidationError("n_rs_seq must be a nonnegative integer")
+        if (
+            isinstance(self.moe_cache_size, bool)
+            or not isinstance(self.moe_cache_size, int)
+            or self.moe_cache_size < 0
+        ):
+            raise ValidationError(
+                "moe_cache_size must be a nonnegative integer (bytes)"
+            )
         if self.ctx_type not in _VALID_CONTEXT_TYPES:
             raise ValidationError(
                 f"ctx_type={self.ctx_type} is not a supported llama_context_type. "
@@ -556,6 +569,7 @@ class Llama:
         model_params.use_mmap = cfg.use_mmap
         model_params.use_mlock = cfg.use_mlock
         model_params.load_mtp = cfg.load_mtp
+        model_params.cpu_moe = cfg.cpu_moe
         model_params.check_tensors = cfg.check_tensors
         model_params.no_host = cfg.no_host
 
@@ -565,6 +579,7 @@ class Llama:
         ctx_params.n_ubatch = int(cfg.n_ubatch)
         ctx_params.n_seq_max = int(cfg.n_seq_max)
         ctx_params.n_rs_seq = int(cfg.n_rs_seq)
+        ctx_params.moe_cache_size = cfg.moe_cache_size
         ctx_params.n_threads = int(cfg.n_threads or os.cpu_count() or 1)
         ctx_params.n_threads_batch = int(cfg.n_threads_batch or ctx_params.n_threads)
         ctx_params.flash_attn_type = int(cfg.flash_attn)
@@ -738,6 +753,11 @@ class Llama:
         Recurrent rollback is configured on the target context. KV shifting
         is a different operation, so memory_can_shift() is not a capability gate.
         """
+        if self.config.ctx_type == LLAMA_CONTEXT_TYPE_MTP:
+            raise ValidationError(
+                "MTP token-only generation requires target hidden state. "
+                "Use ctx_type=LLAMA_CONTEXT_TYPE_DEFAULT with speculative=True."
+            )
         if not speculative:
             return
         if not self.config.load_mtp:
@@ -1177,12 +1197,11 @@ class Llama:
         issued. If LCP is shorter, the divergent suffix is removed from KV
         and ``cur_pos_`` is updated by the C++ binding.
 
-        Hybrid-attention models (Qwen3.5, Granite 4 hybrid, …) and other
-        configurations report ``memory_can_shift() == False``; for those,
-        ``llama_memory_seq_rm(seq, p0, -1)`` returns False without modifying
-        the KV cache. In that case we fall back to a full clear so KV stays
-        consistent with the mirror — caller pays the full prompt-decode cost
-        for that turn but correctness is preserved.
+        A retained MTP verify batch supports bounded suffix trims when both
+        target and draft memory accept rollback. The binding also restores
+        the corresponding hidden row and logits. Other edits invalidate the
+        MTP driver and rebuild on the next request. If memory rejects a trim,
+        we fall back to a full clear so KV stays consistent with the mirror.
 
         The mirror is replaced with ``new_tokens`` here; generation appends
         produced tokens via _commit_generation_to_cache. On unexpected error
@@ -1197,8 +1216,8 @@ class Llama:
             n_match += 1
         if n_match < len(cached):
             # Trim divergent suffix; bindings update cur_pos_ via seq_pos_max+1
-            # iff the trim succeeded. Hybrid-attention models silently refuse
-            # mid-sequence trim; fall back to a full clear so KV doesn't end
+            # iff the trim succeeded. Unsupported recurrent trims can refuse
+            # rollback; fall back to a full clear so KV doesn't end
             # up with stale tokens past the new prefix.
             ok = self.ctx.kv_cache_seq_rm(0, n_match, -1)
             # Either branch here mutates KV memory — bump the state epoch so
@@ -1477,7 +1496,7 @@ class Llama:
         """
         prompt = self._format_chat_messages(messages)
         effective_bos = self._effective_add_bos if add_bos is None else add_bos
-        tokens = self.tokenize(prompt, add_special=effective_bos)
+        tokens = self.tokenize(prompt, add_special=effective_bos, parse_special=True)
         return prompt, tokens, len(tokens)
 
     def _token_to_text_incremental(self, tokens: Iterator[int]) -> Iterator[str]:
@@ -1664,6 +1683,7 @@ class Llama:
         sampling: SamplingParams | None = None,
         stop: Sequence[str | int] | None = None,
         seed: int | None = None,
+        parse_special: bool | None = None,
         reset_kv_cache: bool = True,
         cache_prompt: bool = True,
         speculative: bool = False,
@@ -1695,6 +1715,8 @@ class Llama:
             sampling: Optional sampling parameters.
             stop: Optional stop sequences.
             seed: Optional RNG seed.
+            parse_special: Interpret registered special-token text in a
+                manually formatted prompt. None uses the configuration default.
             reset_kv_cache: Clear KV cache before generation (default True).
             cache_prompt: When True (default) and reset_kv_cache=False, reuse
                 the longest matching prefix of the previous turn's KV state and
@@ -1710,6 +1732,8 @@ class Llama:
             ...     print(chunk, end="", flush=True)
         """
         self._check_closed()
+        if parse_special is not None and not isinstance(parse_special, bool):
+            raise ValidationError("parse_special must be a boolean or None")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
         if max_tokens < 1:
@@ -1838,7 +1862,9 @@ class Llama:
 
             # Tokenize without BOS — C++ generator prepends based on add_bos
             # and the `prompt[0] != bos` guard.
-            prompt_tokens = self.tokenize(prompt, add_special=False)
+            prompt_tokens = self.tokenize(
+                prompt, add_special=False, parse_special=parse_special
+            )
             self._validate_prompt_token_count(len(prompt_tokens))
 
             # BOS rules — see _generate_from_tokens for full rationale.
@@ -2570,6 +2596,7 @@ class Llama:
                     prompt_text,
                     max_tokens=max_tokens,
                     sampling=stream_sampling,
+                    parse_special=True,
                     stop=stop,
                     reset_kv_cache=reset_kv_cache,
                     cache_prompt=cache_prompt,

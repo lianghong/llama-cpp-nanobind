@@ -1,0 +1,2049 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-13T03:13:50.302818+00:00",
+  "runtime": {
+    "commit": "cbe28bb3cb",
+    "build_number": 11577,
+    "compiler": "GNU 15.2.0",
+    "libraries": [
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-base.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cpu.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cuda.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama-common.so.0.6.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama.so.0.6.0"
+    ],
+    "extension": "/tmp/mtp-first-token-head/venv/lib/python3.14/site-packages/llama_cpp/_llama.cpython-314-x86_64-linux-gnu.so",
+    "system_info": "CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | ",
+    "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43"
+  },
+  "native_extension_sha256": "e47dadbcee0e99351b6d45405e7f594dbdd69d94676c4e865fa8536c526884eb",
+  "binding_source_sha256": {
+    "CMakeLists.txt": "d514df6f372a6a4d8d2b73303a1daf1966cacf666b0f971303dc35af3858aceb",
+    "src/bindings/llama_cpp.cpp": "fa75f373085d41bc637e6bd10463a15483060a19485dcfd2f7f0f2501efea9ab",
+    "src/llama_cpp/llama.py": "69c410522f4845e7df6ae6019efdf8f1c78a7a97981dfb8132503d5839c73e8c",
+    "tools/benchmark_mtp_chat.py": "0dc2afbe0106406016721aaa27ad1b196d836f6bdde3206c29c42d9ca7ebdf3c",
+    "tools/benchmark_upstream.py": "3fda78eeee5f3ba71767f368dfa55b2b7c60abc8fc79c3c39e6309c734fdc64e",
+    "tools/check_runtime.py": "239b5011e53611ee4dd78a6071f392b11855f280d0a867d8c109f31d5e572015"
+  },
+  "gpu": "NVIDIA GeForce RTX 3080, 595.91.07, 20480",
+  "model_sha256": "3874209241c9a397e2f62cd3f70f80fd2dfbf0dfccb6838416bdb48a714e8630",
+  "config": {
+    "model_path": "/home/lianghong/Projects/llama_cpp_projects/models/Qwen3.5-4B-Q4_K_M-MTP.gguf",
+    "n_ctx": 2048,
+    "n_batch": 512,
+    "n_ubatch": 512,
+    "n_seq_max": 1,
+    "n_rs_seq": 2,
+    "n_threads": 4,
+    "n_threads_batch": 4,
+    "n_gpu_layers": -1,
+    "main_gpu": 0,
+    "split_mode": 0,
+    "use_mmap": true,
+    "use_mlock": false,
+    "load_mtp": true,
+    "check_tensors": false,
+    "no_host": false,
+    "flash_attn": 1,
+    "ctx_type": 0,
+    "offload_kqv": true,
+    "embeddings": false,
+    "rope_freq_base": 0.0,
+    "rope_freq_scale": 0.0,
+    "cache_type_k": 1,
+    "cache_type_v": 1,
+    "add_bos": null,
+    "parse_special": false,
+    "chat_format": null,
+    "verbose": false,
+    "seed": -1,
+    "cpu_moe": false,
+    "moe_cache_size": 0
+  },
+  "settings": {
+    "model": "/home/lianghong/Projects/llama_cpp_projects/models/Qwen3.5-4B-Q4_K_M-MTP.gguf",
+    "output": "docs/benchmarks/2026-10-13-mtp-chat-after.json",
+    "runs": 5,
+    "warmup": 2,
+    "max_tokens": 64,
+    "draft_max": [
+      1,
+      2
+    ],
+    "n_ctx": 2048,
+    "threads": 4
+  },
+  "timing_scope": "Loaded model, public streamed chat API; includes template processing, tokenization, sampler and thread creation, queue, and text decoding. First-text time excludes role-only/empty chunks. Memory is sampled after each completed turn, not peak memory. Byte throughput is exact UTF-8 output size divided by whole request duration.",
+  "system_prompt": "You are a helpful assistant. Use concise, concrete explanations.",
+  "questions": [
+    "Explain why a local language model needs both RAM and GPU memory.",
+    "Give a concrete example of how quantization changes those requirements.",
+    "For that example, explain how a longer conversation changes memory use."
+  ],
+  "modes": [
+    {
+      "draft_max": 0,
+      "greedy_matches_ordinary": true,
+      "summaries": [
+        {
+          "turn": 1,
+          "p50_first_text_seconds": 0.026189434000116307,
+          "p95_first_text_seconds": 0.02669076460006181,
+          "median_elapsed_seconds": 0.7064116159999685,
+          "median_utf8_bytes_per_second": 465.7341308498736
+        },
+        {
+          "turn": 2,
+          "p50_first_text_seconds": 0.02469896399998106,
+          "p95_first_text_seconds": 0.024951350199989973,
+          "median_elapsed_seconds": 0.7193956869996327,
+          "median_utf8_bytes_per_second": 372.5348995595755
+        },
+        {
+          "turn": 3,
+          "p50_first_text_seconds": 0.02486004700040212,
+          "p95_first_text_seconds": 0.02676441139774397,
+          "median_elapsed_seconds": 0.7091026920024888,
+          "median_utf8_bytes_per_second": 430.1210578381636
+        }
+      ],
+      "warmup_runs": [
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.15712930399968172,
+            "elapsed_seconds": 0.8542442889993254,
+            "utf8_bytes_per_second": 385.1357325261086,
+            "native_perf": {
+              "t_start_ms": 20921122.647,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 62,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1200365568,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.027133529001730494,
+            "elapsed_seconds": 0.7051389110019954,
+            "utf8_bytes_per_second": 380.06695676341934,
+            "native_perf": {
+              "t_start_ms": 20922001.308000002,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 42,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203597312,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.024800389001029544,
+            "elapsed_seconds": 0.7025866219992167,
+            "utf8_bytes_per_second": 434.11017296645883,
+            "native_perf": {
+              "t_start_ms": 20922732.12,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 43,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203601408,
+              "gpu_process_bytes": 3871342592
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.026302656999177998,
+            "elapsed_seconds": 0.6952204649969644,
+            "utf8_bytes_per_second": 473.23117854627094,
+            "native_perf": {
+              "t_start_ms": 20923457.05,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 63,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203609600,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.023999731998628704,
+            "elapsed_seconds": 0.700013133999164,
+            "utf8_bytes_per_second": 382.84995949850287,
+            "native_perf": {
+              "t_start_ms": 20924176.404,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 42,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203609600,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.025625153997680172,
+            "elapsed_seconds": 0.7077587749990926,
+            "utf8_bytes_per_second": 430.9377866779413,
+            "native_perf": {
+              "t_start_ms": 20924902.254,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 43,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203613696,
+              "gpu_process_bytes": 3871342592
+            }
+          }
+        ]
+      ],
+      "runs": [
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.026759162999951513,
+            "elapsed_seconds": 0.7226587740005925,
+            "utf8_bytes_per_second": 455.2632747799866,
+            "native_perf": {
+              "t_start_ms": 20925634.990000002,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 63,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203613696,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.022663069001282565,
+            "elapsed_seconds": 0.7281001720002678,
+            "utf8_bytes_per_second": 368.0812205602685,
+            "native_perf": {
+              "t_start_ms": 20926380.641,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 42,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203613696,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.02445566599999438,
+            "elapsed_seconds": 0.7091026920024888,
+            "utf8_bytes_per_second": 430.1210578381636,
+            "native_perf": {
+              "t_start_ms": 20927131.214,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 43,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203621888,
+              "gpu_process_bytes": 3871342592
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.02506798499962315,
+            "elapsed_seconds": 0.6971251649993064,
+            "utf8_bytes_per_second": 471.93820639128313,
+            "native_perf": {
+              "t_start_ms": 20927862.34,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 63,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203621888,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.024802102998364717,
+            "elapsed_seconds": 0.69600317000004,
+            "utf8_bytes_per_second": 385.05571749046,
+            "native_perf": {
+              "t_start_ms": 20928581.189,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 42,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203621888,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.024433528000372462,
+            "elapsed_seconds": 0.7049307659981423,
+            "utf8_bytes_per_second": 432.6666031778839,
+            "native_perf": {
+              "t_start_ms": 20929302.697,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 43,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203621888,
+              "gpu_process_bytes": 3871342592
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.026189434000116307,
+            "elapsed_seconds": 0.7238546660009888,
+            "utf8_bytes_per_second": 454.51112696087887,
+            "native_perf": {
+              "t_start_ms": 20930029.116,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 63,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203621888,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02469896399998106,
+            "elapsed_seconds": 0.7523581649984408,
+            "utf8_bytes_per_second": 356.21332028815743,
+            "native_perf": {
+              "t_start_ms": 20930774.368,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 42,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203630080,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.026546228997176513,
+            "elapsed_seconds": 0.7107464889995754,
+            "utf8_bytes_per_second": 429.12628443554956,
+            "native_perf": {
+              "t_start_ms": 20931552.837,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 43,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203634176,
+              "gpu_process_bytes": 3871342592
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.026417171000503004,
+            "elapsed_seconds": 0.7064116159999685,
+            "utf8_bytes_per_second": 465.7341308498736,
+            "native_perf": {
+              "t_start_ms": 20932292.251000002,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 63,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203638272,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.023901240001578117,
+            "elapsed_seconds": 0.6944646539996029,
+            "utf8_bytes_per_second": 385.90876937583243,
+            "native_perf": {
+              "t_start_ms": 20933024.035,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 42,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203638272,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.02486004700040212,
+            "elapsed_seconds": 0.6988022999976238,
+            "utf8_bytes_per_second": 436.4610706075769,
+            "native_perf": {
+              "t_start_ms": 20933744.914,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 43,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203638272,
+              "gpu_process_bytes": 3871342592
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.025017587999172974,
+            "elapsed_seconds": 0.6938377810001839,
+            "utf8_bytes_per_second": 474.17423641263605,
+            "native_perf": {
+              "t_start_ms": 20934465.776,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 63,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203638272,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02498866200039629,
+            "elapsed_seconds": 0.7193956869996327,
+            "utf8_bytes_per_second": 372.5348995595755,
+            "native_perf": {
+              "t_start_ms": 20935185.973,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 42,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203638272,
+              "gpu_process_bytes": 3871342592
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.026818956997885834,
+            "elapsed_seconds": 0.7149757759980275,
+            "utf8_bytes_per_second": 426.5878792526272,
+            "native_perf": {
+              "t_start_ms": 20935931.856,
+              "t_load_ms": 151.216,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 43,
+              "n_eval": 63,
+              "n_drafted": 0,
+              "n_accepted": 0,
+              "n_verify": 0,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 0
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1203638272,
+              "gpu_process_bytes": 3871342592
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "draft_max": 1,
+      "greedy_matches_ordinary": true,
+      "summaries": [
+        {
+          "turn": 1,
+          "p50_first_text_seconds": 0.02578674699907424,
+          "p95_first_text_seconds": 0.026529209799628008,
+          "median_elapsed_seconds": 0.6793592409994744,
+          "median_utf8_bytes_per_second": 484.279862765942
+        },
+        {
+          "turn": 2,
+          "p50_first_text_seconds": 0.024896606999391224,
+          "p95_first_text_seconds": 0.026480753998475846,
+          "median_elapsed_seconds": 0.6441471719990659,
+          "median_utf8_bytes_per_second": 416.05398835840674
+        },
+        {
+          "turn": 3,
+          "p50_first_text_seconds": 0.026782723998621805,
+          "p95_first_text_seconds": 0.028103235598973698,
+          "median_elapsed_seconds": 0.6784984439982509,
+          "median_utf8_bytes_per_second": 449.5220330981131
+        }
+      ],
+      "warmup_runs": [
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.06338200000027427,
+            "elapsed_seconds": 0.7221642510012316,
+            "utf8_bytes_per_second": 455.5750295640692,
+            "native_perf": {
+              "t_start_ms": 20937825.496,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 142,
+              "n_eval": 2,
+              "n_drafted": 40,
+              "n_accepted": 22,
+              "n_verify": 41,
+              "n_mtp_graph_switches": 1,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1258446848,
+              "gpu_process_bytes": 4020240384
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02603447300134576,
+            "elapsed_seconds": 0.6452864660022897,
+            "utf8_bytes_per_second": 415.3194187696617,
+            "native_perf": {
+              "t_start_ms": 20938573.308000002,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 113,
+              "n_eval": 2,
+              "n_drafted": 36,
+              "n_accepted": 26,
+              "n_verify": 37,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1259114496,
+              "gpu_process_bytes": 4020240384
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.025707888999022543,
+            "elapsed_seconds": 0.660453497999697,
+            "utf8_bytes_per_second": 461.8038982664907,
+            "native_perf": {
+              "t_start_ms": 20939244.619,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 120,
+              "n_eval": 2,
+              "n_drafted": 39,
+              "n_accepted": 23,
+              "n_verify": 40,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1259118592,
+              "gpu_process_bytes": 4020240384
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.02589821000219672,
+            "elapsed_seconds": 0.6814991179999197,
+            "utf8_bytes_per_second": 482.7592454786402,
+            "native_perf": {
+              "t_start_ms": 20939930.333,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 142,
+              "n_eval": 2,
+              "n_drafted": 40,
+              "n_accepted": 22,
+              "n_verify": 41,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1268318208,
+              "gpu_process_bytes": 4022337536
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.025454524999076966,
+            "elapsed_seconds": 0.6439109819984878,
+            "utf8_bytes_per_second": 416.2065991920439,
+            "native_perf": {
+              "t_start_ms": 20940636.876000002,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 113,
+              "n_eval": 2,
+              "n_drafted": 36,
+              "n_accepted": 26,
+              "n_verify": 37,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1268318208,
+              "gpu_process_bytes": 4022337536
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.026551044000370894,
+            "elapsed_seconds": 0.6699729850006406,
+            "utf8_bytes_per_second": 455.24223637122975,
+            "native_perf": {
+              "t_start_ms": 20941306.621,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 120,
+              "n_eval": 2,
+              "n_drafted": 39,
+              "n_accepted": 23,
+              "n_verify": 40,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1268318208,
+              "gpu_process_bytes": 4022337536
+            }
+          }
+        ]
+      ],
+      "runs": [
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.02578674699907424,
+            "elapsed_seconds": 0.6812150740006473,
+            "utf8_bytes_per_second": 482.9605400066167,
+            "native_perf": {
+              "t_start_ms": 20941999.574,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 142,
+              "n_eval": 2,
+              "n_drafted": 40,
+              "n_accepted": 22,
+              "n_verify": 41,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1278238720,
+              "gpu_process_bytes": 4022337536
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02543422999951872,
+            "elapsed_seconds": 0.6441471719990659,
+            "utf8_bytes_per_second": 416.05398835840674,
+            "native_perf": {
+              "t_start_ms": 20942706.505,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 113,
+              "n_eval": 2,
+              "n_drafted": 36,
+              "n_accepted": 26,
+              "n_verify": 37,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1278242816,
+              "gpu_process_bytes": 4022337536
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.02663308399860398,
+            "elapsed_seconds": 0.6652881730005902,
+            "utf8_bytes_per_second": 458.4479513958374,
+            "native_perf": {
+              "t_start_ms": 20943376.211,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 120,
+              "n_eval": 2,
+              "n_drafted": 39,
+              "n_accepted": 23,
+              "n_verify": 40,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1278242816,
+              "gpu_process_bytes": 4022337536
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.025297249001596356,
+            "elapsed_seconds": 0.6673258980008541,
+            "utf8_bytes_per_second": 493.0124860815441,
+            "native_perf": {
+              "t_start_ms": 20944063.129,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 142,
+              "n_eval": 2,
+              "n_drafted": 40,
+              "n_accepted": 22,
+              "n_verify": 41,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1278259200,
+              "gpu_process_bytes": 4022337536
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02385028299977421,
+            "elapsed_seconds": 0.6326865399969392,
+            "utf8_bytes_per_second": 423.5904876391025,
+            "native_perf": {
+              "t_start_ms": 20944752.613,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 113,
+              "n_eval": 2,
+              "n_drafted": 36,
+              "n_accepted": 26,
+              "n_verify": 37,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1278259200,
+              "gpu_process_bytes": 4022337536
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.026869593999435892,
+            "elapsed_seconds": 0.6713493899987952,
+            "utf8_bytes_per_second": 454.30889570115994,
+            "native_perf": {
+              "t_start_ms": 20945411.263,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 120,
+              "n_eval": 2,
+              "n_drafted": 39,
+              "n_accepted": 23,
+              "n_verify": 40,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1278259200,
+              "gpu_process_bytes": 4022337536
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.026661284999136114,
+            "elapsed_seconds": 0.6896724319994973,
+            "utf8_bytes_per_second": 477.03806145500647,
+            "native_perf": {
+              "t_start_ms": 20946107.361,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 142,
+              "n_eval": 2,
+              "n_drafted": 40,
+              "n_accepted": 22,
+              "n_verify": 41,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1285169152,
+              "gpu_process_bytes": 4024434688
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02377649200207088,
+            "elapsed_seconds": 0.6296816230023978,
+            "utf8_bytes_per_second": 425.6119127665561,
+            "native_perf": {
+              "t_start_ms": 20946821.89,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 113,
+              "n_eval": 2,
+              "n_drafted": 36,
+              "n_accepted": 26,
+              "n_verify": 37,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1285169152,
+              "gpu_process_bytes": 4024434688
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.028411645998858148,
+            "elapsed_seconds": 0.6865931850006746,
+            "utf8_bytes_per_second": 444.22229445767124,
+            "native_perf": {
+              "t_start_ms": 20947478.487,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 120,
+              "n_eval": 2,
+              "n_drafted": 39,
+              "n_accepted": 23,
+              "n_verify": 40,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1285173248,
+              "gpu_process_bytes": 4024434688
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.026000909001595573,
+            "elapsed_seconds": 0.6728435400000308,
+            "utf8_bytes_per_second": 488.9695455796231,
+            "native_perf": {
+              "t_start_ms": 20948189.328,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 142,
+              "n_eval": 2,
+              "n_drafted": 40,
+              "n_accepted": 22,
+              "n_verify": 41,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1282932736,
+              "gpu_process_bytes": 4026531840
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.024896606999391224,
+            "elapsed_seconds": 0.6458431389983161,
+            "utf8_bytes_per_second": 414.96144159038397,
+            "native_perf": {
+              "t_start_ms": 20948887.132,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 113,
+              "n_eval": 2,
+              "n_drafted": 36,
+              "n_accepted": 26,
+              "n_verify": 37,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1282932736,
+              "gpu_process_bytes": 4026531840
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.024498351998772705,
+            "elapsed_seconds": 0.6858466470002895,
+            "utf8_bytes_per_second": 444.70582649049715,
+            "native_perf": {
+              "t_start_ms": 20949557.564,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 120,
+              "n_eval": 2,
+              "n_drafted": 39,
+              "n_accepted": 23,
+              "n_verify": 40,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1282936832,
+              "gpu_process_bytes": 4026531840
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.025321763001556974,
+            "elapsed_seconds": 0.6793592409994744,
+            "utf8_bytes_per_second": 484.279862765942,
+            "native_perf": {
+              "t_start_ms": 20950264.841000002,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 142,
+              "n_eval": 2,
+              "n_drafted": 40,
+              "n_accepted": 22,
+              "n_verify": 41,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1285042176,
+              "gpu_process_bytes": 4026531840
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02674238499821513,
+            "elapsed_seconds": 0.6466854649988818,
+            "utf8_bytes_per_second": 414.4209426455308,
+            "native_perf": {
+              "t_start_ms": 20950970.534,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 113,
+              "n_eval": 2,
+              "n_drafted": 36,
+              "n_accepted": 26,
+              "n_verify": 37,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1285042176,
+              "gpu_process_bytes": 4026531840
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.026782723998621805,
+            "elapsed_seconds": 0.6784984439982509,
+            "utf8_bytes_per_second": 449.5220330981131,
+            "native_perf": {
+              "t_start_ms": 20951642.667,
+              "t_load_ms": 1.58,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 120,
+              "n_eval": 2,
+              "n_drafted": 39,
+              "n_accepted": 23,
+              "n_verify": 40,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1285042176,
+              "gpu_process_bytes": 4026531840
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "draft_max": 2,
+      "greedy_matches_ordinary": true,
+      "summaries": [
+        {
+          "turn": 1,
+          "p50_first_text_seconds": 0.026723799001047155,
+          "p95_first_text_seconds": 0.027590031197905773,
+          "median_elapsed_seconds": 0.6963765740001691,
+          "median_utf8_bytes_per_second": 472.44553059867883
+        },
+        {
+          "turn": 2,
+          "p50_first_text_seconds": 0.025576174000889296,
+          "p95_first_text_seconds": 0.026461357000516727,
+          "median_elapsed_seconds": 0.6153900839999551,
+          "median_utf8_bytes_per_second": 435.49612996367284
+        },
+        {
+          "turn": 3,
+          "p50_first_text_seconds": 0.02560106800228823,
+          "p95_first_text_seconds": 0.026083487400319426,
+          "median_elapsed_seconds": 0.6933894190005958,
+          "median_utf8_bytes_per_second": 439.86826398303884
+        }
+      ],
+      "warmup_runs": [
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.058451919998333324,
+            "elapsed_seconds": 0.7361674709973158,
+            "utf8_bytes_per_second": 446.90917890502607,
+            "native_perf": {
+              "t_start_ms": 20953478.558000002,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 164,
+              "n_eval": 2,
+              "n_drafted": 68,
+              "n_accepted": 28,
+              "n_verify": 35,
+              "n_mtp_graph_switches": 1,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1293000704,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.025244508000469068,
+            "elapsed_seconds": 0.6026442900001712,
+            "utf8_bytes_per_second": 444.7067771934318,
+            "native_perf": {
+              "t_start_ms": 20954240.541,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 122,
+              "n_eval": 2,
+              "n_drafted": 54,
+              "n_accepted": 35,
+              "n_verify": 28,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1293004800,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.025222577998647466,
+            "elapsed_seconds": 0.6857137979968684,
+            "utf8_bytes_per_second": 444.7919830269959,
+            "native_perf": {
+              "t_start_ms": 20954868.437,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 146,
+              "n_eval": 2,
+              "n_drafted": 69,
+              "n_accepted": 27,
+              "n_verify": 36,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1293008896,
+              "gpu_process_bytes": 4028628992
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.02622386000075494,
+            "elapsed_seconds": 0.6996001650004473,
+            "utf8_bytes_per_second": 470.26861407299646,
+            "native_perf": {
+              "t_start_ms": 20955578.618,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 164,
+              "n_eval": 2,
+              "n_drafted": 68,
+              "n_accepted": 28,
+              "n_verify": 35,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1293008896,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.0239566210002522,
+            "elapsed_seconds": 0.6108598620012344,
+            "utf8_bytes_per_second": 438.7258300488213,
+            "native_perf": {
+              "t_start_ms": 20956301.621,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 122,
+              "n_eval": 2,
+              "n_drafted": 54,
+              "n_accepted": 35,
+              "n_verify": 28,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1293008896,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.026355808000516845,
+            "elapsed_seconds": 0.6968708550011797,
+            "utf8_bytes_per_second": 437.67076469209445,
+            "native_perf": {
+              "t_start_ms": 20956935.455000002,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 146,
+              "n_eval": 2,
+              "n_drafted": 69,
+              "n_accepted": 27,
+              "n_verify": 36,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1293008896,
+              "gpu_process_bytes": 4028628992
+            }
+          }
+        ]
+      ],
+      "runs": [
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.026757579998957226,
+            "elapsed_seconds": 0.705629718999262,
+            "utf8_bytes_per_second": 466.25020338796713,
+            "native_perf": {
+              "t_start_ms": 20957657.641,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 164,
+              "n_eval": 2,
+              "n_drafted": 68,
+              "n_accepted": 28,
+              "n_verify": 35,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1298849792,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.023767107999447035,
+            "elapsed_seconds": 0.6018383110022114,
+            "utf8_bytes_per_second": 445.30232639014446,
+            "native_perf": {
+              "t_start_ms": 20958387.573,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 122,
+              "n_eval": 2,
+              "n_drafted": 54,
+              "n_accepted": 35,
+              "n_verify": 28,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1298849792,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.024823758998536505,
+            "elapsed_seconds": 0.7455920280008286,
+            "utf8_bytes_per_second": 409.0708974153101,
+            "native_perf": {
+              "t_start_ms": 20959014.740000002,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 146,
+              "n_eval": 2,
+              "n_drafted": 69,
+              "n_accepted": 27,
+              "n_verify": 36,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1298849792,
+              "gpu_process_bytes": 4028628992
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.02779814399764291,
+            "elapsed_seconds": 0.7307052239993936,
+            "utf8_bytes_per_second": 450.2499629047034,
+            "native_perf": {
+              "t_start_ms": 20959786.121,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 164,
+              "n_eval": 2,
+              "n_drafted": 68,
+              "n_accepted": 28,
+              "n_verify": 35,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1296621568,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02650189300038619,
+            "elapsed_seconds": 0.6379832290003833,
+            "utf8_bytes_per_second": 420.0737383330793,
+            "native_perf": {
+              "t_start_ms": 20960542.907,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 122,
+              "n_eval": 2,
+              "n_drafted": 54,
+              "n_accepted": 35,
+              "n_verify": 28,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1296621568,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.02560106800228823,
+            "elapsed_seconds": 0.7126098990011087,
+            "utf8_bytes_per_second": 428.00415827443544,
+            "native_perf": {
+              "t_start_ms": 20961203.878,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 146,
+              "n_eval": 2,
+              "n_drafted": 69,
+              "n_accepted": 27,
+              "n_verify": 36,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1296621568,
+              "gpu_process_bytes": 4028628992
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.025677007000922458,
+            "elapsed_seconds": 0.6928653080030927,
+            "utf8_bytes_per_second": 474.83976495837413,
+            "native_perf": {
+              "t_start_ms": 20961938.401,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 164,
+              "n_eval": 2,
+              "n_drafted": 68,
+              "n_accepted": 28,
+              "n_verify": 35,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1304711168,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.025092316001973813,
+            "elapsed_seconds": 0.6387816640017263,
+            "utf8_bytes_per_second": 419.54867383180823,
+            "native_perf": {
+              "t_start_ms": 20962656.114,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 122,
+              "n_eval": 2,
+              "n_drafted": 54,
+              "n_accepted": 35,
+              "n_verify": 28,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1304711168,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.025623437002650462,
+            "elapsed_seconds": 0.6933894190005958,
+            "utf8_bytes_per_second": 439.86826398303884,
+            "native_perf": {
+              "t_start_ms": 20963317.875,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 146,
+              "n_eval": 2,
+              "n_drafted": 69,
+              "n_accepted": 27,
+              "n_verify": 36,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1304711168,
+              "gpu_process_bytes": 4028628992
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.02535988299860037,
+            "elapsed_seconds": 0.6830697539990069,
+            "utf8_bytes_per_second": 481.6491991833653,
+            "native_perf": {
+              "t_start_ms": 20964033.093000002,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 164,
+              "n_eval": 2,
+              "n_drafted": 68,
+              "n_accepted": 28,
+              "n_verify": 35,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1308155904,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.02629921300103888,
+            "elapsed_seconds": 0.6153900839999551,
+            "utf8_bytes_per_second": 435.49612996367284,
+            "native_perf": {
+              "t_start_ms": 20964738.356,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 122,
+              "n_eval": 2,
+              "n_drafted": 54,
+              "n_accepted": 35,
+              "n_verify": 28,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1308160000,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.02541936299894587,
+            "elapsed_seconds": 0.684603910001897,
+            "utf8_bytes_per_second": 445.51308507594536,
+            "native_perf": {
+              "t_start_ms": 20965377.015,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 146,
+              "n_eval": 2,
+              "n_drafted": 69,
+              "n_accepted": 27,
+              "n_verify": 36,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1308164096,
+              "gpu_process_bytes": 4028628992
+            }
+          }
+        ],
+        [
+          {
+            "turn": 1,
+            "prompt_tokens": 62,
+            "prompt_sha256": "91fd3d60312da340e7a2d0db501fe3f917127ba1214bb80a880b65169aaece89",
+            "cached_tokens_before": 0,
+            "matching_prefix_tokens": 0,
+            "cached_tokens_after": 126,
+            "response": "<think>\n\n</think>\n\nA local language model requires **RAM** (system memory) for the operating system, file systems, and active processes to function. It also uses **GPU VRAM** (video memory) specifically because modern large models are too massive to fit entirely into standard RAM without severe performance degradation.\n\nHere is",
+            "first_text_seconds": 0.026723799001047155,
+            "elapsed_seconds": 0.6963765740001691,
+            "utf8_bytes_per_second": 472.44553059867883,
+            "native_perf": {
+              "t_start_ms": 20966086.514000002,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 164,
+              "n_eval": 2,
+              "n_drafted": 68,
+              "n_accepted": 28,
+              "n_verify": 35,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 62
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1311608832,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 167,
+            "prompt_sha256": "c51dc5c8e6e1541eedb7eb70809e8a1fe39c5333205f29d74a94a21a01d63038",
+            "cached_tokens_before": 126,
+            "matching_prefix_tokens": 126,
+            "cached_tokens_after": 231,
+            "response": "<think>\n\n</think>\n\nQuantization reduces the precision of model weights (e.g., from 16-bit floating point to 4-bit integers), which directly shrinks the model's size and lowers memory demands.\n\n**Concrete Example: A 7B Parameter Model**\n\n*   **Without Quantization (FP1",
+            "first_text_seconds": 0.025576174000889296,
+            "elapsed_seconds": 0.610336523001024,
+            "utf8_bytes_per_second": 439.10201978777917,
+            "native_perf": {
+              "t_start_ms": 20966807.754,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 122,
+              "n_eval": 2,
+              "n_drafted": 54,
+              "n_accepted": 35,
+              "n_verify": 28,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 41
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1311608832,
+              "gpu_process_bytes": 4028628992
+            }
+          },
+          {
+            "turn": 3,
+            "prompt_tokens": 273,
+            "prompt_sha256": "7b268f03f7efe2cd4c355c8614c623845f54f9e0a446951f6c1d703ccb4012d0",
+            "cached_tokens_before": 231,
+            "matching_prefix_tokens": 231,
+            "cached_tokens_after": 337,
+            "response": "<think>\n\n</think>\n\nIn the quantized 7B model example, as the conversation lengthens, the **context window** (the list of tokens being processed) grows. This requires more RAM to store the intermediate states for every token in the prompt and response history. While the base model size remains fixed at ~3",
+            "first_text_seconds": 0.02619849999973667,
+            "elapsed_seconds": 0.6915196039990406,
+            "utf8_bytes_per_second": 441.0576334151521,
+            "native_perf": {
+              "t_start_ms": 20967440.721,
+              "t_load_ms": 1.566,
+              "t_p_eval_ms": 0.0,
+              "t_eval_ms": 0.0,
+              "n_p_eval": 146,
+              "n_eval": 2,
+              "n_drafted": 69,
+              "n_accepted": 27,
+              "n_verify": 36,
+              "n_mtp_graph_switches": 0,
+              "n_mtp_prefill": 42
+            },
+            "memory_after_turn": {
+              "rss_bytes": 1311612928,
+              "gpu_process_bytes": 4028628992
+            }
+          }
+        ]
+      ]
+    }
+  ]
+}

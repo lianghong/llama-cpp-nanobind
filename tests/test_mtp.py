@@ -15,7 +15,6 @@ from llama_cpp import (
     Llama,
     LlamaConfig,
     ModelLoadError,
-    SamplingParams,
 )
 from llama_cpp.llama import ValidationError
 
@@ -93,12 +92,8 @@ def test_mtp_on_non_mtp_model_raises():
 
 
 @requires_mtp_model
-def test_mtp_loads_on_mtp_model_and_generates():
-    """Positive path: an MTP-capable Qwen3.6-MoE checkpoint must load with
-    `ctx_type=MTP` and produce non-empty output. The model ships
-    `nextn_predict_layers=1` and `blk.*.nextn.*` tensors, which libllama
-    requires for the MTP graph.
-    """
+def test_mtp_context_rejects_token_only_generation():
+    """MTP graphs require carried target state; token-only decode must not abort."""
     cfg = LlamaConfig(
         model_path=MTP_MODEL_PATH,
         n_ctx=512,
@@ -109,13 +104,19 @@ def test_mtp_loads_on_mtp_model_and_generates():
     llm = Llama(MTP_MODEL_PATH, config=cfg)
     try:
         assert llm.config.ctx_type == LLAMA_CONTEXT_TYPE_MTP
-        out = llm.generate(
-            "Hello,",
-            max_tokens=8,
-            sampling=SamplingParams(seed=0, temperature=0.0),
-        )
-        assert isinstance(out, str)
-        assert len(out) > 0
+        with pytest.raises(ValidationError, match="target hidden state"):
+            llm.generate("Hello,", max_tokens=8)
+        with pytest.raises(ValidationError, match="target hidden state"):
+            list(llm.generate_stream("Hello,", max_tokens=8))
+        tokens = llm.tokenize("Hello", add_special=False)
+        for decode in (
+            lambda: llm.ctx.decode(tokens),
+            lambda: llm.ctx.decode_one(tokens[0]),
+            lambda: llm.ctx.decode_multi(tokens),
+        ):
+            with pytest.raises(ValueError, match="target hidden state"):
+                decode()
+        assert llm.kv_cache_seq_pos_max() == -1
     finally:
         llm.close()
 

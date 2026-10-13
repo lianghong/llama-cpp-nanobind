@@ -22,10 +22,15 @@ with Llama("model.gguf") as llm:
 # Resources automatically cleaned up
 ```
 
+Chat completion tokenizes its formatted template with special-token parsing
+enabled, for both eager and streaming responses. Registered role delimiters
+therefore use their vocabulary IDs. `LlamaConfig.parse_special` continues to
+control raw prompts.
+
 **Methods**
 
 - `generate(prompt, max_tokens=128, sampling=None, stop=None, echo=False, logprobs=None, stream=False, seed=None, reset_kv_cache=True, cache_prompt=True, speculative=False, n_draft_max=None)` → `str | Iterator[str] | dict`
-- `generate_stream(prompt, max_tokens=128, sampling=None, stop=None, seed=None, reset_kv_cache=True, cache_prompt=True, speculative=False, n_draft_max=None)` → `Iterator[str]` – True streaming (yields as tokens decode)
+- `generate_stream(prompt, max_tokens=128, sampling=None, stop=None, seed=None, parse_special=None, reset_kv_cache=True, cache_prompt=True, speculative=False, n_draft_max=None)` → `Iterator[str]` – True streaming (yields as tokens decode). `parse_special=None` uses the configured raw-prompt tokenizer setting.
 - `generate_async(...)` → Async version of generate
 - `create_chat_completion(messages, max_tokens=128, stream=False, stop=None, response_format=None, grammar=None, tools=None, tool_choice=None, reset_kv_cache=True, cache_prompt=True, speculative=False, n_draft_max=None, **kwargs)` → Chat completion dict or stream
 - `create_chat_completion_async(...)` → Async version
@@ -47,7 +52,17 @@ with Llama("model.gguf") as llm:
 - `save_state(path)`, `load_state(path)` → State persistence
 - `get_state()`, `set_state(data)` → State as bytes
 - `load_lora(path, scale=1.0)`, `remove_lora(adapter)`, `clear_lora()` → LoRA management
-- `perf()`, `perf_reset()` → Performance metrics
+- `perf()`, `perf_reset()` → Performance metrics, including cumulative
+  `n_drafted`, `n_accepted`, `n_verify`, and `n_mtp_graph_switches` for MTP
+  decoding. The last counts graph-mode transitions, not graph reservations.
+  `perf_reset()` resets these; clearing KV preserves them. Successful MTP
+  requests retain graph mode across KV clears; ordinary decoding restores it.
+  `n_mtp_prefill` counts target prompt tokens forwarded to the speculative
+  driver, excluding verification and final-token catch-up. It also resets with
+  `perf_reset()` and survives KV clearing. The final prefill chunk follows
+  initial target sampling and streaming handling. A first-token stop or
+  cancellation can discard it; a normal token-budget exit still processes it.
+  See [upstream validation and benchmarks](UPSTREAM_VALIDATION.md).
 - `n_head()` → `int` – Number of attention heads
 - `has_encoder()`, `has_decoder()` → `bool` – Architecture type
 - `is_recurrent()`, `is_hybrid()` → `bool` – Architecture variant (e.g., Qwen3.5 hybrid)
@@ -231,10 +246,12 @@ if __name__ == "__main__":
 | `n_batch` | 2048 | Logical batch (must be ≥ 1) |
 | `n_ubatch` | 512 | Physical micro-batch |
 | `n_rs_seq` | 2 | Target recurrent rollback snapshots; must be ≥ `n_draft_max` for speculative hybrid/recurrent models, with `n_ubatch > n_rs_seq + 1` |
+| `moe_cache_size` | 0 | GPU expert cache bytes; see "Host expert cache" below. |
 | `n_seq_max` | 1 | Max parallel sequences (1 = single sequence) |
 | `n_threads` | `os.cpu_count()` | Threads for generation |
 | `n_threads_batch` | `n_threads` | Threads for prompt/batch |
 | `n_gpu_layers` | -1 | GPU layers (-1 = all) |
+| `cpu_moe` | False | Store MoE expert tensors on CPU; see below. |
 | `main_gpu` | 0 | Primary GPU index |
 | `split_mode` | 0 | `llama_split_mode` enum |
 | `use_mmap` | True | Memory-map model |
@@ -242,12 +259,12 @@ if __name__ == "__main__":
 | `load_mtp` | True | Load embedded MTP tensors; False saves their weight memory and disables speculative MTP |
 | `offload_kqv` | True | Offload K/Q/V to GPU |
 | `flash_attn` | 1 | Flash-attention mode (required for quantized V cache) |
-| `ctx_type` | `LLAMA_CONTEXT_TYPE_DEFAULT` (0) | Context graph variant. `LLAMA_CONTEXT_TYPE_MTP` (1) selects the MTP graph as the **user-facing** context (used by `tests/test_mtp.py`); for speculative decoding, leave at default — the MTP graph is constructed internally as the draft context. See "MTP context type" below |
+| `ctx_type` | `LLAMA_CONTEXT_TYPE_DEFAULT` (0) | Context graph variant. Standalone `LLAMA_CONTEXT_TYPE_MTP` (1) rejects token-only decode because it requires target hidden states. Leave the default for generation; `speculative=True` manages the draft graph internally. |
 | `cache_type_k` | `GGML_TYPE_F16` (1) | ggml_type for K cache — see "Quantized KV cache" below |
 | `cache_type_v` | `GGML_TYPE_F16` (1) | ggml_type for V cache — see "Quantized KV cache" below |
 | `embeddings` | False | Enable embeddings (required for `embed()` and `create_embedding()`) |
 | `add_bos` | None | Add BOS during tokenization (None = auto-detect from model) |
-| `parse_special` | False | Parse special tokens |
+| `parse_special` | False | Parse special tokens in raw prompts |
 | `chat_format` | None | Chat template name |
 | `verbose` | True | Control logging |
 | `seed` | -1 | RNG seed (-1 = random) |
@@ -257,6 +274,26 @@ Raises `ValidationError` if:
 - `ctx_type` is not `LLAMA_CONTEXT_TYPE_DEFAULT` (0) or `LLAMA_CONTEXT_TYPE_MTP` (1)
 - `cache_type_k` / `cache_type_v` is not one of the supported ggml_types listed below
 - `cache_type_v` is quantized (not F32/F16/BF16) and `flash_attn == 0` — quantized V without flash attention produces NaN/garbage output in llama.cpp
+
+#### Host expert cache
+
+For MoE models exceeding GPU weight capacity, `cpu_moe=True` keeps expert
+tensors in CPU memory. The experimental `moe_cache_size` option allocates
+GPU space for recently used experts:
+
+```python
+config = LlamaConfig(
+    model_path="model-moe.gguf",
+    cpu_moe=True,
+    moe_cache_size=512 * 1024 * 1024,  # 512 MiB
+)
+```
+
+The upstream cache requires a GPU backend, host expert tensors assigned to
+GPU layers, and space for at least one token's active experts. It rejects
+dense models, insufficient budgets, and tensor-parallel split mode.
+Construction failures raise `ModelLoadError`. A zero budget disables the
+cache; internal MTP draft contexts always use zero.
 
 #### Quantized KV cache
 
@@ -300,21 +337,28 @@ Constants exported from `llama_cpp` (mirror `llama.h`'s `enum llama_context_type
 | `LLAMA_CONTEXT_TYPE_DEFAULT` | 0 | Default graph (current behavior) |
 | `LLAMA_CONTEXT_TYPE_MTP` | 1 | Multi-Token Prediction graph variant |
 
-MTP requires a checkpoint that ships MTP layers — currently Qwen3.5 / Qwen3.5-MoE / Qwen3.6-MoE MTP variants (metadata `*.nextn_predict_layers > 0`, plus `blk.*.nextn.*` tensors). Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError` (`"context type MTP requested but model doesn't contain MTP layers"`). The generation API is otherwise unchanged — MTP is a graph-construction-time decision, not a runtime sampler.
+MTP requires a checkpoint that ships MTP layers — currently Qwen3.5 / Qwen3.5-MoE / Qwen3.6-MoE MTP variants (metadata `*.nextn_predict_layers > 0`, plus `blk.*.nextn.*` tensors). Loading a non-MTP model with `ctx_type=LLAMA_CONTEXT_TYPE_MTP` raises `ModelLoadError`.
 
-**For speculative decoding, leave `ctx_type` at the default.** The speculative path constructs the MTP graph internally as the *draft* context; setting `ctx_type=LLAMA_CONTEXT_TYPE_MTP` on the user-facing context and passing `speculative=True` is a precondition error (`_validate_speculative` raises `ValidationError`). The user-facing `LLAMA_CONTEXT_TYPE_MTP` setting exists for direct MTP-graph generation (no draft-verify loop).
+**For generation, leave `ctx_type` at the default.** Current upstream MTP
+graphs require target hidden-state inputs for every decode. A standalone MTP
+context can be constructed for inspection, but token-only generation raises
+`ValidationError`, and native `decode`, `decode_one`, and `decode_multi`
+raise `ValueError` before calling upstream. The supported generation path
+constructs an internal MTP draft context and supplies the hidden states
+through the upstream speculative driver:
 
 ```python
-from llama_cpp import Llama, LlamaConfig, LLAMA_CONTEXT_TYPE_MTP
+from llama_cpp import Llama, LlamaConfig
 
 llm = Llama(
     "models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
     config=LlamaConfig(
         model_path="models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
         n_ctx=4096,
-        ctx_type=LLAMA_CONTEXT_TYPE_MTP,
     ),
 )
+text = llm.generate("Hello", max_tokens=32, speculative=True)
+llm.close()
 ```
 
 ### Draft-MTP speculative decoding
@@ -333,13 +377,16 @@ Callers do **not** set `ctx_type=LLAMA_CONTEXT_TYPE_MTP` on the
 user-facing context — the MTP graph is used internally as the draft
 context only.
 
-The driver retains hidden-state carryover for unchanged-prefix continuations.
-Pass the full prompt with `cache_prompt=True` when continuing; prefix edits,
+The driver retains hidden-state carryover across natural EOG and matching-prefix
+continuations. Pass the full prompt with `cache_prompt=True` when continuing.
+Suffix edits within the latest verify batch can reuse target/draft memory,
+hidden rows, and logits when both memories support rollback. Unsupported edits,
 state loads, and draft-width changes rebuild the draft state. Normal exits
-leave the final returned token decoded and the target logits current. Stops
+leave the returned prefix decoded and its target logits current. Custom stops
 and cancellation can clear both the cache and its mirror; the next call
-re-primes. Streaming withholds possible multi-token stop prefixes. Separate
-assistant/draft model files are not supported by this interface.
+re-primes. Streaming withholds possible multi-token stop prefixes. See
+[cache reuse measurements](MTP_CACHE-2026-10-13.md). Separate assistant/draft
+model files are not supported by this interface.
 
 Kwargs on the generation entry points:
 
@@ -406,8 +453,12 @@ re-primes automatically.
 
 **Benchmarks:** run `examples/bench_speculative.py --model /path/to/MTP.gguf`
 for warmed end-to-end throughput, exact generated-token counts, and greedy
-agreement. See [current validation notes](CHANGELOG-2026-09-15.md) for local
-measurements. Historical RTX 4090 Qwen3.6 measurements in older changelogs
+agreement. Use `rtk proxy python -m tools.benchmark_mtp_sweep` for longer prompts,
+draft widths 1–4, three-turn public streaming chat, acceptance, actual prefix
+reuse, and sampled peak GPU process memory on Linux/NVIDIA. See
+[draft-width tuning](MTP_TUNING-2026-10-13.md) for measured tradeoffs and exact
+greedy-output limits. The default remains 2. Historical RTX 4090 Qwen3.6
+measurements in older changelogs
 are not performance guarantees for current libraries or other checkpoints.
 
 ### SamplingParams

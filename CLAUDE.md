@@ -4,7 +4,9 @@ Guidance for Claude Code working in this repo.
 
 ## Project Overview
 
-High-performance nanobind bindings for llama.cpp, packaged as a wheel-ready Python library with CUDA on by default. API mirrors `llama-cpp-python` where it doesn't conflict with upstream llama.cpp.
+The user-facing app is a simple terminal chat tool (`llama-chat`), backed by
+wheel-ready nanobind bindings for llama.cpp. The Python interface mirrors
+`llama-cpp-python` where it does not conflict with upstream llama.cpp.
 
 ## Commands
 
@@ -63,6 +65,7 @@ Strict PEP 758 + PEP 765. All code compiled with `-We`. Audit: `docs/PEP758_PEP7
 ```
 src/bindings/llama_cpp.cpp     single-file nanobind module (C++ → Python)
 src/llama_cpp/llama.py         Llama class — low-level inference API
+src/llama_cpp/cli.py           terminal chat app and conversation lifecycle
 src/llama_cpp/unified.py       UnifiedLLM — multi-model auto-detect
 models/                        GGUF files (not committed)
 ```
@@ -71,7 +74,20 @@ models/                        GGUF files (not committed)
 
 ### Key design patterns
 
-**Upstream compatibility** — Build against matching llama.cpp headers and shared libraries. Current integration is validated with b10972 (`7cf1c54a9`, 2026-09-14); CMake checks the required interfaces. Rebuild the extension whenever upstream is upgraded. Python `use_mmap`/`use_mlock` are translated to upstream `load_mode`.
+**Terminal chat** — Read `docs/CLI.md` when changing the app's input modes,
+commands, or defaults. Keep one model loaded per conversation and pass complete
+history with prefix caching. Commit completed replies; close an interrupted
+stream before clearing native state, then keep only completed history.
+`tests/test_cli.py` covers command behavior without a model;
+`tests/test_cli_models.py` exercises cache reuse and interruption with MTP.
+
+**Upstream compatibility** — Build against matching llama.cpp headers and
+shared libraries. Current integration is validated with b11552 (`23b0202a1`,
+2026-10-10 UTC). CMake rechecks `common_batch` / `llama_process` and the required
+interfaces on every configure. Install common/staging headers as described in
+`docs/SYSTEM_LIBRARIES.md`; rebuild after upgrading upstream and regenerate old
+serialized states. Python `use_mmap`/`use_mlock` map to upstream `load_mode`.
+For upstream migration work, read `docs/UPSTREAM_RESEARCH-2026-10-13.md`.
 
 **State management** — `cur_pos_` tracks KV position; updated by `load_state`, `set_state_data`, and `kv_cache_seq_*` ops. `set_state_data` rolls back `cur_pos_` on load failure. State save/load uses `nb::bytes` buffer protocol (single memcpy, no per-element conversion).
 
@@ -79,15 +95,47 @@ models/                        GGUF files (not committed)
 
 **Streaming** — `generate_stream()` is true incremental (background thread + queue, GIL released during decode/sample, re-acquired only for the Python callback). `generate(..., stream=True)` is buffered (simpler, higher latency). All paths share `_token_to_text_incremental()` for UTF-8 decode across token boundaries (emoji, CJK).
 
+**Chat tokenization** — `_prepare_chat` parses registered special tokens in
+formatted templates. The streamed chat path also passes `parse_special=True`
+to `generate_stream` when it re-tokenizes. Raw streams default to
+`LlamaConfig.parse_special`. Benchmark helpers must tokenize formatted chat
+with the same explicit setting.
+
 **Stop sequences** — Multi-token via `generate_tokens_multi_stop()`. Tokens buffered up to `max_stop_len` before yielding so partial stop-prefix tokens never reach the consumer; remaining buffered tokens always flushed at end.
 
 **Memory safety** — Destructors check `if (ptr_)` then null. `Model::close()`, `Context::close()`, `Context::reset()` hold `g_resource_mutex` to serialize frees. Logging holds `g_log_mutex` (concurrent `llama_log_set` calls). `g_model_count` atomic ref-counts the backend. Nanobind `keep_alive<1, 2>()` ties Context/SamplerChain/LoraAdapter to Model. No `__del__` (atexit + RAII instead). Context freed before Model.
 
 **LlamaPool** — `pool_size` independent `Llama` instances (Llama is not thread-safe), `asyncio.Queue` checkout. `close()` is immediate; `close_graceful(timeout=30)` waits for in-flight returns. Records the binding event loop on first use; cross-loop reuse raises. VRAM ≈ `model_size × pool_size`. Optional `warmup=True` runs 3-token dummy inference per instance (compiles CUDA kernels, removes cold-start variance).
 
-**Prompt-prefix KV reuse (`cache_prompt=True`, default)** — When paired with `reset_kv_cache=False`, `_apply_prefix_reuse` computes the LCP between cached and new prompts, calls `kv_cache_seq_rm(0, n_match, -1)`, and the C++ generator decodes only `priming[n_match:]` via `skip_decode_prefix`. Mirror invariant: `len(_cached_prompt_tokens) == kv_pos_max + 1`. Hybrid models (Qwen 3.5, Granite 4 hybrid, some flash-attn configs) report `memory_can_shift()=False`; for them `seq_rm` returns `False` and we fall back to `kv_cache_clear` + full re-prime — correctness preserved, speedup lost.
+**Prompt-prefix KV reuse (`cache_prompt=True`, default)** — When paired with `reset_kv_cache=False`, `_apply_prefix_reuse` computes the LCP between cached and new prompts, calls `kv_cache_seq_rm(0, n_match, -1)`, and the C++ generator decodes only `priming[n_match:]` via `skip_decode_prefix`. Mirror invariant: `len(_cached_prompt_tokens) == kv_pos_max + 1`. A failed memory trim clears KV and re-primes. Hybrid/recurrent rollback can succeed within retained history even when `memory_can_shift()=False`; check the trim result.
 
-**MTP (Multi-Token Prediction)** — Keep the user-facing context on `LLAMA_CONTEXT_TYPE_DEFAULT`; `speculative=True` uses a second MTP context against the same model. `LlamaConfig.load_mtp=True` preserves embedded MTP weights (upstream defaults to skipping them). Gate on both that loading flag and `llama_model_n_layer_nextn`; the native layer count can remain positive when tensors were skipped. The target context needs `n_rs_seq >= n_draft_max` on hybrid/recurrent models; the draft uses attention KV and `n_rs_seq=0`. `Context` owns the `common_speculative` driver because it retains pending hidden rows across calls. Prefill each chunk on the target, then immediately call `common_speculative_process`; each chunk fits one target ubatch and both contexts' logical batch limits. Sample the first target token before drafting; `dp.pos0` is that sampled token's actual position. After verification, call `common_speculative_accept` to select the accepted hidden row, and trim rejected KV on both contexts. External KV/state mutations invalidate the driver, so the next speculative turn rebuilds from its complete prompt. Normal exits decode the final sampled token once: KV, mirror, target logits, and pending hidden row are aligned. Stop/cancel exits may clear KV and invalidate the mirror. Streaming holds potential stop prefixes until safe. See `docs/CHANGELOG-2026-09-15.md` for the current contract and `docs/UPSTREAM_RESEARCH-2026-09-15.md` for upstream evidence. Validate changes with live greedy differential tests and benchmark the actual checkpoint; throughput is model/hardware dependent.
+**MTP (Multi-Token Prediction)** — Keep the user-facing context on
+`LLAMA_CONTEXT_TYPE_DEFAULT`; `speculative=True` uses a second MTP context
+against the same model. `LlamaConfig.load_mtp=True` preserves embedded MTP
+weights. Gate on both that flag and `llama_model_n_layer_nextn`; the layer
+count can remain positive when tensors were skipped. The target needs
+`n_rs_seq >= n_draft_max` on hybrid/recurrent models; the draft uses attention
+KV and `n_rs_seq=0`. `Context` owns the `common_speculative` driver because it
+retains pending hidden rows across calls. Each prefill chunk fits one target
+ubatch and both contexts' logical batch limits. Process every chunk with
+`common_speculative_process` before another target decode overwrites its
+hidden rows. The final prefill chunk may wait until the first target-token
+callback, then must be processed before `common_speculative_begin`, drafting,
+or final-token decode. First-token custom stops/cancellation skip that deferred
+work and clear KV; genuine EOG completes it to retain the prompt. Streaming
+still holds potential stop prefixes until safe.
+`dp.pos0` is the sampled token's actual position. After verification, call
+`common_speculative_accept` to select the accepted hidden row, and trim rejected
+KV on both contexts. EOG stays outside returned output and accepted KV; retain
+the logits row that predicted it. A suffix trim within the latest all-logits
+verify batch can restore that batch's hidden/logits row after both memories
+accept rollback. An empty-tail trim retains the driver. Other external KV/state
+mutations invalidate it, so the next speculative turn rebuilds from its complete
+prompt. Normal exits align KV, mirror, target logits, and pending hidden row.
+Successful MTP requests retain graph mode; ordinary
+decode and abnormal MTP exits restore it. When changing prefill or callback
+ordering or retention, read `docs/MTP_CACHE-2026-10-13.md` and run live greedy
+differential, continuation, stop, and cancellation tests on the checkpoint.
 
 **On-device per-seq state** — `Context::save_seq_state_on_device(seq_id) -> nb::bytes` and `Context::load_seq_state_on_device(handle, dest_seq_id)` wrap `llama_state_seq_{get,set}_data_ext` with `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE`. The Python wrapper prefixes every handle with a 12-byte envelope (`b"LCNH"` magic + uint64 little-endian state-epoch) and validates it on load: any KV-clearing op (`reset()`, `kv_cache_clear()`, `set_state_data()`, `load_state()`, `embed()`, `_apply_prefix_reuse` LCP trim, re-saving any seq) bumps `Llama._state_epoch` via `_invalidate_prompt_cache`, so a stale handle raises `LlamaError` instead of letting llama.cpp's `ggml_abort` terminate the process. Garbage handles (missing magic) raise `LlamaError` too. The validation is conservative — re-saving seq 1 invalidates a still-valid seq 0 handle — which trades a niche multi-seq capability for safety on the single-stream default. Mirror-only drops (`cache_prompt=False` mid-session, where KV is unchanged) use `_drop_mirror_only` and don't bump the epoch. Treat handles as short-lived in-session references; for durable snapshots use `get_state()`.
 
@@ -99,7 +147,7 @@ models/                        GGUF files (not committed)
 2. Always release GIL for long ops: `nb::call_guard<nb::gil_scoped_release>()` or manual.
 3. When mutating KV / loading state, save old `cur_pos_` and roll back on failure.
 4. Reuse buffers (`single_batch_`) instead of per-call allocation.
-5. Use RAII for temp resources (e.g. `BatchGuard` around `llama_batch`).
+5. Use RAII for temporary resources (e.g. owned `common_batch` in MTP).
 6. Apply grammar before the sampler chain.
 7. Hold `g_resource_mutex` for resource frees; `g_log_mutex` for logging config.
 8. Validate token range before indexing logits (sampler can return `LLAMA_TOKEN_NULL` = -1).
@@ -135,7 +183,11 @@ Default: `./models/Qwen3.5-4B-Q4_K_M.gguf` (override via `LLAMA_TEST_MODEL`; upd
 
 ## Performance
 
-**Build (Release)**: `-O3 -march=native -mtune=native -flto=auto -funroll-loops -fno-plt`. `-ffast-math` is **off by default** (alters softmax/sampling numerics, sets FTZ/DAZ process-wide); opt in with `-DLLAMA_FAST_MATH=ON` or `--fast-math`. LTO if supported. Compiler: `gcc-15`/`g++-15` then `gcc`/`g++` on Linux, `clang`/`clang++` on macOS.
+**Build (Release)**: `-O3 -march=native -mtune=native -funroll-loops -fno-plt`,
+plus compiler-specific LTO only when CMake verifies support. `-ffast-math` is
+**off by default**; opt in with `-DLLAMA_FAST_MATH=ON` or `--fast-math`.
+Honor `CC` / `CXX` overrides; defaults prefer GCC 15 on Linux and Apple Clang
+on macOS.
 
 **Runtime**: GIL released during all C++ ops including streaming. Per-token batch allocation eliminated. Fast stop-sequence path. Session continuation via `reset_kv_cache=False`. Prompt-prefix reuse via `cache_prompt=True` (default). O(n_vocab) candidate vector allocated once per call, not per token. `nb::bytes` for state save/load (single memcpy). Validation overhead < 0.1% (O(1) on hot paths).
 
@@ -189,7 +241,10 @@ MALLOC_CHECK_=3 uv run pytest tests/test_double_free_scenarios.py -v
 12. **Streaming thread leak** — early termination during stuck C++ gen logs a warning; don't reuse the instance until the worker returns.
 13. **Quantized KV cache** — only F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL allowed. K-quants (Q4_K, …) rejected by `LlamaConfig`. Quantized V (anything besides F32/F16/BF16) requires `flash_attn=1` — `LlamaConfig` raises `ValidationError` otherwise.
 14. **`reset_kv_cache=False` semantics** — with default `cache_prompt=True`, divergent prompts trim KV to LCP, not append. For "stitch arbitrary prompts", pass `cache_prompt=False`.
-15. **MTP on non-MTP models** — `ctx_type=LLAMA_CONTEXT_TYPE_MTP` is rejected at context construction (raises `ModelLoadError`) for any model without `nextn_predict_layers > 0` metadata. There's no fallback — match the constant to the checkpoint.
+15. **MTP contexts** — Models without MTP layers reject construction with
+    `ModelLoadError`. Standalone MTP token-only decode requires target hidden
+    states and raises a recoverable exception. Use a default target context
+    with `speculative=True`; the common driver supplies draft hidden states.
 16. **Stale on-device state handle** — invalidated by `reset()` / `kv_cache_clear()` / `set_state_data()` / `load_state()` / `embed()` / LCP-trim / re-saving any seq. The Python wrapper validates the embedded epoch and raises `LlamaError` on stale or garbage-prefix handles, converting llama.cpp's `ggml_abort` into a recoverable Python exception. Use `get_state()` for durable snapshots.
 17. **Lazy grammar with no triggers** — `LlamaGrammar.lazy(...)` rejects empty `trigger_patterns` and `trigger_tokens` (would never activate). Eager grammars use the regular constructor and report `is_lazy is False`.
 

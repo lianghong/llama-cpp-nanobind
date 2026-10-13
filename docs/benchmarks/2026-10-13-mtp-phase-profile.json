@@ -1,0 +1,337 @@
+{
+  "scope": "Temporary synchronized native phase timers, one output token, draft width 2. Experimental keep-graphs guard; removed from production.",
+  "requests_per_prompt": 7,
+  "warmup": 2,
+  "phases": {
+    "before": {
+      "log_sha256": "30e27ce0477f04b4c30e8a9182a7b9f653b58c46988994d52aff951f712f99e0",
+      "workloads": [
+        {
+          "prompt_tokens": 64,
+          "warmup_requests": [
+            {
+              "driver": 0.083,
+              "flags": 0.033,
+              "target_prefill": 47.956,
+              "draft_prefill": 12.431,
+              "prefill_total": 61.511,
+              "begin_and_sample": 4.551
+            },
+            {
+              "driver": 0.078,
+              "flags": 0.01,
+              "target_prefill": 44.735,
+              "draft_prefill": 11.253,
+              "prefill_total": 57.07,
+              "begin_and_sample": 4.117
+            }
+          ],
+          "timed_requests": [
+            {
+              "driver": 0.071,
+              "flags": 0.01,
+              "target_prefill": 43.639,
+              "draft_prefill": 7.811,
+              "prefill_total": 51.664,
+              "begin_and_sample": 4.122
+            },
+            {
+              "driver": 0.072,
+              "flags": 0.01,
+              "target_prefill": 40.999,
+              "draft_prefill": 8.489,
+              "prefill_total": 49.8,
+              "begin_and_sample": 4.189
+            },
+            {
+              "driver": 0.073,
+              "flags": 0.01,
+              "target_prefill": 42.642,
+              "draft_prefill": 7.597,
+              "prefill_total": 50.453,
+              "begin_and_sample": 4.207
+            },
+            {
+              "driver": 0.079,
+              "flags": 0.01,
+              "target_prefill": 42.379,
+              "draft_prefill": 7.446,
+              "prefill_total": 50.039,
+              "begin_and_sample": 4.212
+            },
+            {
+              "driver": 0.073,
+              "flags": 0.01,
+              "target_prefill": 41.287,
+              "draft_prefill": 7.468,
+              "prefill_total": 48.969,
+              "begin_and_sample": 4.217
+            }
+          ],
+          "median_ms": {
+            "driver": 0.073,
+            "flags": 0.01,
+            "target_prefill": 42.379,
+            "draft_prefill": 7.597,
+            "prefill_total": 50.039,
+            "begin_and_sample": 4.207
+          }
+        },
+        {
+          "prompt_tokens": 256,
+          "warmup_requests": [
+            {
+              "driver": 0.076,
+              "flags": 0.01,
+              "target_prefill": 71.863,
+              "draft_prefill": 10.96,
+              "prefill_total": 83.051,
+              "begin_and_sample": 4.105
+            },
+            {
+              "driver": 0.086,
+              "flags": 0.01,
+              "target_prefill": 69.746,
+              "draft_prefill": 11.821,
+              "prefill_total": 81.786,
+              "begin_and_sample": 4.075
+            }
+          ],
+          "timed_requests": [
+            {
+              "driver": 0.084,
+              "flags": 0.01,
+              "target_prefill": 71.49,
+              "draft_prefill": 11.549,
+              "prefill_total": 83.258,
+              "begin_and_sample": 4.067
+            },
+            {
+              "driver": 0.086,
+              "flags": 0.01,
+              "target_prefill": 70.231,
+              "draft_prefill": 12.427,
+              "prefill_total": 82.877,
+              "begin_and_sample": 4.064
+            },
+            {
+              "driver": 0.085,
+              "flags": 0.01,
+              "target_prefill": 69.888,
+              "draft_prefill": 11.889,
+              "prefill_total": 81.995,
+              "begin_and_sample": 4.069
+            },
+            {
+              "driver": 0.087,
+              "flags": 0.009,
+              "target_prefill": 70.281,
+              "draft_prefill": 11.234,
+              "prefill_total": 81.752,
+              "begin_and_sample": 3.989
+            },
+            {
+              "driver": 0.086,
+              "flags": 0.01,
+              "target_prefill": 73.924,
+              "draft_prefill": 13.389,
+              "prefill_total": 87.587,
+              "begin_and_sample": 4.086
+            }
+          ],
+          "median_ms": {
+            "driver": 0.086,
+            "flags": 0.01,
+            "target_prefill": 70.281,
+            "draft_prefill": 11.889,
+            "prefill_total": 82.877,
+            "begin_and_sample": 4.067
+          }
+        }
+      ]
+    },
+    "keep_graphs_experiment": {
+      "log_sha256": "825c2a9b5df988d8b010e9086cd8fe85c02a7ff12423787b218ceda22531c07a",
+      "workloads": [
+        {
+          "prompt_tokens": 64,
+          "warmup_requests": [
+            {
+              "driver": 0.095,
+              "flags": 0.032,
+              "target_prefill": 49.994,
+              "draft_prefill": 12.876,
+              "prefill_total": 64.016,
+              "begin_and_sample": 4.212
+            },
+            {
+              "driver": 0.086,
+              "flags": 0.01,
+              "target_prefill": 18.946,
+              "draft_prefill": 10.707,
+              "prefill_total": 30.788,
+              "begin_and_sample": 4.08
+            }
+          ],
+          "timed_requests": [
+            {
+              "driver": 0.07,
+              "flags": 0.01,
+              "target_prefill": 19.507,
+              "draft_prefill": 8.355,
+              "prefill_total": 28.077,
+              "begin_and_sample": 4.075
+            },
+            {
+              "driver": 0.077,
+              "flags": 0.012,
+              "target_prefill": 19.527,
+              "draft_prefill": 7.459,
+              "prefill_total": 27.95,
+              "begin_and_sample": 4.247
+            },
+            {
+              "driver": 0.075,
+              "flags": 0.011,
+              "target_prefill": 19.648,
+              "draft_prefill": 7.586,
+              "prefill_total": 27.555,
+              "begin_and_sample": 4.189
+            },
+            {
+              "driver": 0.07,
+              "flags": 0.01,
+              "target_prefill": 19.486,
+              "draft_prefill": 7.416,
+              "prefill_total": 27.122,
+              "begin_and_sample": 4.158
+            },
+            {
+              "driver": 0.069,
+              "flags": 0.009,
+              "target_prefill": 19.529,
+              "draft_prefill": 7.684,
+              "prefill_total": 27.535,
+              "begin_and_sample": 4.066
+            }
+          ],
+          "median_ms": {
+            "driver": 0.07,
+            "flags": 0.01,
+            "target_prefill": 19.527,
+            "draft_prefill": 7.586,
+            "prefill_total": 27.555,
+            "begin_and_sample": 4.158
+          }
+        },
+        {
+          "prompt_tokens": 256,
+          "warmup_requests": [
+            {
+              "driver": 0.073,
+              "flags": 0.01,
+              "target_prefill": 48.864,
+              "draft_prefill": 10.972,
+              "prefill_total": 60.061,
+              "begin_and_sample": 3.991
+            },
+            {
+              "driver": 0.084,
+              "flags": 0.01,
+              "target_prefill": 48.891,
+              "draft_prefill": 11.144,
+              "prefill_total": 60.251,
+              "begin_and_sample": 3.973
+            }
+          ],
+          "timed_requests": [
+            {
+              "driver": 0.085,
+              "flags": 0.01,
+              "target_prefill": 49.226,
+              "draft_prefill": 12.694,
+              "prefill_total": 62.137,
+              "begin_and_sample": 4.001
+            },
+            {
+              "driver": 0.087,
+              "flags": 0.01,
+              "target_prefill": 49.058,
+              "draft_prefill": 11.165,
+              "prefill_total": 60.439,
+              "begin_and_sample": 3.966
+            },
+            {
+              "driver": 0.086,
+              "flags": 0.01,
+              "target_prefill": 49.113,
+              "draft_prefill": 11.227,
+              "prefill_total": 60.562,
+              "begin_and_sample": 4.032
+            },
+            {
+              "driver": 0.087,
+              "flags": 0.009,
+              "target_prefill": 49.447,
+              "draft_prefill": 11.128,
+              "prefill_total": 60.79,
+              "begin_and_sample": 3.968
+            },
+            {
+              "driver": 0.084,
+              "flags": 0.01,
+              "target_prefill": 48.11,
+              "draft_prefill": 11.078,
+              "prefill_total": 59.404,
+              "begin_and_sample": 4.274
+            }
+          ],
+          "median_ms": {
+            "driver": 0.086,
+            "flags": 0.01,
+            "target_prefill": 49.113,
+            "draft_prefill": 11.165,
+            "prefill_total": 60.562,
+            "begin_and_sample": 4.001
+          }
+        }
+      ]
+    }
+  },
+  "runtime": {
+    "commit": "cbe28bb3cb",
+    "build_number": 11577,
+    "compiler": "GNU 15.2.0",
+    "libraries": [
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-base.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cpu.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml-cuda.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libggml.so.0.26.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama-common.so.0.6.0",
+      "/tmp/llama-nanobind-validation-cbe28bb3/prefix/lib/libllama.so.0.6.0"
+    ],
+    "extension": "/tmp/mtp-latency-profile/venv/lib/python3.14/site-packages/llama_cpp/_llama.cpython-314-x86_64-linux-gnu.so",
+    "system_info": "CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | ",
+    "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43"
+  },
+  "gpu": "NVIDIA GeForce RTX 3080, 595.91.07, 20480",
+  "settings": {
+    "output": "build/mtp-latency/profile-before.json",
+    "prompt_tokens": [
+      64,
+      256
+    ],
+    "max_tokens": 1,
+    "draft_max": [
+      2
+    ],
+    "runs": 5,
+    "warmup": 2,
+    "n_ctx": 2048,
+    "n_batch": 512,
+    "n_gpu_layers": -1,
+    "threads": 4
+  },
+  "model_sha256": "3874209241c9a397e2f62cd3f70f80fd2dfbf0dfccb6838416bdb48a714e8630"
+}

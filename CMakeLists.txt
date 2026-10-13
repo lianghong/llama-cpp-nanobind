@@ -4,26 +4,26 @@ cmake_minimum_required(VERSION 3.26)
 # - macOS: Apple Clang (Homebrew LLVM has libc++ ABI mismatches)
 # - Linux: prefer gcc-15/g++-15 wherever they live; fall back to gcc/g++
 if(APPLE)
-  if(NOT DEFINED CMAKE_C_COMPILER)
+  if(NOT DEFINED CMAKE_C_COMPILER AND "$ENV{CC}" STREQUAL "")
     find_program(_LLAMA_CC NAMES clang PATHS /usr/bin NO_DEFAULT_PATH)
     if(_LLAMA_CC)
       set(CMAKE_C_COMPILER "${_LLAMA_CC}")
     endif()
   endif()
-  if(NOT DEFINED CMAKE_CXX_COMPILER)
+  if(NOT DEFINED CMAKE_CXX_COMPILER AND "$ENV{CXX}" STREQUAL "")
     find_program(_LLAMA_CXX NAMES clang++ PATHS /usr/bin NO_DEFAULT_PATH)
     if(_LLAMA_CXX)
       set(CMAKE_CXX_COMPILER "${_LLAMA_CXX}")
     endif()
   endif()
 else()
-  if(NOT DEFINED CMAKE_C_COMPILER)
+  if(NOT DEFINED CMAKE_C_COMPILER AND "$ENV{CC}" STREQUAL "")
     find_program(_LLAMA_CC NAMES gcc-15 gcc)
     if(_LLAMA_CC)
       set(CMAKE_C_COMPILER "${_LLAMA_CC}")
     endif()
   endif()
-  if(NOT DEFINED CMAKE_CXX_COMPILER)
+  if(NOT DEFINED CMAKE_CXX_COMPILER AND "$ENV{CXX}" STREQUAL "")
     find_program(_LLAMA_CXX NAMES g++-15 g++)
     if(_LLAMA_CXX)
       set(CMAKE_CXX_COMPILER "${_LLAMA_CXX}")
@@ -74,7 +74,13 @@ endif()
 
 # Find Python 3.14+ (matches requires-python in pyproject.toml)
 find_package(Python 3.14 COMPONENTS Interpreter Development.Module REQUIRED)
-find_package(nanobind CONFIG REQUIRED)
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+  OUTPUT_VARIABLE NANOBIND_CMAKE_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  COMMAND_ERROR_IS_FATAL ANY
+)
+find_package(nanobind CONFIG REQUIRED PATHS "${NANOBIND_CMAKE_DIR}")
 
 # Configure system library search paths
 # Priority: user override > /usr/local > Homebrew (macOS) > system defaults
@@ -92,10 +98,10 @@ if(APPLE)
     message(STATUS "Added Homebrew llama.cpp to search paths: ${BREW_LLAMA_PREFIX}")
   endif()
 else()
-  # On Linux, explicitly prioritize /usr/local for system-installed llama.cpp
+  # /usr/local is already a CMake system prefix. Adding it to the variable
+  # would override a custom CMAKE_PREFIX_PATH supplied through the environment.
   if(EXISTS "/usr/local/include/llama.h")
-    list(APPEND CMAKE_PREFIX_PATH "/usr/local")
-    message(STATUS "Using system llama.cpp from /usr/local")
+    message(STATUS "System llama.cpp available in /usr/local")
   endif()
 endif()
 
@@ -127,6 +133,9 @@ message(STATUS "Found libllama-common: ${LLAMA_COMMON_LIB}")
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_INCLUDES "${LLAMA_INCLUDE_DIR}" "${LLAMA_COMMON_INCLUDE_DIR}")
 set(CMAKE_REQUIRED_LIBRARIES "${LLAMA_LIB}" "${LLAMA_COMMON_LIB}")
+# Recheck on every configure: system libraries can be upgraded in place while
+# the CMake build directory (and its previously successful probe) survives.
+unset(LLAMA_HAS_CURRENT_BATCH_API CACHE)
 check_cxx_source_compiles("
   #include <llama.h>
   #include <llama-ext.h>
@@ -138,25 +147,32 @@ check_cxx_source_compiles("
     auto c = llama_context_default_params();
     c.ctx_other = nullptr;
     c.n_outputs_max = 1;
+    c.moe_cache_size = 0;
     common_speculative_draft_params d{};
     d.pos0 = 0;
     auto * penalties = llama_sampler_init_penalties(32, 8, 1.0f, 0.0f, 0.0f);
     auto * dry = llama_sampler_init_dry(nullptr, 0.0f, 1.75f, 2, 8, nullptr, 0);
-    return llama_model_n_layer_nextn(nullptr);
-  }" LLAMA_HAS_CURRENT_MTP_API)
+    common_batch batch(nullptr);
+    batch.add(0, 0, 0, true);
+    auto rc = llama_process(nullptr, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+    return rc + common_speculative_process(nullptr, batch) + llama_model_n_layer_nextn(nullptr);
+  }" LLAMA_HAS_CURRENT_BATCH_API)
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_LIBRARIES)
-if(NOT LLAMA_HAS_CURRENT_MTP_API)
+if(NOT LLAMA_HAS_CURRENT_BATCH_API)
   message(FATAL_ERROR
     "Incompatible llama.cpp headers/libraries. Install a matching current llama.cpp "
-    "build including llama-common and llama-ext.h (validated with 7cf1c54a9, "
-    "2026-09-14), then rebuild this extension. See docs/SYSTEM_LIBRARIES.md.")
+    "build including llama-common, common_batch, llama_process, and llama-ext.h "
+    "(validated with b11552 / 23b0202a1, 2026-10-10), then rebuild this extension. "
+    "See docs/SYSTEM_LIBRARIES.md.")
 endif()
 
-# Optional GPU backend libraries
-find_library(GGML_CUDA_LIB ggml-cuda)
-find_library(GGML_METAL_LIB ggml-metal)
-find_library(GGML_BLAS_LIB ggml-blas)
+# Optional backends must come from the selected ggml installation. A CPU-only
+# custom prefix must not pick up a system CUDA/BLAS DSO with a different ABI.
+get_filename_component(GGML_LIBRARY_DIR "${GGML_LIB}" DIRECTORY)
+find_library(GGML_CUDA_LIB ggml-cuda HINTS "${GGML_LIBRARY_DIR}" NO_DEFAULT_PATH)
+find_library(GGML_METAL_LIB ggml-metal HINTS "${GGML_LIBRARY_DIR}" NO_DEFAULT_PATH)
+find_library(GGML_BLAS_LIB ggml-blas HINTS "${GGML_LIBRARY_DIR}" NO_DEFAULT_PATH)
 
 if(GGML_CUDA_LIB)
   message(STATUS "Found libggml-cuda: ${GGML_CUDA_LIB}")
@@ -225,15 +241,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     if(HAS_FNO_PLT)
       list(APPEND OPT_FLAGS -fno-plt)
     endif()
-    list(APPEND OPT_FLAGS -flto=auto)
-    
     target_compile_options(_llama PRIVATE ${OPT_FLAGS})
-    set(LINK_OPT_FLAGS -flto=auto)
-    # -fuse-linker-plugin is GCC-only; skip on Clang
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-      list(APPEND LINK_OPT_FLAGS -fuse-linker-plugin)
-    endif()
-    target_link_options(_llama PRIVATE ${LINK_OPT_FLAGS})
+    # CMake's INTERPROCEDURAL_OPTIMIZATION supplies compiler-specific LTO
+    # flags only when check_ipo_supported succeeds (also works with Clang).
   endif()
 endif()
 

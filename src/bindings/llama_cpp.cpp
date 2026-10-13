@@ -11,6 +11,7 @@
 #include "speculative.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -32,25 +33,13 @@ using namespace nb::literals;
 
 namespace {
 
-// RAII guard for llama_batch — frees the batch on scope exit regardless of
-// how the scope exits (normal return, throw, early break). Non-copyable and
-// non-movable: each guard owns exactly one llama_batch by reference.
-struct BatchGuard {
-  llama_batch& b;
-  explicit BatchGuard(llama_batch& batch) : b(batch) {}
-  ~BatchGuard() { llama_batch_free(b); }
-  BatchGuard(const BatchGuard&) = delete;
-  BatchGuard& operator=(const BatchGuard&) = delete;
-  BatchGuard(BatchGuard&&) = delete;
-  BatchGuard& operator=(BatchGuard&&) = delete;
-};
-
 struct ModelParams {
   llama_model_params raw;
   // Preserve the Python loading switches while translating to upstream's
   // load_mode enum at load time (all four mmap/mlock combinations matter).
   bool use_mmap = true;
   bool use_mlock = false;
+  bool cpu_moe = false;
   ModelParams() : raw(llama_model_default_params()) { raw.load_mtp = true; }
 };
 
@@ -296,6 +285,13 @@ class Model {
   static llama_model* load_with_backend_init(const std::string& path, const ModelParams& params) {
     std::call_once(g_backend_init_flag, llama_backend_init);
     auto raw = params.raw;
+    // Keep the sentinel-terminated overrides alive for the entire load.
+    // Use the same expert tensor pattern as upstream's --cpu-moe flag.
+    std::array<llama_model_tensor_buft_override, 2> overrides{};
+    if (params.cpu_moe) {
+      overrides[0] = llm_ffn_exps_cpu_override();
+      raw.tensor_buft_overrides = overrides.data();
+    }
     if (params.use_mmap) {
       raw.load_mode = params.use_mlock ? LLAMA_LOAD_MODE_MMAP_MLOCK : LLAMA_LOAD_MODE_MMAP;
     } else {
@@ -513,7 +509,9 @@ class SamplerChain {
       llama_sampler_chain_add(sampler_, llama_sampler_init_temp(params.temp));
     }
 
-    // 9. Terminal sampler: adaptive-p (if enabled) replaces dist; otherwise dist.
+    // 9. Avoid dist's softmax/RNG work for fixed zero temperature, following
+    // upstream common/sampling.cpp. temp(0) still masks the other logits, so
+    // the details path retains its existing sampler-adjusted logprobs.
     // Both produce a single token id; only one may be the chain terminator.
     uint32_t const rng_seed = params.seed >= 0
                                   ? static_cast<uint32_t>(params.seed)
@@ -522,6 +520,8 @@ class SamplerChain {
       llama_sampler_chain_add(
           sampler_, llama_sampler_init_adaptive_p(params.adaptive_p_target, params.adaptive_p_decay,
                                                   rng_seed));
+    } else if (params.temp == 0.0F && params.temp_delta == 0.0F) {
+      llama_sampler_chain_add(sampler_, llama_sampler_init_greedy());
     } else {
       llama_sampler_chain_add(sampler_, llama_sampler_init_dist(rng_seed));
     }
@@ -602,6 +602,11 @@ class Context {
       llama_batch_free(multi_batch_);
       multi_batch_ = {};
     }
+    if (prompt_batch_.token) {
+      llama_batch_free(prompt_batch_);
+      prompt_batch_ = {};
+      prompt_batch_capacity_ = 0;
+    }
     if (ctx_dft_) {
       llama_free(ctx_dft_);
       ctx_dft_ = nullptr;
@@ -610,6 +615,7 @@ class Context {
       llama_free(ctx_);
       ctx_ = nullptr;
     }
+    mtp_graph_mode_ = false;
     model_ = nullptr;
   }
 
@@ -645,6 +651,7 @@ class Context {
       llama_free(ctx_);
       ctx_ = nullptr;  // Null immediately after free to prevent double-free
     }
+    mtp_graph_mode_ = false;
     ctx_ = llama_init_from_model(model_->get(), params_.raw);
     if (!ctx_) {
       throw std::runtime_error("failed to recreate llama context");
@@ -683,7 +690,8 @@ class Context {
     dparams.n_ctx = llama_n_ctx(ctx_);
     // Recurrent rollback belongs to the target context. Upstream MTP
     // drafts use attention KV and may share it through ctx_other.
-    dparams.n_rs_seq = 0;  // upstream MTP graphs use attention KV, not recurrent snapshots
+    dparams.n_rs_seq = 0;        // upstream MTP graphs use attention KV, not recurrent snapshots
+    dparams.moe_cache_size = 0;  // expert caching belongs to the target, as in upstream
     dparams.ctx_other = ctx_;
     // Cap ctx_dft's worst-case graph size. The verify batch is at most
     // n_draft_max+1 (≤ 9 tokens), and prefill can chunk through ubatches.
@@ -709,6 +717,16 @@ class Context {
 
   llama_context* mtp_draft_context_or_null() const { return ctx_dft_; }
 
+  // Count mode changes separately from KV/driver lifetime. The upstream
+  // setters invalidate graph reservations when these flags change.
+  void set_mtp_graph_mode(bool enabled) noexcept {
+    if (!ctx_ || mtp_graph_mode_ == enabled) return;
+    llama_set_embeddings_nextn(ctx_, enabled, false);
+    if (ctx_dft_) llama_set_embeddings_nextn(ctx_dft_, enabled, enabled);
+    mtp_graph_mode_ = enabled;
+    ++n_mtp_graph_switches_;
+  }
+
   // The upstream driver owns cross-batch hidden-state carryover. Keep it alive
   // with the contexts, and rebuild from the prompt after external KV mutations
   // or a draft-width change. A KV snapshot alone cannot restore this state.
@@ -719,7 +737,10 @@ class Context {
           "speculative MTP requires a default, non-embedding target context");
     }
     reuse = spec_ && spec_n_max_ == n_draft_max;
-    if (reuse) return spec_.get();
+    if (reuse) {
+      set_mtp_graph_mode(true);
+      return spec_.get();
+    }
     kv_cache_clear();
     auto* dft = ensure_mtp_draft_context();
     llama_memory_clear(llama_get_memory(dft), false);
@@ -729,6 +750,9 @@ class Context {
     params.draft.n_min = 0;
     params.draft.ctx_tgt = ctx_;
     params.draft.ctx_dft = dft;
+    // Track the flags before the upstream constructor enables them as well,
+    // so the caller's guard can restore them even if construction throws.
+    set_mtp_graph_mode(true);
     spec_.reset(common_speculative_init(params, 1));
     if (!spec_) throw std::runtime_error("failed to initialize speculative MTP");
     spec_n_max_ = n_draft_max;
@@ -749,16 +773,35 @@ class Context {
 
   void advance_cur_pos(int32_t n) { cur_pos_ += n; }
 
+  // common_speculative_accept can restore pending_h only within the latest
+  // processed batch. Its target logits remain available until another decode.
+  void record_speculative_batch(int32_t start, bool all_logits) {
+    spec_batch_start_ = start;
+    spec_batch_all_logits_ = all_logits;
+  }
+
+  void retain_speculative_logits(int32_t row) {
+    const float* const source = llama_get_logits_ith(ctx_, row);
+    float* const last = llama_get_logits_ith(ctx_, -1);
+    if (!source || !last) throw std::runtime_error("speculative retained logits unavailable");
+    if (source != last) std::copy_n(source, model_->n_vocab(), last);
+  }
+
   void decode(const std::vector<llama_token>& tokens, bool return_logits = true) {
-    check_ctx();
+    check_token_decode();
     if (tokens.empty()) return;
     spec_.reset();
+    set_mtp_graph_mode(false);
     if (tokens.size() > static_cast<size_t>(INT32_MAX)) {
       throw std::invalid_argument("decode token count exceeds INT32_MAX");
     }
     const auto capacity = std::min(tokens.size(), static_cast<size_t>(llama_n_batch(ctx_)));
-    llama_batch batch = llama_batch_init(static_cast<int32_t>(capacity), 0, 1);
-    BatchGuard const guard(batch);
+    if (capacity > prompt_batch_capacity_) {
+      if (prompt_batch_.token) llama_batch_free(prompt_batch_);
+      prompt_batch_ = llama_batch_init(static_cast<int32_t>(capacity), 0, 1);
+      prompt_batch_capacity_ = capacity;
+    }
+    auto& batch = prompt_batch_;
     for (size_t offset = 0; offset < tokens.size();) {
       batch.n_tokens = static_cast<int32_t>(std::min(capacity, tokens.size() - offset));
       for (int32_t i = 0; i < batch.n_tokens; ++i) {
@@ -777,8 +820,9 @@ class Context {
   }
 
   void decode_one(llama_token token, bool request_logits = true) {
-    check_ctx();
+    check_token_decode();
     spec_.reset();
+    set_mtp_graph_mode(false);
     // Reuse pre-allocated single-token batch to avoid per-token allocations
     single_batch_.n_tokens = 1;
     single_batch_.token[0] = token;
@@ -810,7 +854,14 @@ class Context {
     // Remove everything from keep_len-1 onward (drops stop prefixes AND the
     // last real token), then re-decode the last real token to refresh logits.
     llama_memory_t mem = llama_get_memory(ctx_);
-    llama_memory_seq_rm(mem, 0, keep_len - 1, -1);
+    if (!llama_memory_seq_rm(mem, 0, keep_len - 1, -1)) {
+      // Shift support does not guarantee arbitrary recurrent rollback (LFM2
+      // can shift attention KV but has bounded short-convolution history).
+      // Clear uncertain memory; the Python mirror notices the empty cache
+      // and re-primes the next continuation.
+      kv_cache_clear();
+      return;
+    }
     cur_pos_ = keep_len - 1;
     decode_one(last_token, /*request_logits=*/true);  // cur_pos_ -> keep_len
   }
@@ -818,9 +869,10 @@ class Context {
   // Decode multiple tokens into a single forward pass. All positions request
   // logits (the speculative verify step needs them). Reuses multi_batch_.
   int32_t decode_multi(const std::vector<llama_token>& tokens) {
-    check_ctx();
+    check_token_decode();
     if (tokens.empty()) return 0;
     spec_.reset();
+    set_mtp_graph_mode(false);
     if (static_cast<int32_t>(tokens.size()) > kMultiBatchCapacity) {
       throw std::runtime_error("decode_multi: batch size " + std::to_string(tokens.size()) +
                                " exceeds capacity " + std::to_string(kMultiBatchCapacity));
@@ -847,7 +899,7 @@ class Context {
       throw std::runtime_error("context has been closed");
     }
     const int32_t n_vocab = model_->n_vocab();
-    const float* ptr = llama_get_logits(const_cast<llama_context*>(ctx_));
+    const float* ptr = llama_get_logits_ith(const_cast<llama_context*>(ctx_), -1);
     if (!ptr) {
       throw std::runtime_error("logits unavailable; ensure decode was called with logits enabled");
     }
@@ -1120,12 +1172,28 @@ class Context {
     d["t_eval_ms"] = data.t_eval_ms;
     d["n_p_eval"] = data.n_p_eval;
     d["n_eval"] = data.n_eval;
+    d["n_drafted"] = n_drafted_;
+    d["n_accepted"] = n_accepted_;
+    d["n_verify"] = n_verify_;
+    d["n_mtp_graph_switches"] = n_mtp_graph_switches_;
+    d["n_mtp_prefill"] = n_mtp_prefill_;
     return d;
   }
 
   void perf_reset() {
     if (!ctx_) return;
     llama_perf_context_reset(ctx_);
+    n_drafted_ = n_accepted_ = n_verify_ = 0;
+    n_mtp_graph_switches_ = 0;
+    n_mtp_prefill_ = 0;
+  }
+
+  void record_mtp_prefill(size_t count) { n_mtp_prefill_ += count; }
+
+  void record_speculative_round(size_t drafted, int32_t accepted) {
+    n_drafted_ += drafted;
+    n_accepted_ += static_cast<uint64_t>(accepted);
+    ++n_verify_;
   }
 
   // KV cache / memory sequence management
@@ -1141,6 +1209,22 @@ class Context {
 
   bool kv_cache_seq_rm(int32_t seq_id, int32_t p0 = -1, int32_t p1 = -1) {
     if (!ctx_) return false;
+    if (spec_ && seq_id == 0 && p1 == -1 && p0 >= 0) {
+      // Removing an empty tail must not detach the reusable MTP driver.
+      if (p0 >= cur_pos_) return true;
+      if (spec_batch_all_logits_ && p0 > spec_batch_start_) {
+        // Restore both memories and the upstream pending hidden row. Larger
+        // edits fall through to the existing driver-invalidation/rebuild path.
+        if (!trim_speculative(p0)) {
+          kv_cache_clear();
+          return false;
+        }
+        const int32_t row = p0 - spec_batch_start_ - 1;
+        common_speculative_accept(spec_.get(), 0, static_cast<uint16_t>(row));
+        retain_speculative_logits(row);
+        return true;
+      }
+    }
     spec_.reset();
     llama_memory_t mem = llama_get_memory(ctx_);
     bool const result = llama_memory_seq_rm(mem, seq_id, p0, p1);
@@ -1238,6 +1322,14 @@ class Context {
   llama_context* ctx_dft_ = nullptr;
   common_speculative_ptr spec_;
   int32_t spec_n_max_ = 0;
+  int32_t spec_batch_start_ = 0;
+  bool spec_batch_all_logits_ = false;
+  uint64_t n_drafted_ = 0;
+  uint64_t n_accepted_ = 0;
+  uint64_t n_verify_ = 0;
+  uint64_t n_mtp_graph_switches_ = 0;
+  uint64_t n_mtp_prefill_ = 0;
+  bool mtp_graph_mode_ = false;
   ContextParams params_;
 
   int32_t cur_pos_ = 0;
@@ -1253,6 +1345,19 @@ class Context {
   static_assert(kMultiBatchCapacity >= 1 + kSpeculativeMaxDraftMax,
                 "kMultiBatchCapacity must be >= 1 + max(n_draft_max)");
   llama_batch multi_batch_ = {};
+  // Prompt storage grows on demand and survives clear/reset, avoiding repeated
+  // batch allocations for chat turns and embedding requests.
+  llama_batch prompt_batch_ = {};
+  size_t prompt_batch_capacity_ = 0;
+
+  void check_token_decode() const {
+    check_ctx();
+    if (params_.raw.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
+      throw std::invalid_argument(
+          "MTP token-only decode requires target hidden state; use a default "
+          "context with speculative=True");
+    }
+  }
 
   void check_ctx() const {
     if (!ctx_) {
@@ -1281,6 +1386,9 @@ inline llama_token SamplerChain::sample(Context& ctx, int32_t idx) {
 inline std::vector<llama_token> prime_generation(Context& ctx, SamplerChain& sampler,
                                                  const std::vector<llama_token>& prompt,
                                                  bool add_bos, int32_t skip_decode_prefix = 0) {
+  // A fully cached prompt may sample without decode(). Restore ordinary mode
+  // here as well as in the public decode entry points.
+  ctx.set_mtp_graph_mode(false);
   // Build priming with BOS prepended in a single pass — avoids the O(n)
   // memmove that std::vector::insert(begin(), ...) would cost for large
   // prompts.
@@ -2048,57 +2156,57 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
   std::vector<llama_token> output;
   output.reserve(static_cast<size_t>(max_new_tokens));
 
+  struct NextnEmbdGuard {
+    Context& ctx;
+    bool retain = false;
+    explicit NextnEmbdGuard(Context& c) : ctx(c) {}
+    ~NextnEmbdGuard() {
+      if (!retain) ctx.set_mtp_graph_mode(false);
+    }
+    NextnEmbdGuard(const NextnEmbdGuard&) = delete;
+    NextnEmbdGuard& operator=(const NextnEmbdGuard&) = delete;
+    NextnEmbdGuard(NextnEmbdGuard&&) = delete;
+    NextnEmbdGuard& operator=(NextnEmbdGuard&&) = delete;
+  } nextn_guard(ctx);
+
   bool reuse = false;
   auto* const spec = ctx.prepare_speculative(n_draft_max, reuse);
   auto* const dft = ctx.mtp_draft_context_or_null();
-  // A reused driver is valid only for exactly the decoded prefix. Prefix
-  // edits invalidate it in Context::kv_cache_seq_rm before entering here.
+  // A reused driver is aligned with the decoded prefix, including supported
+  // suffix trims in Context::kv_cache_seq_rm. Other edits invalidate it.
   const int32_t skip = reuse ? skip_decode_prefix : 0;
   if (ctx.cur_pos() != skip) {
     ctx.kv_cache_clear();
     throw std::invalid_argument(
         "speculative continuation requires the complete prompt with cache_prompt=True");
   }
-  struct NextnEmbdGuard {
-    llama_context* tgt;
-    llama_context* dft;
-    NextnEmbdGuard(llama_context* t, llama_context* d) : tgt(t), dft(d) {
-      llama_set_embeddings_nextn(tgt, true, false);
-      llama_set_embeddings_nextn(dft, true, true);
-    }
-    ~NextnEmbdGuard() {
-      llama_set_embeddings_nextn(tgt, false, false);
-      llama_set_embeddings_nextn(dft, false, false);
-    }
-    NextnEmbdGuard(const NextnEmbdGuard&) = delete;
-    NextnEmbdGuard& operator=(const NextnEmbdGuard&) = delete;
-    NextnEmbdGuard(NextnEmbdGuard&&) = delete;
-    NextnEmbdGuard& operator=(NextnEmbdGuard&&) = delete;
-  } const nextn_guard(tgt, dft);
 
   // Bound prefill by both contexts and one target ubatch: process() consumes
   // the hidden rows of this exact decode. Reuse one allocation for every
   // prefill chunk, verify round, and final token.
   const int32_t capacity =
       static_cast<int32_t>(std::min({llama_n_batch(tgt), llama_n_ubatch(tgt), llama_n_batch(dft)}));
-  llama_batch batch = llama_batch_init(capacity, 0, 1);
-  BatchGuard const batch_guard(batch);
-  auto decode = [&](std::span<const llama_token> tokens, bool all_logits) {
-    batch.n_tokens = static_cast<int32_t>(tokens.size());
-    for (int32_t i = 0; i < batch.n_tokens; ++i) {
-      batch.token[i] = tokens[static_cast<size_t>(i)];
-      batch.pos[i] = ctx.cur_pos() + i;
-      batch.n_seq_id[i] = 1;
-      batch.seq_id[i][0] = 0;
-      batch.logits[i] = all_logits || i == batch.n_tokens - 1;
-    }
-    const int rc = llama_decode(tgt, batch);
-    if (rc != 0)
-      throw std::runtime_error("speculative llama_decode failed code " + std::to_string(rc));
-    ctx.advance_cur_pos(batch.n_tokens);
+  common_batch batch(tgt);
+  batch.tokens.reserve(static_cast<size_t>(capacity));
+  bool batch_all_logits = false;
+  auto process_draft = [&] {
     if (!common_speculative_process(spec, batch)) {
       throw std::runtime_error("speculative common_speculative_process failed");
     }
+    ctx.record_speculative_batch(ctx.cur_pos() - batch.size(), batch_all_logits);
+  };
+  auto decode = [&](std::span<const llama_token> tokens, bool all_logits, bool feed_draft = true) {
+    batch.clear();
+    batch_all_logits = all_logits;
+    for (size_t i = 0; i < tokens.size(); ++i) {
+      batch.add(tokens[i], ctx.cur_pos() + static_cast<int32_t>(i), 0,
+                all_logits || i == tokens.size() - 1);
+    }
+    const int rc = llama_process(tgt, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+    if (rc != 0)
+      throw std::runtime_error("speculative llama_process failed code " + std::to_string(rc));
+    ctx.advance_cur_pos(batch.size());
+    if (feed_draft) process_draft();
   };
   std::vector<llama_token_data> candidates(static_cast<size_t>(n_vocab));
   auto sample = [&](int32_t idx) {
@@ -2127,6 +2235,8 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
   size_t n_yielded = 0;
   bool cancelled = false;
   bool stopped = false;
+  bool ended = false;
+  int32_t end_logits_row = -1;
   auto flush = [&](size_t count) {
     while (callback && n_yielded < count) {
       nb::gil_scoped_acquire const gil;
@@ -2139,7 +2249,11 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
     return true;
   };
   auto emit = [&](llama_token token) {
-    if (token == eos_token || llama_vocab_is_eog(ctx.model().vocab(), token)) {
+    if (llama_vocab_is_eog(ctx.model().vocab(), token)) {
+      ended = true;
+      return false;
+    }
+    if (token == eos_token) {
       stopped = true;
       return false;
     }
@@ -2158,14 +2272,30 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
   };
 
   try {
+    bool prefill_pending = false;
     for (int32_t offset = skip; std::cmp_less(offset, priming.size());) {
       const auto count = std::min(static_cast<size_t>(capacity), priming.size() - offset);
-      decode(std::span(priming).subspan(static_cast<size_t>(offset), count), false);
+      const bool last_chunk = static_cast<size_t>(offset) + count == priming.size();
+      decode(std::span(priming).subspan(static_cast<size_t>(offset), count), false, !last_chunk);
+      if (last_chunk) {
+        prefill_pending = true;
+      } else {
+        ctx.record_mtp_prefill(count);
+      }
       offset += static_cast<int32_t>(count);
     }
-    common_speculative_begin(spec, 0, priming);
     auto id_last = sample(-1);
     bool running = emit(id_last);
+    if (!cancelled && !stopped) {
+      // The last target batch and its hidden rows survive sampling/callback.
+      // Catch the draft up before begin(), drafting, or another target decode.
+      // Earlier chunks must be processed immediately before their rows change.
+      if (prefill_pending) {
+        process_draft();
+        ctx.record_mtp_prefill(static_cast<size_t>(batch.size()));
+      }
+      common_speculative_begin(spec, 0, priming);
+    }
     llama_tokens drafted;
     drafted.reserve(static_cast<size_t>(n_draft_max));
     llama_tokens verify;
@@ -2200,11 +2330,15 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
       for (size_t i = 0; i <= drafted.size(); ++i) {
         id_last = sample(static_cast<int32_t>(i));
         const bool match = i < drafted.size() && id_last == drafted[i];
-        if (match) ++accepted;
         running = emit(id_last);
+        // EOG is absent from returned output and must not enter retained KV
+        // or advance the hidden row selected by common_speculative_accept.
+        if (match && !ended) ++accepted;
+        if (ended) end_logits_row = static_cast<int32_t>(i);
         if (!running || !match) break;
       }
       common_speculative_accept(spec, 0, static_cast<uint16_t>(accepted));
+      ctx.record_speculative_round(drafted.size(), accepted);
       if (!ctx.trim_speculative(pos0 + 1 + accepted)) {
         throw std::runtime_error("speculative target rollback failed; increase n_rs_seq");
       }
@@ -2228,10 +2362,15 @@ std::vector<llama_token> generate_tokens_speculative_mtp(
       const auto tail = output.back();
       decode(std::span(&tail, 1), false);
     }
+    if (ended) ctx.retain_speculative_logits(end_logits_row);
   } catch (...) {
     ctx.kv_cache_clear();
     throw;
   }
+  // KV/hidden-state invalidation is independent of graph shape. Successful
+  // MTP requests keep the reservation; ordinary decode or an abnormal exit
+  // restores the flags. This also avoids re-reserving after a KV clear.
+  nextn_guard.retain = true;
   return output;
 }
 
@@ -2267,6 +2406,7 @@ NB_MODULE(_llama, m) {
       .def_prop_rw(
           "load_mtp", [](ModelParams& p) { return p.raw.load_mtp; },
           [](ModelParams& p, bool v) { p.raw.load_mtp = v; }, "Load embedded MTP layers")
+      .def_rw("cpu_moe", &ModelParams::cpu_moe, "Keep MoE expert weights in CPU buffers")
       .def_prop_rw(
           "check_tensors", [](ModelParams& p) { return p.raw.check_tensors; },
           [](ModelParams& p, bool v) { p.raw.check_tensors = v; }, "Validate tensor data on load")
@@ -2280,11 +2420,12 @@ NB_MODULE(_llama, m) {
             nb::dict d;
             d["n_gpu_layers"] = p.raw.n_gpu_layers;
             d["main_gpu"] = p.raw.main_gpu;
-            d["split_mode"] = p.raw.split_mode;
+            d["split_mode"] = static_cast<int>(p.raw.split_mode);
             d["vocab_only"] = p.raw.vocab_only;
             d["use_mmap"] = p.use_mmap;
             d["use_mlock"] = p.use_mlock;
             d["load_mtp"] = p.raw.load_mtp;
+            d["cpu_moe"] = p.cpu_moe;
             d["check_tensors"] = p.raw.check_tensors;
             d["no_host"] = p.raw.no_host;
             return d;
@@ -2312,6 +2453,10 @@ NB_MODULE(_llama, m) {
           "Recurrent-state snapshots per seq for rollback (0 = no rollback). "
           "Required by draft-MTP speculative decoding on hybrid recurrent "
           "models like Qwen3.6-MoE; should be set to >= n_draft_max.")
+      .def_prop_rw(
+          "moe_cache_size", [](ContextParams& p) { return p.raw.moe_cache_size; },
+          [](ContextParams& p, size_t v) { p.raw.moe_cache_size = v; },
+          "GPU cache size in bytes for CPU-resident MoE experts (experimental; 0 = disabled)")
       .def_prop_rw(
           "n_threads", [](ContextParams& p) { return p.raw.n_threads; },
           [](ContextParams& p, int32_t v) { p.raw.n_threads = v; }, "Threads for generation")
@@ -2360,13 +2505,14 @@ NB_MODULE(_llama, m) {
             d["n_ubatch"] = p.raw.n_ubatch;
             d["n_seq_max"] = p.raw.n_seq_max;
             d["n_rs_seq"] = p.raw.n_rs_seq;
+            d["moe_cache_size"] = p.raw.moe_cache_size;
             d["n_threads"] = p.raw.n_threads;
             d["n_threads_batch"] = p.raw.n_threads_batch;
             d["rope_freq_base"] = p.raw.rope_freq_base;
             d["rope_freq_scale"] = p.raw.rope_freq_scale;
             d["embeddings"] = p.raw.embeddings;
             d["offload_kqv"] = p.raw.offload_kqv;
-            d["flash_attn_type"] = p.raw.flash_attn_type;
+            d["flash_attn_type"] = static_cast<int>(p.raw.flash_attn_type);
             d["ctx_type"] = static_cast<int>(p.raw.ctx_type);
             d["type_k"] = static_cast<int>(p.raw.type_k);
             d["type_v"] = static_cast<int>(p.raw.type_v);
